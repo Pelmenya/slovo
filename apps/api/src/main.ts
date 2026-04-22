@@ -3,6 +3,7 @@ import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/comm
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
+import { parseCorsOrigin, type AppEnv } from '@slovo/common';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -12,18 +13,12 @@ async function bootstrap() {
 
     app.useLogger(app.get(PinoLogger));
 
-    const configService = app.get(ConfigService);
+    const configService = app.get<ConfigService<AppEnv, true>>(ConfigService);
     const logger = new Logger('Bootstrap');
 
-    // CORS
-    const corsOrigin = configService
-        .getOrThrow<string>('CORS_ORIGIN')
-        .split(',')
-        .map((o) => o.trim())
-        .filter(Boolean);
+    const corsOrigin = parseCorsOrigin(configService.get('CORS_ORIGIN', { infer: true }));
     app.enableCors({ origin: corsOrigin, credentials: true });
 
-    // Global validation
     app.useGlobalPipes(
         new ValidationPipe({
             whitelist: true,
@@ -33,11 +28,9 @@ async function bootstrap() {
         }),
     );
 
-    // Global serialization (class-transformer)
     app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
-    // Swagger (только вне production)
-    const isProd = configService.get<string>('NODE_ENV') === 'production';
+    const isProd = configService.get('NODE_ENV', { infer: true }) === 'production';
     if (!isProd) {
         const swaggerConfig = new DocumentBuilder()
             .setTitle('Slovo AI Platform')
@@ -52,10 +45,9 @@ async function bootstrap() {
         });
     }
 
-    // Graceful shutdown
     app.enableShutdownHooks();
 
-    const port = configService.get<number>('API_PORT', 3101);
+    const port = configService.get('API_PORT', { infer: true });
     await app.listen(port);
 
     logger.log(`🚀 API listening on http://localhost:${port}`);

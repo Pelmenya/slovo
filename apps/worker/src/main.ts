@@ -1,23 +1,21 @@
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { ConfigService } from '@nestjs/config';
 import { Logger } from 'nestjs-pino';
+import { validateEnv } from '@slovo/common';
 import { WorkerModule } from './worker.module';
 
 async function bootstrap() {
-    const tempApp = await NestFactory.createApplicationContext(WorkerModule);
-    const configService = tempApp.get(ConfigService);
-    const rabbitmqUrl = configService.get<string>('RABBITMQ_URL', 'amqp://localhost:5672');
-    await tempApp.close();
+    const env = validateEnv(process.env);
 
     const app = await NestFactory.createMicroservice<MicroserviceOptions>(WorkerModule, {
         bufferLogs: true,
         transport: Transport.RMQ,
         options: {
-            urls: [rabbitmqUrl],
+            urls: [env.RABBITMQ_URL],
             queue: 'slovo-worker',
             queueOptions: { durable: true },
-            prefetchCount: 5,
+            prefetchCount: env.WORKER_CONCURRENCY,
         },
     });
 

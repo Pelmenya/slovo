@@ -1,44 +1,26 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { LoggerModule } from 'nestjs-pino';
+import { ConfigService } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { createAppConfigModule, createAppLoggerModule } from '@slovo/common';
+import type { AppEnv } from '@slovo/common';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
     imports: [
-        ConfigModule.forRoot({
-            isGlobal: true,
-            envFilePath: ['.env'],
-        }),
-        LoggerModule.forRootAsync({
-            inject: [ConfigService],
-            useFactory: (config: ConfigService) => ({
-                pinoHttp: {
-                    level: config.get<string>('LOG_LEVEL', 'info'),
-                    transport:
-                        config.get<string>('NODE_ENV') === 'development'
-                            ? {
-                                  target: 'pino-pretty',
-                                  options: {
-                                      singleLine: true,
-                                      colorize: true,
-                                      translateTime: 'HH:MM:ss',
-                                  },
-                              }
-                            : undefined,
-                },
-            }),
-        }),
+        createAppConfigModule(),
+        createAppLoggerModule(),
         ThrottlerModule.forRootAsync({
             inject: [ConfigService],
-            useFactory: (config: ConfigService) => [
+            useFactory: (config: ConfigService<AppEnv, true>) => [
                 {
-                    ttl: config.get<number>('THROTTLE_TTL', 60) * 1000,
-                    limit: config.get<number>('THROTTLE_LIMIT', 100),
+                    ttl: config.get('THROTTLE_TTL', { infer: true }) * 1000,
+                    limit: config.get('THROTTLE_LIMIT', { infer: true }),
                 },
             ],
         }),
         HealthModule,
     ],
+    providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}
