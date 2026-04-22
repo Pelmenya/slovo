@@ -17,8 +17,13 @@ services:
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
             POSTGRES_DB: ${POSTGRES_DB}
         volumes:
-            - postgres_data:/var/lib/postgresql/data
-            - ./prisma/init:/docker-entrypoint-initdb.d:ro
+            # PG18 breaking: монтируем в /var/lib/postgresql (не .../data),
+            # образ сам кладёт данные в подпапку с major-version. См.
+            # https://github.com/docker-library/postgres/pull/1259
+            - postgres_data:/var/lib/postgresql
+            # init-скриптов нет: все extensions создаются миграциями Prisma
+            # (schema/main.prisma -> extensions=[vector, pg_trgm, uuid-ossp, pgcrypto])
+            # — единственный источник истины.
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
             interval: 10s

@@ -42,6 +42,7 @@ model: opus
 
 ## 3. pgvector
 
+- **Расширения PG создаются ТОЛЬКО через миграции Prisma** (`extensions=[vector, pg_trgm, uuidOssp, pgcrypto]` в `main.prisma` + `previewFeatures=["postgresqlExtensions"]`). Если видишь `./prisma/init:/docker-entrypoint-initdb.d` в `docker-compose.infra.yml` или SQL-скрипты с `CREATE EXTENSION` — флагни **критично** (это создаёт drift между `_prisma_migrations` и реальной БД, ломает `migrate dev`).
 - Эмбеддинги храним как `Unsupported("vector(1536)")` или через `@db.Vector(1536)` (если поддерживается). Default 1536 — под OpenAI `text-embedding-3-small`.
 - **Поиск ближайших векторов — ТОЛЬКО через raw query**:
   ```ts

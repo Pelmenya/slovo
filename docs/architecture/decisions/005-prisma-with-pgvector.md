@@ -176,6 +176,16 @@ export class VectorSearchService {
 
 Причина: даже одна таблица + enum вынесены отдельно от генератора, чтобы к моменту появления water-analysis и notes-rag не рефакторить схему посреди фичи. Правила разбиения — в `CLAUDE.md` (раздел Prisma schema — multi-file). `prisma-generator-nestjs-dto` совместим, проверено.
 
+### Расширения PostgreSQL — только через миграции
+
+**Источник истины один — миграции Prisma.** В `main.prisma` стоит `extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp"), pgcrypto]` и `previewFeatures = ["postgresqlExtensions"]`. Первая же `prisma migrate dev` генерирует `CREATE EXTENSION IF NOT EXISTS ...` для каждого.
+
+**Что мы НЕ делаем:** `./prisma/init:/docker-entrypoint-initdb.d` монтирование с `CREATE EXTENSION` скриптами. Это создаёт drift: Prisma видит расширение в реальной БД, но записи в `_prisma_migrations` нет, и требует `migrate reset`. Каждый `prisma migrate dev` ломается до ручного вмешательства.
+
+**Shadow DB (prisma migrate dev временная база) разворачивается из того же образа `pgvector/pgvector:0.8.2-pg18-trixie`**, поэтому `vector` доступен и в ней — миграция валидируется без init-скрипта.
+
+**PostgreSQL 18 breaking:** volume монтируется в `/var/lib/postgresql` (не `/var/lib/postgresql/data`) — образ сам кладёт данные в major-version subdir. Это требование начиная с PG18 и отражено в `docker-compose.infra.yml`.
+
 ### Когда пересмотреть
 
 - Prisma добавляет нативную поддержку `vector` → убираем `Unsupported`
