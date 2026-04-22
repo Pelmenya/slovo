@@ -16,7 +16,11 @@ async function bootstrap() {
     const logger = new Logger('Bootstrap');
 
     // CORS
-    const corsOrigin = configService.get<string>('CORS_ORIGIN', '*');
+    const corsOrigin = configService
+        .getOrThrow<string>('CORS_ORIGIN')
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean);
     app.enableCors({ origin: corsOrigin, credentials: true });
 
     // Global validation
@@ -32,18 +36,21 @@ async function bootstrap() {
     // Global serialization (class-transformer)
     app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
-    // Swagger
-    const swaggerConfig = new DocumentBuilder()
-        .setTitle('Slovo AI Platform')
-        .setDescription('Universal LLM backend — RAG, agents, multi-feature')
-        .setVersion('0.1.0')
-        .addBearerAuth()
-        .build();
+    // Swagger (только вне production)
+    const isProd = configService.get<string>('NODE_ENV') === 'production';
+    if (!isProd) {
+        const swaggerConfig = new DocumentBuilder()
+            .setTitle('Slovo AI Platform')
+            .setDescription('Universal LLM backend — RAG, agents, multi-feature')
+            .setVersion('0.1.0')
+            .addBearerAuth()
+            .build();
 
-    const document = SwaggerModule.createDocument(app, swaggerConfig);
-    SwaggerModule.setup('api/docs', app, document, {
-        swaggerOptions: { persistAuthorization: true },
-    });
+        const document = SwaggerModule.createDocument(app, swaggerConfig);
+        SwaggerModule.setup('api/docs', app, document, {
+            swaggerOptions: { persistAuthorization: true },
+        });
+    }
 
     // Graceful shutdown
     app.enableShutdownHooks();
@@ -52,7 +59,9 @@ async function bootstrap() {
     await app.listen(port);
 
     logger.log(`🚀 API listening on http://localhost:${port}`);
-    logger.log(`📚 Swagger docs at http://localhost:${port}/api/docs`);
+    if (!isProd) {
+        logger.log(`📚 Swagger docs at http://localhost:${port}/api/docs`);
+    }
 }
 
 void bootstrap();

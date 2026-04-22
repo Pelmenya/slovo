@@ -4,7 +4,10 @@
     "private": true,
     "description": "AI-platform на NestJS для прототипирования и production LLM-фичей",
     "license": "UNLICENSED",
-    "workspaces": ["apps/*", "libs/*"],
+    "workspaces": [
+        "apps/*",
+        "libs/*"
+    ],
     "engines": {
         "node": ">=24.15.0",
         "npm": ">=11.12.1"
@@ -19,7 +22,7 @@
         "start:worker:dev": "nest start worker --watch",
         "start:prod": "node dist/apps/api/main",
         "lint": "eslint \"{apps,libs}/**/*.ts\" --fix",
-        "test": "jest",
+        "test": "jest --passWithNoTests",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
         "test:e2e": "jest --config ./apps/api/test/jest-e2e.json",
@@ -44,6 +47,7 @@
         "@nestjs/platform-express": "^11.1.19",
         "@nestjs/swagger": "^11.3.2",
         "@nestjs/throttler": "^6.5.0",
+        "@prisma/adapter-pg": "^7.7.0",
         "@prisma/client": "^7.7.0",
         "amqp-connection-manager": "^4.1.14",
         "amqplib": "^1.0.3",
@@ -52,12 +56,14 @@
         "eventsource-parser": "^3.0.0",
         "ioredis": "^5.4.0",
         "nestjs-pino": "^4.6.1",
+        "pg": "^8.20.0",
         "pino-http": "^10.3.0",
         "pino-pretty": "^11.3.0",
         "reflect-metadata": "^0.2.2",
         "rxjs": "^7.8.1"
     },
     "devDependencies": {
+        "@eslint/js": "^10.0.1",
         "@nestjs/cli": "^11.0.21",
         "@nestjs/schematics": "^11.0.0",
         "@nestjs/testing": "^11.1.19",
@@ -65,9 +71,8 @@
         "@types/express": "^5.0.0",
         "@types/jest": "^29.5.14",
         "@types/node": "^24.0.0",
-        "@typescript-eslint/eslint-plugin": "^8.20.0",
-        "@typescript-eslint/parser": "^8.20.0",
-        "eslint": "^9.18.0",
+        "@types/pg": "^8.20.0",
+        "eslint": "^10.2.1",
         "eslint-config-prettier": "^10.0.1",
         "eslint-plugin-prettier": "^5.2.1",
         "husky": "^9.1.7",
@@ -81,16 +86,24 @@
         "ts-loader": "^9.5.2",
         "ts-node": "^10.9.2",
         "tsconfig-paths": "^4.2.0",
-        "typescript": "^6.0.3"
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.59.0"
     },
     "jest": {
-        "moduleFileExtensions": ["js", "json", "ts"],
+        "moduleFileExtensions": [
+            "js",
+            "json",
+            "ts"
+        ],
         "rootDir": ".",
         "testRegex": ".*\\.spec\\.ts$",
         "transform": {
             "^.+\\.(t|j)s$": "ts-jest"
         },
-        "collectCoverageFrom": ["apps/**/*.(t|j)s", "libs/**/*.(t|j)s"],
+        "collectCoverageFrom": [
+            "apps/**/*.(t|j)s",
+            "libs/**/*.(t|j)s"
+        ],
         "coverageDirectory": "./coverage",
         "testEnvironment": "node",
         "moduleNameMapper": {

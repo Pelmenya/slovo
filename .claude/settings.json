@@ -1,0 +1,25 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git show:*)",
+            "Bash(git status)",
+            "Bash(git status -s)",
+            "Bash(git branch:*)",
+            "Bash(git blame:*)",
+            "Bash(git rev-parse:*)",
+            "Bash(gh pr diff:*)",
+            "Bash(gh pr view:*)",
+            "Bash(gh pr list:*)",
+            "Bash(gh api repos/:*)",
+            "Bash(git check-ignore:*)",
+            "Bash(npm view:*)",
+            "Bash(npm outdated)",
+            "Bash(npm ls:*)",
+            "Bash(npm audit)",
+            "Bash(npm audit --json)",
+            "Bash(npm audit --production)"
+        ]
+    }
+}

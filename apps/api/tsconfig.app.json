@@ -1,7 +1,8 @@
 {
     "extends": "../../tsconfig.json",
     "compilerOptions": {
-        "outDir": "../../dist/apps/api"
+        "outDir": "../../dist/apps/api",
+        "rootDir": "../.."
     },
     "include": ["src/**/*", "../../libs/**/*"],
     "exclude": ["node_modules", "dist", "**/*.spec.ts"]

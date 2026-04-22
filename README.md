@@ -40,14 +40,14 @@ npm run prisma:migrate:dev       # создаст БД slovo
 
 **3. Запуск:**
 ```bash
-npm run start:dev                # API (порт 3001)
+npm run start:dev                # API (порт 3101)
 npm run start:worker:dev         # Worker (RabbitMQ consumer)
 ```
 
 **4. Проверка:**
-- API health: http://localhost:3001/health
-- Swagger docs: http://localhost:3001/api/docs
-- Flowise: http://localhost:3000
+- API health: http://localhost:3101/health
+- Swagger docs: http://localhost:3101/api/docs
+- Flowise: http://localhost:3130
 - pgAdmin: http://localhost:5050
 - Langfuse: http://localhost:3100
 

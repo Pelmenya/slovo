@@ -154,6 +154,22 @@ export class VectorSearchService {
 
 Остальной код приложения использует сервис, не видит SQL.
 
+### Prisma 7: driver adapter и `prisma.config.ts`
+
+С **Prisma 7** изменился способ указания connection URL:
+
+- **`url = env("DATABASE_URL")`** больше не допускается в `datasource db { ... }` в `schema.prisma`. При генерации — `P1012` ошибка.
+- Вместо этого URL задаётся в `prisma.config.ts` через `env('DATABASE_URL')` helper, а Prisma CLI читает `.env` через `dotenv/config` (явный импорт в `prisma.config.ts`).
+- **Driver adapter обязателен** для запросов. Для Postgres — `@prisma/adapter-pg` (обёртка над `pg`).
+- Клиент инстанцируется так:
+  ```ts
+  new PrismaClient({ adapter: new PrismaPg({ connectionString }) })
+  ```
+
+Для slovo это означает: `PrismaService` инжектит `ConfigService`, берёт `DATABASE_URL` через `getOrThrow`, создаёт `PrismaPg` адаптер и передаёт в super-конструктор. Подключение к БД — внутри `$connect()` в `onModuleInit` с try/catch и понятным сообщением об ошибке.
+
+**Следствие:** две точки чтения `DATABASE_URL` — `prisma.config.ts` (для CLI: generate, migrate) и `PrismaService` (для рантайма). Обе используют один и тот же `.env`.
+
 ### Когда пересмотреть
 
 - Prisma добавляет нативную поддержку `vector` → убираем `Unsupported`

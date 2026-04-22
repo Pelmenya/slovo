@@ -9,19 +9,19 @@
 
 services:
     langfuse-postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         container_name: slovo-langfuse-postgres
         restart: unless-stopped
         ports:
-            - "${LANGFUSE_POSTGRES_PORT:-5433}:5432"
+            - "127.0.0.1:${LANGFUSE_POSTGRES_PORT:-5434}:5432"
         environment:
-            POSTGRES_USER: langfuse
-            POSTGRES_PASSWORD: langfuse_password
-            POSTGRES_DB: langfuse
+            POSTGRES_USER: ${LANGFUSE_POSTGRES_USER}
+            POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}
+            POSTGRES_DB: ${LANGFUSE_POSTGRES_DB}
         volumes:
             - langfuse_postgres_data:/var/lib/postgresql/data
         healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+            test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_POSTGRES_USER} -d ${LANGFUSE_POSTGRES_DB}"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -36,13 +36,13 @@ services:
             langfuse-postgres:
                 condition: service_healthy
         ports:
-            - "${LANGFUSE_PORT:-3100}:3000"
+            - "127.0.0.1:${LANGFUSE_PORT:-3100}:3000"
         environment:
-            DATABASE_URL: postgresql://langfuse:langfuse_password@langfuse-postgres:5432/langfuse
+            DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER}:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB}
             NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
-            NEXTAUTH_SECRET: langfuse_nextauth_secret_change_me
-            SALT: langfuse_salt_change_me
-            ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+            NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
+            SALT: ${LANGFUSE_SALT}
+            ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
             TELEMETRY_ENABLED: "false"
             LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
         networks:

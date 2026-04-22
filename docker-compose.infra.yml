@@ -7,11 +7,11 @@
 
 services:
     postgres:
-        image: pgvector/pgvector:0.8.2-pg17-trixie
+        image: pgvector/pgvector:0.8.2-pg18-trixie
         container_name: slovo-postgres
         restart: unless-stopped
         ports:
-            - "${POSTGRES_PORT:-5432}:5432"
+            - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
         environment:
             POSTGRES_USER: ${POSTGRES_USER}
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -28,11 +28,11 @@ services:
             - slovo-network
 
     valkey:
-        image: valkey/valkey:8-alpine
+        image: valkey/valkey:9-alpine
         container_name: slovo-valkey
         restart: unless-stopped
         ports:
-            - "${REDIS_PORT:-6379}:6379"
+            - "127.0.0.1:${REDIS_PORT:-6380}:6379"
         command: valkey-server --appendonly yes
         volumes:
             - valkey_data:/data
@@ -49,8 +49,8 @@ services:
         container_name: slovo-rabbitmq
         restart: unless-stopped
         ports:
-            - "${RABBITMQ_PORT:-5672}:5672"
-            - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+            - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+            - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
         environment:
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
             RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
@@ -69,7 +69,7 @@ services:
         container_name: slovo-flowise
         restart: unless-stopped
         ports:
-            - "${FLOWISE_PORT:-3000}:3000"
+            - "127.0.0.1:${FLOWISE_PORT:-3130}:3000"
         volumes:
             - flowise_data:/root/.flowise
         networks:

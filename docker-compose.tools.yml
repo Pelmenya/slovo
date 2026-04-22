@@ -7,7 +7,7 @@
 #   - pgAdmin:         http://localhost:5050
 #   - Redis Commander: http://localhost:8081
 #   - RabbitMQ UI:     http://localhost:15672  (встроен в RabbitMQ)
-#   - Flowise UI:      http://localhost:3000   (встроен во Flowise)
+#   - Flowise UI:      http://localhost:3130   (встроен во Flowise)
 
 services:
     pgadmin:
@@ -15,7 +15,7 @@ services:
         container_name: slovo-pgadmin
         restart: unless-stopped
         ports:
-            - "${PGADMIN_PORT:-5050}:80"
+            - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
         environment:
             PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
             PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
@@ -30,7 +30,7 @@ services:
         container_name: slovo-redis-commander
         restart: unless-stopped
         ports:
-            - "${REDIS_COMMANDER_PORT:-8081}:8081"
+            - "127.0.0.1:${REDIS_COMMANDER_PORT:-8081}:8081"
         environment:
             REDIS_HOSTS: local:valkey:6379
         networks:

@@ -24,6 +24,9 @@ Thumbs.db
 
 # Prisma
 prisma/migrations/dev.db*
+# libs/database/src/generated/ — DTO-генератор prisma-generator-nestjs-dto.
+# Коммитим как артефакт: стабильные билды, CI без prisma generate, видимость DTO-изменений в PR.
+# Ручные правки внутри запрещены — перегенерируется при npm run prisma:generate.
 
 # Testing
 .jest-cache/
@@ -32,6 +35,5 @@ prisma/migrations/dev.db*
 *.tsbuildinfo
 .turbo/
 
-# Local claude
-.claude/
-memory/
+# Claude Code
+.claude/settings.local.json

@@ -4,8 +4,8 @@
 //   https://www.prisma.io/docs
 //
 // После изменений:
-//   pnpm prisma:generate              — обновить клиент
-//   pnpm prisma:migrate:dev --name X  — создать миграцию
+//   npm run prisma:generate              — обновить клиент
+//   npm run prisma:migrate:dev --name X  — создать миграцию
 
 generator client {
     provider        = "prisma-client-js"
@@ -30,7 +30,6 @@ generator nestjsDto {
 
 datasource db {
     provider   = "postgresql"
-    url        = env("DATABASE_URL")
     extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp"), pgcrypto]
 }
 
@@ -40,11 +39,19 @@ datasource db {
 // =============================================================================
 
 model HealthCheck {
-    id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-    service   String
-    status    String
-    timestamp DateTime @default(now())
+    id        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    service   String            @db.VarChar(64)
+    status    HealthCheckStatus
+    createdAt DateTime          @default(now()) @map("created_at")
 
-    @@index([service, timestamp])
+    @@index([service, createdAt])
     @@map("health_checks")
+}
+
+enum HealthCheckStatus {
+    ok
+    degraded
+    down
+
+    @@map("health_check_status")
 }
