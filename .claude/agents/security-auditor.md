@@ -18,6 +18,7 @@ model: opus
 ## 1. Секреты и конфиг
 
 - **Хардкод секретов** (API keys, passwords, JWT_SECRET) в коде — критично. Сверь `.env.example`: всё что там есть должно быть **только** через `ConfigService.get(...)`.
+- **Исключение — тестовые файлы** (`*.spec.ts`, `*.e2e-spec.ts`, `apps/api/test/**`): ожидается что там есть синтетические значения для прогона. **Конвенция slovo — префикс `test-only-`** (например `test-only-pg-password`, `test-only-jwt-secret`). Если в тесте значения **без** этого префикса и выглядят правдоподобно (похожи на реальные ключи OpenAI/Anthropic/JWT-токены) — флагни как **важное** с рекомендацией переименовать в `test-only-*`. Если значение с `test-only-` — **не флагай**, это осознанный placeholder.
 - `.env` в `.gitignore` — обязательно. Проверь: `git check-ignore .env` должен дать `.env`.
 - Никогда не логируем значения `ANTHROPIC_API_KEY`, `JWT_SECRET`, `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, `LANGFUSE_SECRET_KEY`. Если видишь `logger.log(config.get('...KEY'))` или `console.log(process.env.SECRET)` — критично.
 - Секреты с дефолтами типа `JWT_SECRET=change_me_in_production` — если при старте в production мода это не падает → флагни. Nest должен `throw` если prod && дефолт.

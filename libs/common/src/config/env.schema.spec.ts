@@ -1,3 +1,7 @@
+// Все значения в тесте — namespaced test-only placeholders.
+// Ничего реального здесь быть не должно (см. security-auditor агент).
+// Префикс "test-only-" делает их однозначно идентифицируемыми в grep / PR-diff.
+
 import { validateEnv } from './env.schema';
 
 const BASE_ENV: Record<string, string> = {
@@ -7,19 +11,19 @@ const BASE_ENV: Record<string, string> = {
     LOG_LEVEL: 'info',
     POSTGRES_HOST: 'localhost',
     POSTGRES_PORT: '5433',
-    POSTGRES_USER: 'slovo',
-    POSTGRES_PASSWORD: 'pw',
-    POSTGRES_DB: 'slovo',
-    DATABASE_URL: 'postgresql://slovo:pw@localhost:5433/slovo',
+    POSTGRES_USER: 'test-only-pg-user',
+    POSTGRES_PASSWORD: 'test-only-pg-password',
+    POSTGRES_DB: 'test-only-db',
+    DATABASE_URL: 'postgresql://test-only-pg-user:test-only-pg-password@localhost:5433/test-only-db',
     REDIS_HOST: 'localhost',
     REDIS_PORT: '6380',
     RABBITMQ_HOST: 'localhost',
     RABBITMQ_PORT: '5672',
     RABBITMQ_MANAGEMENT_PORT: '15672',
-    RABBITMQ_USER: 'slovo',
-    RABBITMQ_PASSWORD: 'pw',
-    RABBITMQ_URL: 'amqp://slovo:pw@localhost:5672',
-    JWT_SECRET: 'a'.repeat(40),
+    RABBITMQ_USER: 'test-only-rmq-user',
+    RABBITMQ_PASSWORD: 'test-only-rmq-password',
+    RABBITMQ_URL: 'amqp://test-only-rmq-user:test-only-rmq-password@localhost:5672',
+    JWT_SECRET: 'test-only-jwt-secret-'.padEnd(40, 'x'),
 };
 
 describe('validateEnv', () => {
@@ -99,8 +103,8 @@ describe('validateEnv', () => {
             const parsed = validateEnv({
                 ...PROD_BASE,
                 LANGFUSE_ENABLED: 'true',
-                LANGFUSE_PUBLIC_KEY: 'pk',
-                LANGFUSE_SECRET_KEY: 'sk',
+                LANGFUSE_PUBLIC_KEY: 'test-only-langfuse-public-key',
+                LANGFUSE_SECRET_KEY: 'test-only-langfuse-secret-key',
                 LANGFUSE_HOST: 'https://langfuse.example.com',
             });
             expect(parsed.LANGFUSE_ENABLED).toBe(true);
@@ -109,9 +113,9 @@ describe('validateEnv', () => {
         it('прод с сильными секретами — проходит', () => {
             const parsed = validateEnv({
                 ...PROD_BASE,
-                JWT_SECRET: 'x'.repeat(64),
-                POSTGRES_PASSWORD: 'strong-password-x',
-                RABBITMQ_PASSWORD: 'strong-password-y',
+                JWT_SECRET: 'test-only-prod-jwt-secret-'.padEnd(64, 'x'),
+                POSTGRES_PASSWORD: 'test-only-prod-pg-password',
+                RABBITMQ_PASSWORD: 'test-only-prod-rmq-password',
             });
             expect(parsed.NODE_ENV).toBe('production');
         });

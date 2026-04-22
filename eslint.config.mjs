@@ -5,7 +5,16 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
     {
-        ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'libs/database/src/generated/**'],
+        ignores: [
+            'dist/**',
+            'node_modules/**',
+            'coverage/**',
+            'libs/database/src/generated/**',
+            // Служебные CJS-скрипты (webpack config, bootstrap-обёртки) —
+            // require() в них легальный, TS-правила неприменимы
+            '**/*.cjs',
+            'scripts/**',
+        ],
     },
     eslint.configs.recommended,
     ...tseslint.configs.recommended,
@@ -24,7 +33,18 @@ export default tseslint.config(
             '@typescript-eslint/no-unsafe-call': 'error',
             '@typescript-eslint/no-unsafe-member-access': 'error',
             '@typescript-eslint/no-unsafe-return': 'error',
-            '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+            '@typescript-eslint/no-unused-vars': [
+                'error',
+                {
+                    argsIgnorePattern: '^_',
+                    varsIgnorePattern: '^_',
+                    destructuredArrayIgnorePattern: '^_',
+                    caughtErrorsIgnorePattern: '^_',
+                    ignoreRestSiblings: true,
+                },
+            ],
+            '@typescript-eslint/no-floating-promises': 'error',
+            '@typescript-eslint/no-misused-promises': 'error',
         },
     },
 );
