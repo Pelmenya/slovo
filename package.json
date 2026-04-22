@@ -104,9 +104,25 @@
         },
         "collectCoverageFrom": [
             "apps/**/*.(t|j)s",
-            "libs/**/*.(t|j)s"
+            "libs/**/*.(t|j)s",
+            "!**/*.spec.ts",
+            "!**/*.e2e-spec.ts",
+            "!**/*.module.ts",
+            "!**/main.ts",
+            "!**/index.ts",
+            "!libs/database/src/generated/**",
+            "!**/*.dto.ts",
+            "!**/dto/index.ts"
         ],
         "coverageDirectory": "./coverage",
+        "coverageThreshold": {
+            "global": {
+                "branches": 80,
+                "functions": 80,
+                "lines": 80,
+                "statements": 80
+            }
+        },
         "testEnvironment": "node",
         "moduleNameMapper": {
             "^@slovo/common(.*)$": "<rootDir>/libs/common/src$1",
