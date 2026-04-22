@@ -186,6 +186,37 @@ export class VectorSearchService {
 
 **PostgreSQL 18 breaking:** volume монтируется в `/var/lib/postgresql` (не `/var/lib/postgresql/data`) — образ сам кладёт данные в major-version subdir. Это требование начиная с PG18 и отражено в `docker-compose.infra.yml`.
 
+### Миграции — только forward, без `down()`
+
+В отличие от TypeORM, у Prisma **нет `down()`-метода** в миграциях — это осознанный выбор команды Prisma. Причины: в реальности `down()` часто пишется лениво/неверно, в prod операции вроде `DROP COLUMN` / `ALTER TYPE` необратимы по данным, а blue/green деплой обычно не нуждается в откате SQL.
+
+**Принцип:** история миграций линейная, всегда вперёд. Если нужен откат — это **новая миграция с обратными изменениями**, применённая поверх.
+
+**Правила для slovo:**
+
+#### Dev
+
+1. **Изменил схему — запустил `prisma migrate dev --name <что>`.** Prisma генерит diff-миграцию. Применяется автоматически.
+2. **Сломал dev-БД или хочешь начать с чистого листа** — `npx prisma migrate reset` (требует подтверждение, с AI-агентом — через `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION` env). Сносит БД, применяет все миграции с нуля. Сидов пока нет.
+3. **Не редактируй уже применённую миграцию вручную** (если `_prisma_migrations` её содержит). Создавай новую с поправками. Исключение: последняя миграция, ещё не пушнутая в git, и ты в одиночку — можно `migrate reset` и переделать.
+4. **Не коммить ничего в `prisma/migrations/` без прогона `npm run prisma:migrate:dev`.** Ручные SQL-файлы в папках миграций — флаг для ревью (исключение: ручная миграция с обоснованным комментарием, см. ниже).
+
+#### Production
+
+1. **`npx prisma migrate deploy`** — единственная prod-команда. Применяет только миграции, которых нет в `_prisma_migrations`. Не интерактивная, не создаёт новые.
+2. **Откат в prod = новая revert-миграция.** Пишешь её руками (обратные изменения), ревьюишь, деплоишь как обычную миграцию. Линейная история, audit-trail, никакой магии.
+3. **Перед каждым `migrate deploy` в prod — автоматический `pg_dump`** (через CI/CD). Если миграция сломает данные — `pg_restore` из backup'а. `migrate resolve --rolled-back` только помечает миграцию откаченной в `_prisma_migrations`, но не возвращает данные.
+4. **Разрушающие операции (`DROP COLUMN`, `DROP TABLE`, `ALTER COLUMN TYPE`) требуют отдельного PR** с обсуждением. Часто безопаснее: `ADD new_column` → deploy → backfill → switch code → drop old (3 миграции).
+
+#### Ручная правка migration.sql
+
+Иногда Prisma генерит не совсем то, что нужно — например, добавление HNSW-индекса для pgvector (Prisma не умеет декларативно задавать vector-индексы). Тогда:
+
+1. `prisma migrate dev --create-only --name add_hnsw_index` — создаёт миграцию без применения.
+2. Руками дописываешь в `migration.sql`: `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops);`
+3. `prisma migrate dev` — применяет.
+4. В PR-description — **обязательно** описать что и зачем изменено вручную.
+
 ### Когда пересмотреть
 
 - Prisma добавляет нативную поддержку `vector` → убираем `Unsupported`

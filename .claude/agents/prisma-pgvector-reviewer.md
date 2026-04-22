@@ -79,12 +79,21 @@ model: opus
 - Изменения, затрагивающие несколько таблиц атомарно — обязательно в `$transaction`.
 - Interactive transactions (`$transaction(async (tx) => ...)`) — не злоупотреблять, держим короткими, без внешних HTTP/LLM вызовов внутри (иначе long-running lock).
 
-## 7. Миграции
+## 7. Миграции — forward-only (ADR-005)
 
-- `prisma migrate dev --name <имя>` — имя описывает **что** меняется (`add_users_table`, `add_hnsw_index_to_documents`), не `update` / `fix`.
-- Миграция с `DROP` / `ALTER COLUMN TYPE` — флагни как рискованное, предложи проверить на staging.
-- Ручные SQL-куски в миграциях для расширений / индексов pgvector — ожидаемо, это норма (ADR-005).
-- `prisma migrate deploy` — только для prod; в dev работает `migrate dev`.
+У Prisma нет `down()`. История линейная. Правила:
+
+- **Имя миграции описывает ЧТО меняется** — `add_users_table`, `add_hnsw_index_to_documents`, `rename_status_column`. Имена `update`, `fix`, `changes` — флаг.
+- **Правка уже применённой миграции** (той что в `_prisma_migrations`) — **критично**. Если только это не последняя миграция разработчика-одиночки, не пушнутая в `main`. Ищи признаки: изменения в файлах `prisma/migrations/YYYYMMDD_*/migration.sql` в PR-diff против `main`. Исключение: `--create-only` миграции с ручным SQL, см. ниже.
+- **Разрушающие операции** (`DROP COLUMN`, `DROP TABLE`, `ALTER COLUMN TYPE`, `RENAME COLUMN`) — флагни как **важное** минимум. Предложи трёхшаговый паттерн: `ADD new` → backfill → `DROP old` (3 отдельных миграции, каждая совместима с работающим кодом).
+- **Ручной SQL в migration.sql** — ожидаем только для pgvector-индексов (`CREATE INDEX USING hnsw ...`), сложных CTE, `ALTER INDEX` и т.п. Схема работы:
+    1. `prisma migrate dev --create-only --name <имя>` — создаёт пустой скелет миграции.
+    2. Автор дописывает SQL руками.
+    3. `prisma migrate dev` — применяет. В PR-description обязательно описано, что и почему изменено вручную.
+    Если видишь ручной SQL без описания в PR — флаг.
+- **Миграция отката** — не через редактирование старой, а **новая миграция с обратными изменениями**. Имя: `revert_<что_откатываем>`. Если в PR встречается правка/удаление файла старой миграции — критично, только если это не последняя локальная.
+- `prisma migrate deploy` — только для prod; в dev должен быть `migrate dev`.
+- **`migrate reset`** — только для dev. Если видишь скрипты/доки с `migrate reset` для prod-окружения — критично.
 
 ## 8. DTO-генератор
 

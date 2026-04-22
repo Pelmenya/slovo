@@ -126,6 +126,17 @@ prisma/schema/
 3. `npm run prisma:generate` — сгенерит клиент и DTO в `libs/database/src/generated/<feature>/`
 4. `npm run prisma:migrate:dev --name add_<feature>` — миграция
 
+### Prisma миграции — forward-only
+
+У Prisma **нет `down()`** как в TypeORM — миграции всегда применяются вперёд. Это осознанный дизайн.
+
+- **Dev:** изменил схему → `npm run prisma:migrate:dev -- --name <что>`. Сбросить БД — `npx prisma migrate reset` (сносит данные, в AI-сессии требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION`).
+- **Prod:** `npx prisma migrate deploy`. Откат = новая revert-миграция с обратными изменениями (а не правка истории). Перед деплоем — автоматический `pg_dump` в CI/CD, `pg_restore` если что.
+- **Разрушающие операции** (`DROP COLUMN`, `ALTER COLUMN TYPE`): обычно безопаснее разбить на 3 миграции (add → backfill → drop), чем делать одной.
+- **Ручной SQL** в migration.sql (нужен для HNSW-индекса pgvector, сложных CTE) — через `migrate dev --create-only`, правка файла, потом `migrate dev`. В PR обязательно описать ручную часть.
+
+Полные правила — в `docs/architecture/decisions/005-prisma-with-pgvector.md` → «Миграции — только forward».
+
 ---
 
 ## Архитектурные решения (ADR)
