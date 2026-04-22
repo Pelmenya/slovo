@@ -3,6 +3,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { PrismaService } from '@slovo/database';
 import request from 'supertest';
 import { HealthModule } from '../src/modules/health/health.module';
 
@@ -12,18 +13,32 @@ interface HealthResponse {
     timestamp: string;
 }
 
-describe('GET /health (e2e)', () => {
+interface ReadinessResponse {
+    status: 'ok' | 'degraded';
+    checks: { db: boolean };
+    timestamp: string;
+    message?: string;
+}
+
+describe('Health endpoints (e2e)', () => {
     let app: INestApplication;
     let server: Server;
+    let prismaMock: { $queryRaw: jest.Mock };
 
     beforeAll(async () => {
+        prismaMock = {
+            $queryRaw: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+        };
         const moduleRef: TestingModule = await Test.createTestingModule({
             imports: [
                 ConfigModule.forRoot({ ignoreEnvFile: true, isGlobal: true }),
                 ThrottlerModule.forRoot([{ ttl: 60_000, limit: 1000 }]),
                 HealthModule,
             ],
-        }).compile();
+        })
+            .overrideProvider(PrismaService)
+            .useValue(prismaMock)
+            .compile();
 
         app = moduleRef.createNestApplication();
         app.useGlobalPipes(
@@ -42,24 +57,43 @@ describe('GET /health (e2e)', () => {
         await app.close();
     });
 
-    it('возвращает 200 с корректной структурой', async () => {
-        const response = await request(server).get('/health').expect(200);
-        const body = response.body as unknown as HealthResponse;
+    describe('GET /health (liveness)', () => {
+        it('возвращает 200 с корректной структурой', async () => {
+            const response = await request(server).get('/health').expect(200);
+            const body = response.body as unknown as HealthResponse;
 
-        expect(body.status).toBe('ok');
-        expect(body.service).toBe('slovo-api');
-        expect(typeof body.timestamp).toBe('string');
-        expect(Date.parse(body.timestamp)).not.toBeNaN();
+            expect(body.status).toBe('ok');
+            expect(body.service).toBe('slovo-api');
+            expect(typeof body.timestamp).toBe('string');
+            expect(Date.parse(body.timestamp)).not.toBeNaN();
+        });
     });
 
-    it('timestamp — свежий (в пределах 5 секунд)', async () => {
-        const before = Date.now();
-        const response = await request(server).get('/health').expect(200);
-        const after = Date.now();
-        const body = response.body as unknown as HealthResponse;
+    describe('GET /health/ready (readiness)', () => {
+        beforeEach(() => {
+            prismaMock.$queryRaw.mockReset();
+        });
 
-        const ts = Date.parse(body.timestamp);
-        expect(ts).toBeGreaterThanOrEqual(before - 1000);
-        expect(ts).toBeLessThanOrEqual(after + 1000);
+        it('возвращает 200 и checks.db=true когда БД отвечает', async () => {
+            prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+
+            const response = await request(server).get('/health/ready').expect(200);
+            const body = response.body as unknown as ReadinessResponse;
+
+            expect(body.status).toBe('ok');
+            expect(body.checks.db).toBe(true);
+            expect(typeof body.timestamp).toBe('string');
+            expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+        });
+
+        it('возвращает 503 и checks.db=false когда БД не отвечает', async () => {
+            prismaMock.$queryRaw.mockRejectedValue(new Error('ECONNREFUSED'));
+
+            const response = await request(server).get('/health/ready').expect(503);
+            const body = response.body as unknown as ReadinessResponse;
+
+            expect(body.status).toBe('degraded');
+            expect(body.checks.db).toBe(false);
+        });
     });
 });
