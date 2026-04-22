@@ -1,0 +1,14 @@
+{
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": "../../..",
+    "testEnvironment": "node",
+    "testRegex": "apps/api/test/.*\\.e2e-spec\\.ts$",
+    "transform": {
+        "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "<rootDir>/apps/api/test/tsconfig.json" }]
+    },
+    "moduleNameMapper": {
+        "^@slovo/common(.*)$": "<rootDir>/libs/common/src$1",
+        "^@slovo/database(.*)$": "<rootDir>/libs/database/src$1",
+        "^@slovo/llm(.*)$": "<rootDir>/libs/llm/src$1"
+    }
+}

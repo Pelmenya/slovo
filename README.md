@@ -2,7 +2,7 @@
 
 AI-платформа на NestJS для быстрого прототипирования LLM-фич и их эволюции в production-сервисы.
 
-**Стек:** Node 24 LTS + NestJS 11 + Prisma 7 + PostgreSQL 17 (pgvector) + Valkey 8 + RabbitMQ 4 + Flowise 3 + Langfuse + Claude.
+**Стек:** Node 24 LTS + NestJS 11 + Prisma 7 + PostgreSQL 18 (pgvector) + Valkey 9 + RabbitMQ 4 + Flowise 3 + Langfuse + Claude.
 
 ---
 
