@@ -1,7 +1,5 @@
-// Prisma schema — Slovo AI Platform
-//
-// Документация:
-//   https://www.prisma.io/docs
+// Главный файл схемы — generators + datasource.
+// Доменные модели живут в соседних файлах (user.prisma, water-analysis.prisma и т.д.).
 //
 // После изменений:
 //   npm run prisma:generate              — обновить клиент
@@ -14,7 +12,7 @@ generator client {
 
 generator nestjsDto {
     provider                        = "prisma-generator-nestjs-dto"
-    output                          = "../libs/database/src/generated"
+    output                          = "../../libs/database/src/generated"
     outputToNestJsResourceStructure = "true"
     classValidation                 = "true"
     noDependencies                  = "false"
@@ -31,27 +29,4 @@ generator nestjsDto {
 datasource db {
     provider   = "postgresql"
     extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp"), pgcrypto]
-}
-
-// =============================================================================
-// Базовая модель для тестирования окружения
-// Далее будут доменные модели (water-analysis, notes-rag и т.д.)
-// =============================================================================
-
-model HealthCheck {
-    id        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-    service   String            @db.VarChar(64)
-    status    HealthCheckStatus
-    createdAt DateTime          @default(now()) @map("created_at")
-
-    @@index([service, createdAt])
-    @@map("health_checks")
-}
-
-enum HealthCheckStatus {
-    ok
-    degraded
-    down
-
-    @@map("health_check_status")
 }

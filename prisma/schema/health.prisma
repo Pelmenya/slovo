@@ -1,0 +1,19 @@
+// Health-check события — append-only лог для мониторинга здоровья сервисов.
+
+model HealthCheck {
+    id        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    service   String            @db.VarChar(64)
+    status    HealthCheckStatus
+    createdAt DateTime          @default(now()) @map("created_at")
+
+    @@index([service, createdAt])
+    @@map("health_checks")
+}
+
+enum HealthCheckStatus {
+    ok
+    degraded
+    down
+
+    @@map("health_check_status")
+}

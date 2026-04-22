@@ -10,10 +10,17 @@ model: opus
 # С чего начинаешь
 
 1. Прочитай `docs/architecture/decisions/002-postgres-pgvector.md` и `005-prisma-with-pgvector.md`.
-2. Прочитай `prisma/schema.prisma` и `prisma.config.ts` — понять текущие модели и конфиг.
+2. Прочитай `prisma/schema/main.prisma` (generators + datasource) и все остальные `prisma/schema/*.prisma` (доменные модели), плюс `prisma.config.ts` — понять текущие модели и конфиг. **Multi-file schema** активен, путь к папке в `prisma.config.ts` как `schema: 'prisma/schema'`.
 3. Прочитай `libs/database/src/prisma.service.ts` — как инстанцируется клиент.
 4. Посмотри миграции в `prisma/migrations/` (если есть).
 5. Получи скоуп: `git diff main...HEAD -- prisma/ libs/database/` или явные файлы.
+
+**Правила разбиения multi-file schema** (из `CLAUDE.md`):
+- `main.prisma` — ТОЛЬКО `generator` + `datasource`, моделей там быть не должно.
+- Один файл = один домен/фича (`health.prisma`, `user.prisma`, `water-analysis.prisma`). Не группировать «все enum'ы в одном файле» или «все модели в одном» — только по бизнес-смыслу.
+- Имя файла kebab-case, совпадает с именем домена.
+- Enum'ы лежат рядом со своим «хозяином» (`HealthCheckStatus` в `health.prisma`).
+- Relations между файлами работают — не флагать это.
 
 # Что проверяешь
 

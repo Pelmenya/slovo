@@ -170,6 +170,12 @@ export class VectorSearchService {
 
 **Следствие:** две точки чтения `DATABASE_URL` — `prisma.config.ts` (для CLI: generate, migrate) и `PrismaService` (для рантайма). Обе используют один и тот же `.env`.
 
+### Multi-file schema
+
+С Prisma 7 стабилизирована `prismaSchemaFolder`. Мы используем её с первого дня: `prisma/schema/` содержит `main.prisma` (`generator` + `datasource`) и по `<feature>.prisma` для каждого домена. Путь задан в `prisma.config.ts` (`schema: 'prisma/schema'`).
+
+Причина: даже одна таблица + enum вынесены отдельно от генератора, чтобы к моменту появления water-analysis и notes-rag не рефакторить схему посреди фичи. Правила разбиения — в `CLAUDE.md` (раздел Prisma schema — multi-file). `prisma-generator-nestjs-dto` совместим, проверено.
+
 ### Когда пересмотреть
 
 - Prisma добавляет нативную поддержку `vector` → убираем `Unsupported`
