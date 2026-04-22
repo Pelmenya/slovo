@@ -1,0 +1,45 @@
+# =============================================================================
+# Dev UIs — опциональные инструменты для разработки
+# =============================================================================
+# Запуск:  docker compose -f docker-compose.tools.yml up -d
+#
+# После запуска:
+#   - pgAdmin:         http://localhost:5050
+#   - Redis Commander: http://localhost:8081
+#   - RabbitMQ UI:     http://localhost:15672  (встроен в RabbitMQ)
+#   - Flowise UI:      http://localhost:3000   (встроен во Flowise)
+
+services:
+    pgadmin:
+        image: dpage/pgadmin4:9.14.0
+        container_name: slovo-pgadmin
+        restart: unless-stopped
+        ports:
+            - "${PGADMIN_PORT:-5050}:80"
+        environment:
+            PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+            PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+            PGADMIN_CONFIG_SERVER_MODE: "False"
+        volumes:
+            - pgadmin_data:/var/lib/pgadmin
+        networks:
+            - slovo-network
+
+    redis-commander:
+        image: ghcr.io/joeferner/redis-commander:latest
+        container_name: slovo-redis-commander
+        restart: unless-stopped
+        ports:
+            - "${REDIS_COMMANDER_PORT:-8081}:8081"
+        environment:
+            REDIS_HOSTS: local:valkey:6379
+        networks:
+            - slovo-network
+
+volumes:
+    pgadmin_data:
+
+networks:
+    slovo-network:
+        external: true
+        name: slovo-network

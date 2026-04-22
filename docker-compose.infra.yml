@@ -1,0 +1,87 @@
+# =============================================================================
+# Core infrastructure — базы, очереди, оркестратор
+# =============================================================================
+# Запуск:  docker compose -f docker-compose.infra.yml up -d
+# Стоп:    docker compose -f docker-compose.infra.yml down
+# С данными: docker compose -f docker-compose.infra.yml down -v  (сносит volumes)
+
+services:
+    postgres:
+        image: pgvector/pgvector:0.8.2-pg17-trixie
+        container_name: slovo-postgres
+        restart: unless-stopped
+        ports:
+            - "${POSTGRES_PORT:-5432}:5432"
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            POSTGRES_DB: ${POSTGRES_DB}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+            - ./prisma/init:/docker-entrypoint-initdb.d:ro
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - slovo-network
+
+    valkey:
+        image: valkey/valkey:8-alpine
+        container_name: slovo-valkey
+        restart: unless-stopped
+        ports:
+            - "${REDIS_PORT:-6379}:6379"
+        command: valkey-server --appendonly yes
+        volumes:
+            - valkey_data:/data
+        healthcheck:
+            test: ["CMD", "valkey-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - slovo-network
+
+    rabbitmq:
+        image: rabbitmq:4.2.5-management-alpine
+        container_name: slovo-rabbitmq
+        restart: unless-stopped
+        ports:
+            - "${RABBITMQ_PORT:-5672}:5672"
+            - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+        volumes:
+            - rabbitmq_data:/var/lib/rabbitmq
+        healthcheck:
+            test: ["CMD", "rabbitmq-diagnostics", "ping"]
+            interval: 30s
+            timeout: 10s
+            retries: 5
+        networks:
+            - slovo-network
+
+    flowise:
+        image: flowiseai/flowise:3.1.2
+        container_name: slovo-flowise
+        restart: unless-stopped
+        ports:
+            - "${FLOWISE_PORT:-3000}:3000"
+        volumes:
+            - flowise_data:/root/.flowise
+        networks:
+            - slovo-network
+
+volumes:
+    postgres_data:
+    valkey_data:
+    rabbitmq_data:
+    flowise_data:
+
+networks:
+    slovo-network:
+        driver: bridge
+        name: slovo-network
