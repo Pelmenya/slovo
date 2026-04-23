@@ -1,7 +1,7 @@
 # ADR-006: Knowledge Base как первая фича и core capability
 
 ## Статус
-🟡 В обсуждении — 2026-04-22
+✅ Принято — 2026-04-23 (финализировано после экспериментов A, B, C в Flowise 3.1.2 + чтения исходника)
 
 ## Контекст
 
@@ -36,13 +36,73 @@
 ```
 libs/storage/       — S3/MinIO абстракция
 libs/ingest/        — ISourceAdapter + реализации (text, video через Groq Whisper, ...)
-libs/knowledge/     — IEmbedder, IChunker, IRetriever (pgvector через $queryRaw)
-libs/llm/           — абстракция LLM (ADR-004, Claude primary)
+libs/llm/           — тонкий HTTP-клиент к Flowise Prediction API (ADR-004)
 
 apps/api/src/modules/knowledge/   — REST API для ingestion + search + ask
 apps/worker/src/modules/ingest/   — RMQ consumer для async адаптеров (video/audio)
-apps/api/src/modules/<feature>/   — domain-фичи (обёртки над knowledge + llm)
+apps/api/src/modules/<feature>/   — domain-фичи (обёртки над knowledge + flowise chatflow)
 ```
+
+**Note:** `libs/knowledge/` (с embedder/chunker/retriever руками через `$queryRaw`) **исчез из плана** по результатам эксперимента C. Вся ingestion-в-pgvector логика + retrieval делегируется **Flowise Postgres vector store ноде** и **Flowise Vector Upsert API**. См. «Дизайн таблиц» ниже.
+
+### Дизайн таблиц — две таблицы (2026-04-23)
+
+По результатам эксперимента C (чтение исходника `packages/components/nodes/vectorstores/Postgres/driver/TypeORM.ts`):
+
+**Flowise Postgres vector store** создаёт таблицу с фиксированной схемой:
+
+```sql
+CREATE TABLE IF NOT EXISTS ${tablename} (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    "pageContent" text,
+    metadata jsonb,
+    embedding vector
+);
+```
+
+Попытка Prisma-миграцией создать таблицу `knowledge_chunks` с нашими колонками (`sourceId`, `text`, `position`, `createdAt`) привела бы к конфликту при первом upsert из Flowise (Flowise пытается INSERT в `pageContent`/`metadata`/`embedding`, которых у нас нет).
+
+**Решение — разделить ownership:**
+
+| Таблица | Кто владеет | Схема | Назначение |
+|---|---|---|---|
+| `knowledge_sources` | **Prisma** | id, userId, sourceType, status, progress, title, storageKey, metadata, createdAt, updatedAt | CRUD метаданных источников. Реестр всех загруженных материалов пользователя. |
+| `knowledge_chunks` | **Flowise** | id, pageContent, metadata (jsonb), embedding (vector) | Фрагменты с эмбеддингами для retrieval. Flowise создаёт при первом upsert, сам управляет. |
+
+**Связь между ними** — через `metadata.source_id` в chunks (app-level FK, не database constraint).
+
+**Multi-tenant isolation** — через `metadata.user_id` в chunks + **pgMetadataFilter** в Flowise Postgres ноде:
+```json
+{ "user_id": "${req.user.id}" }
+```
+Это транслируется Flowise в `WHERE metadata @> '{"user_id":"..."}'::jsonb` — SQL-уровень, никакой утечки.
+
+**HNSW индекс** — отдельная Prisma миграция через `--create-only` (после первого upsert Flowise таблица существует, индекс уже можно создавать):
+
+```sql
+-- prisma/migrations/YYYYMMDD_add_hnsw_index/migration.sql
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding_hnsw
+ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_metadata
+ON knowledge_chunks USING gin (metadata);
+```
+
+**Cleanup при удалении source** — NestJS-хук:
+```typescript
+async deleteSource(sourceId: string) {
+    await this.prisma.knowledgeSource.delete({ where: { id: sourceId } });
+    await this.flowiseClient.deleteVectorsByMetadata(chatflowId, {
+        source_id: sourceId,
+    });
+}
+```
+
+### Почему не VIEW и не переименование колонок Prisma
+
+- **VIEW** — Flowise `CREATE TABLE IF NOT EXISTS` не поймёт существующий VIEW как таблицу. Плюс INSERT через VIEW требует INSTEAD OF триггеров — overhead.
+- **Переименовать колонки в Prisma** (`pageContent` вместо `text`) — работает, но Prisma-схема становится неестественной (camelCase в SQL, отсутствие FK на source) — больше путаницы чем выгоды.
+- **Две таблицы** — чистое разделение, минимум связанности.
 
 ## Альтернативы
 

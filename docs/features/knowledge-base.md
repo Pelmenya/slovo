@@ -45,51 +45,51 @@
 
 ## 3. Архитектура
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    apps/api/src/modules/                     │
-│  ┌─────────────────┐ ┌─────────────────┐ ┌──────────────┐  │
-│  │  knowledge/     │ │ seo-generator/  │ │  water-      │  │
-│  │  (ingestion +   │ │ (тонкая domain- │ │  analysis/   │  │
-│  │  retrieval API) │ │  обёртка)       │ │              │  │
-│  └────────┬────────┘ └────────┬────────┘ └──────┬───────┘  │
-│           └──────────┬────────┴──────────┬──────┘          │
-└──────────────────────┼───────────────────┼─────────────────┘
-                       ↓                   ↓
-        ┌──────────────────────────┐  ┌─────────────┐
-        │   libs/knowledge/        │  │  libs/llm/  │
-        │  ┌──────────────────┐    │  │             │
-        │  │ IEmbedder        │    │  │ Claude      │
-        │  │ ├─ OpenAI impl   │    │  │ provider    │
-        │  │ └─ Cohere impl   │    │  │             │
-        │  │ IRetriever       │    │  └─────────────┘
-        │  │ └─ pgvector impl │    │
-        │  │ Chunker          │    │
-        │  │ (sentence/token) │    │
-        │  └──────────────────┘    │
-        └──────────────────────────┘
-                       ↑
-        ┌──────────────────────────────┐
-        │   libs/ingest/               │
-        │  ┌──────────────────────┐    │
-        │  │ ISourceAdapter       │    │
-        │  │ ├─ TextAdapter       │ ← Фаза 1 MVP
-        │  │ ├─ VideoAdapter      │ ← Фаза 2
-        │  │ │  └─ GroqWhisper    │
-        │  │ │     + FFmpeg       │
-        │  │ ├─ AudioAdapter      │ ← Фаза 2
-        │  │ ├─ PdfAdapter        │ ← Фаза 3
-        │  │ ├─ DocxAdapter       │ ← Фаза 3
-        │  │ ├─ YoutubeURL        │ ← Фаза 4
-        │  │ └─ WebArticle        │ ← Фаза 4
-        │  └──────────────────────┘    │
-        └──────────────────────────────┘
-                       ↑
-        ┌──────────────────────────────┐
-        │   libs/storage/              │
-        │  (S3/MinIO абстракция)       │
-        │  Нужен для video/audio/pdf   │
-        └──────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph apps["apps/api/src/modules/"]
+        knowledge["knowledge/<br/>ingestion + retrieval API"]
+        seo["seo-generator/<br/>domain-обёртка"]
+        water["water-analysis/<br/>domain-обёртка"]
+    end
+
+    subgraph libs_ingest["libs/ingest/ — ISourceAdapter"]
+        text_adapter["TextAdapter<br/>(Фаза 1)"]
+        video_adapter["VideoAdapter<br/>GroqWhisper + FFmpeg<br/>(Фаза 2)"]
+        audio_adapter["AudioAdapter<br/>(Фаза 2)"]
+        pdf_adapter["PdfAdapter<br/>(Фаза 3)"]
+        yt_adapter["YoutubeURL<br/>(Фаза 4)"]
+        web_adapter["WebArticle<br/>(Фаза 4)"]
+    end
+
+    storage["libs/storage/<br/>S3/MinIO"]
+    llm["libs/llm/<br/>HTTP-клиент Flowise"]
+
+    subgraph flowise["Flowise 3.1.2 (chatflow)"]
+        pg_node["Postgres vector node"]
+        claude_node["ChatAnthropic (Claude)"]
+        memory["Memory<br/>sessionId=userId"]
+        langfuse["Langfuse tracing"]
+    end
+
+    subgraph postgres["slovo-postgres (pgvector)"]
+        k_sources["knowledge_sources<br/>(Prisma-managed)<br/>метаданные + CRUD"]
+        k_chunks["knowledge_chunks<br/>(Flowise-managed, TypeORM)<br/>id, pageContent, metadata, embedding"]
+    end
+
+    knowledge --> libs_ingest
+    knowledge --> llm
+    seo --> llm
+    water --> llm
+
+    video_adapter --> storage
+    audio_adapter --> storage
+    pdf_adapter --> storage
+
+    libs_ingest -->|"POST /api/v1/vector/upsert"| flowise
+    llm -->|"POST /api/v1/prediction"| flowise
+    flowise -->|SQL| k_chunks
+    knowledge -->|Prisma| k_sources
 ```
 
 **Разделение ответственности:**
@@ -124,7 +124,8 @@ model KnowledgeSource {
     extractedText String?              @db.Text  // унифицированный результат после адаптера
     metadata     Json?                 // свободная дополнительная информация
     error        String?               @db.Text
-    chunks       KnowledgeChunk[]
+    // chunks НЕ relation — они в отдельной Flowise-managed таблице knowledge_chunks,
+    // связь через metadata.source_id (app-level, без DB FK). См. ADR-006.
     createdAt    DateTime              @default(now()) @map("created_at")
     updatedAt    DateTime              @updatedAt @map("updated_at")
     startedAt    DateTime?             @map("started_at")
@@ -135,20 +136,30 @@ model KnowledgeSource {
     @@map("knowledge_sources")
 }
 
-model KnowledgeChunk {
-    id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-    sourceId   String          @db.Uuid
-    source     KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-    position   Int             // порядковый номер chunk в source
-    text       String          @db.Text
-    embedding  Unsupported("vector(1536)")?  // text-embedding-3-small default, меняется на уровне миграции
-    tokens     Int?            // для контроля размера
-    metadata   Json?           // timestamps для видео, страница для PDF, т.п.
-    createdAt  DateTime        @default(now()) @map("created_at")
-
-    @@index([sourceId, position])
-    @@map("knowledge_chunks")
-}
+// ВАЖНО (2026-04-23 — обновлено после эксперимента C):
+// Таблица knowledge_chunks НЕ моделируется в Prisma.
+// Её создаёт и управляет Flowise Postgres vector store node (TypeORM driver).
+//
+// Схема Flowise (фиксированная):
+//   CREATE TABLE knowledge_chunks (
+//     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+//     "pageContent" text,
+//     metadata jsonb,
+//     embedding vector
+//   );
+//
+// В metadata кладём:
+//   - source_id  — связь с knowledge_sources (app-level FK)
+//   - user_id    — для multi-tenant pgMetadataFilter
+//   - position   — порядковый номер chunk внутри source
+//   - chunk_specific (timestamps для видео, страницы для PDF)
+//
+// HNSW индекс — отдельная Prisma миграция --create-only после первого upsert.
+// Multi-tenant isolation — pgMetadataFilter в Flowise retriever: {"user_id": "..."}.
+// Cleanup при удалении source — NestJS-хук делает DELETE chunks по metadata.source_id.
+//
+// См. полный дизайн в ADR-006, раздел «Дизайн таблиц», и
+// docs/guides/flowise-vs-nestjs.md раздел «C. Postgres vector store».
 
 enum KnowledgeSourceType {
     text       // TEXT — прямой ввод, без экстракции
