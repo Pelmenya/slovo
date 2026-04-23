@@ -60,6 +60,20 @@ export const envSchema = z
         EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
         EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
 
+        // S3 / MinIO — хранилище сырых источников knowledge base.
+        // В dev — MinIO через docker-compose (endpoint http://localhost:9010, force_path_style=true).
+        // В prod — AWS S3 или совместимый (endpoint можно оставить пустым, SDK использует регион).
+        S3_ENDPOINT: z.string().optional().default(''),
+        S3_REGION: z.string().min(1).default('us-east-1'),
+        S3_ACCESS_KEY: z.string().min(1),
+        S3_SECRET_KEY: z.string().min(1),
+        S3_BUCKET: z.string().min(1),
+        S3_FORCE_PATH_STYLE: booleanFromString.default(true),
+        MINIO_PORT: portFromString.default(9010),
+        MINIO_CONSOLE_PORT: portFromString.default(9011),
+        MINIO_ROOT_USER: z.string().min(1).default('minioadmin'),
+        MINIO_ROOT_PASSWORD: z.string().min(1),
+
         JWT_SECRET: z.string().min(1),
         JWT_EXPIRES_IN: z.string().default('7d'),
 
@@ -75,6 +89,9 @@ export const envSchema = z
             ['POSTGRES_PASSWORD', 'slovo_dev_password_change_me'],
             ['RABBITMQ_PASSWORD', 'slovo_dev_password_change_me'],
             ['LANGFUSE_POSTGRES_PASSWORD', 'langfuse_dev_password_change_me'],
+            ['MINIO_ROOT_PASSWORD', 'slovo_dev_minio_password_change_me'],
+            ['S3_SECRET_KEY', 'slovo_dev_minio_password_change_me'],
+            ['S3_ACCESS_KEY', 'minioadmin'],
         ];
         for (const [key, placeholder] of weakDefaults) {
             if (env[key] === placeholder) {

@@ -69,6 +69,42 @@ services:
         networks:
             - slovo-network
 
+    minio:
+        # Community-релизы MinIO на Docker Hub заморожены на 2025-09-07 (с октября 2025
+        # MinIO перенесли hotfix-pipeline на quay.io/minio/minio и в release notes пишут
+        # «clone the source and build the container»). В release 2025-10-15 — CVE на
+        # Privilege Escalation via Session Policy Bypass в STS/service accounts.
+        # Для slovo это не проблема: dev-only на 127.0.0.1, один root user, STS не используем.
+        # В проде MinIO вообще уйдёт — там AWS S3 или managed S3-совместимый.
+        #
+        # Образ pin'нется по digest manifest-list (multi-arch): даже если MinIO удалят
+        # тег с Docker Hub, digest однозначно резолвится по любому mirror / локальному
+        # кэшу. Комментарий с тегом оставлен для читаемости.
+        # Обновлять digest: curl https://hub.docker.com/v2/repositories/minio/minio/tags/<TAG>
+        image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e  # RELEASE.2025-09-07T16-13-09Z
+        container_name: slovo-minio
+        restart: unless-stopped
+        ports:
+            # S3 API и console — на 127.0.0.1, наружу не торчат.
+            # Порты 9010/9011 (не 9000/9001) — чтобы не конфликтовать с чужими
+            # локальными MinIO других проектов.
+            - "127.0.0.1:${MINIO_PORT:-9010}:9000"
+            - "127.0.0.1:${MINIO_CONSOLE_PORT:-9011}:9001"
+        environment:
+            MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+            MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+        command: server /data --console-address ":9001"
+        volumes:
+            - minio_data:/data
+        healthcheck:
+            # /minio/health/live — liveness, /ready — readiness. live достаточно.
+            test: ["CMD-SHELL", "mc ready local || curl -sf http://localhost:9000/minio/health/live"]
+            interval: 15s
+            timeout: 5s
+            retries: 5
+        networks:
+            - slovo-network
+
     flowise:
         image: flowiseai/flowise:3.1.2
         container_name: slovo-flowise
@@ -81,7 +117,7 @@ services:
             # Docker на Windows/Mac резолвит host.docker.internal в IP хоста.
             HTTP_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
             HTTPS_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
-            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,slovo-langfuse,slovo-langfuse-postgres,postgres,valkey,rabbitmq,langfuse,langfuse-postgres,flowise
+            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,slovo-langfuse,slovo-langfuse-postgres,slovo-minio,postgres,valkey,rabbitmq,langfuse,langfuse-postgres,flowise,minio
             # Node.js fetch (undici) не читает HTTP_PROXY автоматически —
             # preload-скрипт monkey-patch'ит глобальный dispatcher на ProxyAgent.
             NODE_OPTIONS: --require /scripts/flowise-proxy-bootstrap.cjs
@@ -103,6 +139,7 @@ volumes:
     valkey_data:
     rabbitmq_data:
     flowise_data:
+    minio_data:
 
 networks:
     slovo-network:

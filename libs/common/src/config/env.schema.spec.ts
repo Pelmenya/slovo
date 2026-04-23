@@ -24,6 +24,10 @@ const BASE_ENV: Record<string, string> = {
     RABBITMQ_PASSWORD: 'test-only-rmq-password',
     RABBITMQ_URL: 'amqp://test-only-rmq-user:test-only-rmq-password@localhost:5672',
     JWT_SECRET: 'test-only-jwt-secret-'.padEnd(40, 'x'),
+    S3_ACCESS_KEY: 'test-only-s3-access',
+    S3_SECRET_KEY: 'test-only-s3-secret',
+    S3_BUCKET: 'test-only-bucket',
+    MINIO_ROOT_PASSWORD: 'test-only-minio-root-password',
 };
 
 describe('validateEnv', () => {
@@ -40,6 +44,26 @@ describe('validateEnv', () => {
         expect(parsed.ANTHROPIC_FAST_MODEL).toBe('claude-haiku-4-5');
         expect(parsed.EMBEDDING_DIMENSIONS).toBe(1536);
         expect(parsed.LANGFUSE_ENABLED).toBe(false);
+    });
+
+    it('применяет S3/MinIO дефолты', () => {
+        const parsed = validateEnv(BASE_ENV);
+        expect(parsed.S3_REGION).toBe('us-east-1');
+        expect(parsed.S3_ENDPOINT).toBe('');
+        expect(parsed.S3_FORCE_PATH_STYLE).toBe(true);
+        expect(parsed.MINIO_PORT).toBe(9010);
+        expect(parsed.MINIO_CONSOLE_PORT).toBe(9011);
+        expect(parsed.MINIO_ROOT_USER).toBe('minioadmin');
+    });
+
+    it('падает если S3_BUCKET отсутствует', () => {
+        const { S3_BUCKET: _, ...noBucket } = BASE_ENV;
+        expect(() => validateEnv(noBucket)).toThrow(/S3_BUCKET/);
+    });
+
+    it('падает если MINIO_ROOT_PASSWORD отсутствует', () => {
+        const { MINIO_ROOT_PASSWORD: _, ...noPwd } = BASE_ENV;
+        expect(() => validateEnv(noPwd)).toThrow(/MINIO_ROOT_PASSWORD/);
     });
 
     it('кастит строки с числами в числа', () => {
@@ -108,6 +132,33 @@ describe('validateEnv', () => {
                 LANGFUSE_HOST: 'https://langfuse.example.com',
             });
             expect(parsed.LANGFUSE_ENABLED).toBe(true);
+        });
+
+        it('падает если S3_ACCESS_KEY = dev-дефолт minioadmin', () => {
+            expect(() =>
+                validateEnv({
+                    ...PROD_BASE,
+                    S3_ACCESS_KEY: 'minioadmin',
+                }),
+            ).toThrow(/S3_ACCESS_KEY/);
+        });
+
+        it('падает если S3_SECRET_KEY = dev-дефолт', () => {
+            expect(() =>
+                validateEnv({
+                    ...PROD_BASE,
+                    S3_SECRET_KEY: 'slovo_dev_minio_password_change_me',
+                }),
+            ).toThrow(/S3_SECRET_KEY/);
+        });
+
+        it('падает если MINIO_ROOT_PASSWORD = dev-дефолт', () => {
+            expect(() =>
+                validateEnv({
+                    ...PROD_BASE,
+                    MINIO_ROOT_PASSWORD: 'slovo_dev_minio_password_change_me',
+                }),
+            ).toThrow(/MINIO_ROOT_PASSWORD/);
         });
 
         it('прод с сильными секретами — проходит', () => {
