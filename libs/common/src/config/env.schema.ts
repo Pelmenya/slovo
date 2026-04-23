@@ -33,11 +33,11 @@ export const envSchema = z
         RABBITMQ_URL: z.string().regex(/^amqp:\/\/.+/, 'RABBITMQ_URL должен начинаться с amqp://'),
 
         FLOWISE_PORT: portFromString.default(3130),
-        FLOWISE_API_URL: z.string().url().optional(),
+        FLOWISE_API_URL: z.url().optional(),
 
         LANGFUSE_ENABLED: booleanFromString.default(false),
         LANGFUSE_PORT: portFromString.default(3100),
-        LANGFUSE_HOST: z.string().url().optional(),
+        LANGFUSE_HOST: z.url().optional(),
         LANGFUSE_PUBLIC_KEY: z.string().optional().default(''),
         LANGFUSE_SECRET_KEY: z.string().optional().default(''),
         LANGFUSE_POSTGRES_PORT: portFromString.default(5434),
@@ -49,7 +49,7 @@ export const envSchema = z
         LANGFUSE_ENCRYPTION_KEY: z.string().optional().default(''),
 
         PGADMIN_PORT: portFromString.default(5050),
-        PGADMIN_DEFAULT_EMAIL: z.string().email().optional(),
+        PGADMIN_DEFAULT_EMAIL: z.email().optional(),
         PGADMIN_DEFAULT_PASSWORD: z.string().optional(),
         REDIS_COMMANDER_PORT: portFromString.default(8081),
 

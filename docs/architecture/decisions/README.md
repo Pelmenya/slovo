@@ -32,3 +32,4 @@
 | [003](003-rabbitmq-vs-bullmq.md) | RabbitMQ для асинхронных задач | ✅ Принято |
 | [004](004-claude-as-primary-llm.md) | Claude как основная LLM | ✅ Принято |
 | [005](005-prisma-with-pgvector.md) | Prisma + raw queries для векторов | ✅ Принято |
+| [006](006-knowledge-base-as-first-feature.md) | Knowledge Base как первая фича и core capability | 🟡 В обсуждении |

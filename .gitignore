@@ -22,6 +22,11 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Скриншоты в корне (обычно попадают случайно при отладке, могут содержать PII)
+/*.png
+/*.jpg
+/*.jpeg
+
 # Prisma
 prisma/migrations/dev.db*
 # libs/database/src/generated/ — DTO-генератор prisma-generator-nestjs-dto.

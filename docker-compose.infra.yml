@@ -75,8 +75,23 @@ services:
         restart: unless-stopped
         ports:
             - "127.0.0.1:${FLOWISE_PORT:-3130}:3000"
+        environment:
+            # Прокидываем системный HTTP-прокси хоста (10810) в контейнер,
+            # чтобы outbound-запросы к Anthropic/OpenAI/Groq шли через VPN.
+            # Docker на Windows/Mac резолвит host.docker.internal в IP хоста.
+            HTTP_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
+            HTTPS_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
+            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,slovo-langfuse,slovo-langfuse-postgres,postgres,valkey,rabbitmq,langfuse,langfuse-postgres,flowise
+            # Node.js fetch (undici) не читает HTTP_PROXY автоматически —
+            # preload-скрипт monkey-patch'ит глобальный dispatcher на ProxyAgent.
+            NODE_OPTIONS: --require /scripts/flowise-proxy-bootstrap.cjs
+        extra_hosts:
+            # Для Linux host.docker.internal не работает из коробки;
+            # на Windows/Mac Docker Desktop резолвит сам, эта строка игнорируется.
+            - "host.docker.internal:host-gateway"
         volumes:
             - flowise_data:/root/.flowise
+            - ./docker/flowise-proxy-bootstrap.cjs:/scripts/flowise-proxy-bootstrap.cjs:ro
         networks:
             - slovo-network
 

@@ -31,9 +31,10 @@
 
 **Первые фичи в roadmap:**
 
-1. **water-analysis** — анализ лабораторных результатов воды через Claude Vision, подбор оборудования (эволюция из CRM Aqua)
-2. **notes-rag** — "спроси у моих заметок", RAG над личными документами
-3. **multi-tenant** — пользователи, JWT, биллинг (шаг к SaaS)
+1. **knowledge-base** — первая и основная фича (ADR-006): загрузить свои источники (видео/текст/PDF) → chunks + embeddings в pgvector → поиск и Q&A по ним. Она же — core capability для всех следующих domain-фич. План: `docs/features/knowledge-base.md`. Транскрибация видео через Groq Whisper — один из ingestion-адаптеров, не отдельная фича.
+2. **notes-rag** — Q&A endpoint поверх knowledge base, первая demo domain-фича (Phase 3 плана knowledge-base).
+3. **water-analysis** — анализ лабораторных результатов воды через Claude Vision + методология лаборатории из knowledge base. Domain-фича поверх готового слоя.
+4. **multi-tenant** — пользователи, JWT, биллинг (шаг к SaaS). Параллельно с первыми фичами, для каждой закладываем `userId` в модели с нуля.
 
 ---
 
@@ -148,12 +149,19 @@ prisma/schema/
 3. **ADR-003** — RabbitMQ (не BullMQ)
 4. **ADR-004** — Claude как primary LLM (абстракция под OpenAI/Ollama)
 5. **ADR-005** — Prisma + raw queries для pgvector
+6. **ADR-006** — Knowledge Base как первая фича и core capability (🟡 в обсуждении)
 
 При любом пересмотре — создать новый ADR, старый пометить `Устарело` или `Заменено на ADR-XXX`.
 
 ### Технический долг
 
 `docs/architecture/tech-debt.md` — список отложенных hardening-задач (валидация env в prod, pino redact, throttle auth/LLM, pool tuning, Swagger в prod и т.д.). Перед PR в соответствующие зоны — сверяться со списком.
+
+### Flowise vs NestJS — что делаем где
+
+Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Роль: **prompt playground** (эксперименты с промптами и retrieval-стратегиями), **не runtime**. Финальные промпты экспортируются в `libs/knowledge/prompts/*.ts` или JSON + template, исполняются через NestJS + `libs/llm/` с Claude и prompt caching.
+
+Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал разработчика — `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` (5 уровней).
 
 ---
 
