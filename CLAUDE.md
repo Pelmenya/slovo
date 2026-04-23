@@ -46,6 +46,9 @@
 - ESLint + Prettier с конфигами в проекте
 - TypeScript strict mode
 - **`any` запрещён полностью** — ESLint настроен на `error` для `@typescript-eslint/no-explicit-any` + весь набор `no-unsafe-*` (argument/assignment/call/member-access/return). Использовать точные типы, в крайнем случае — `unknown` с narrow-проверкой (`typeof`, `instanceof`, type guards). `as unknown as X` / `@ts-ignore` / `@ts-expect-error` без обоснования — флагаются агентом.
+- **Только `type`, никаких `interface`** — ESLint: `consistent-type-definitions: ['error', 'type']`. Один синтаксис вместо двух, `type` поддерживает unions / intersections / computed nativно. `interface X extends Y` → `type TX = TY & {...}`. Declaration merging (единственное что может только interface) у нас не используется.
+- **Все типы с префиксом `T`** — `TAppEnv`, `THealthResponse`, `TLLMProvider`. ESLint: `naming-convention` → typeAlias prefix `T`. C#-style, позволяет глазом отличать тип от класса/переменной в импортах. Исключение: если когда-то понадобится тип из сторонней либы которая уже экспортирует без префикса — можно алиасить через `import type { Foo as TFoo } from 'lib'`.
+- **Файлы чистых типов — префикс `t-` (kebab-case)** — если файл содержит ТОЛЬКО type definitions (без валидатора, схемы, логики), имя `t-<domain>.ts`: `t-app-env.ts`, `t-source-adapter.ts`. Если в файле смешано (type + валидатор / type + сервис) — обычное имя (`env.schema.ts`, `source-adapter.ts`). Правило на будущее — сейчас таких файлов нет.
 - Вся валидация через class-validator + @nestjs/swagger (двойные декораторы на DTO)
 
 ### Коммит-сообщения

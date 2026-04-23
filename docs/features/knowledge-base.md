@@ -53,7 +53,7 @@ flowchart TB
         water["water-analysis/<br/>domain-обёртка"]
     end
 
-    subgraph libs_ingest["libs/ingest/ — ISourceAdapter"]
+    subgraph libs_ingest["libs/ingest/ — TSourceAdapter"]
         text_adapter["TextAdapter<br/>(Фаза 1)"]
         video_adapter["VideoAdapter<br/>GroqWhisper + FFmpeg<br/>(Фаза 2)"]
         audio_adapter["AudioAdapter<br/>(Фаза 2)"]
@@ -195,9 +195,9 @@ enum KnowledgeSourceStatus {
 
 - [ ] Prisma модели `KnowledgeSource` + `KnowledgeChunk`, миграция + HNSW index
 - [ ] `libs/storage/` — S3 абстракция (в MVP с MinIO-driver). Пустой placeholder если в phase 1 файлов нет, но лучше сразу — пригодится в Фазе 2
-- [ ] `libs/ingest/` с `ISourceAdapter` + `TextSourceAdapter` (вход: plain text → выход: text + metadata)
+- [ ] `libs/ingest/` с `TSourceAdapter` + `TextSourceAdapter` (вход: plain text → выход: text + metadata)
 - [ ] `libs/knowledge/` с:
-    - `IEmbedder` + `OpenAiEmbedder` (реальный вызов OpenAI text-embedding-3-small)
+    - `TEmbedder` + `OpenAiEmbedder` (реальный вызов OpenAI text-embedding-3-small)
     - `TextChunker` (sentence-based, 500 tokens max, overlap 50)
     - `PgVectorRetriever` (top-K через `$queryRaw` + `<=>` оператор)
 - [ ] `apps/api/src/modules/knowledge/`:
@@ -440,7 +440,7 @@ enum ArtifactStatus     { pending generating ready failed }
 **Риск:** Groq — сторонний провайдер, SLA unknown, могут поменять лимиты.
 
 **Митигация:**
-- Абстракция `ITranscriptionProvider` — замена на OpenAI Whisper или self-hosted faster-whisper прозрачная.
+- Абстракция `TTranscriptionProvider` — замена на OpenAI Whisper или self-hosted faster-whisper прозрачная.
 - Документирован rate limit + backoff.
 
 ---

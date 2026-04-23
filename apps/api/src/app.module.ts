@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { createAppConfigModule, createAppLoggerModule } from '@slovo/common';
-import type { AppEnv } from '@slovo/common';
+import type { TAppEnv } from '@slovo/common';
 import { HealthModule } from './modules/health/health.module';
 
 @Module({
@@ -12,7 +12,7 @@ import { HealthModule } from './modules/health/health.module';
         createAppLoggerModule(),
         ThrottlerModule.forRootAsync({
             inject: [ConfigService],
-            useFactory: (config: ConfigService<AppEnv, true>) => [
+            useFactory: (config: ConfigService<TAppEnv, true>) => [
                 {
                     ttl: config.get('THROTTLE_TTL', { infer: true }) * 1000,
                     limit: config.get('THROTTLE_LIMIT', { infer: true }),

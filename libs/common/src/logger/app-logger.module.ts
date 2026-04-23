@@ -1,11 +1,11 @@
 import { ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
-import type { AppEnv } from '../config/env.schema';
+import type { TAppEnv } from '../config/env.schema';
 
 export function createAppLoggerModule() {
     return LoggerModule.forRootAsync({
         inject: [ConfigService],
-        useFactory: (config: ConfigService<AppEnv, true>) => ({
+        useFactory: (config: ConfigService<TAppEnv, true>) => ({
             pinoHttp: {
                 level: config.get('LOG_LEVEL', { infer: true }),
                 transport:

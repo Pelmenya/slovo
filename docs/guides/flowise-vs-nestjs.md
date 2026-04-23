@@ -114,9 +114,24 @@
 
 ### LLM: Claude `cache_control` (Anthropic prompt caching)
 
-**Проверено в эксперименте A (2026-04-23):** в `ChatAnthropic` ноде Flowise 3.1.2 **штатного поля для `cache_control` нет**. Additional Parameters содержат: Streaming, Extended Thinking (reasoning mode для Claude Sonnet 3.7 / Claude 4), Max Tokens, Top P, Top K.
+**Проверено в эксперименте A (2026-04-23) — тремя путями:**
 
-**Как инжектить:** для cache-heavy путей (длинный system prompt или большой retrieved context, который повторяется между запросами) пишем тонкий сервис в NestJS с `@anthropic-ai/sdk` напрямую + `cache_control: { type: 'ephemeral' }`. Для остального — через Flowise как обычно.
+1. **UI Flowise 3.1.2** → ChatAnthropic → Additional Parameters: только Streaming, Extended Thinking, Max Tokens, Top P, Top K. Поля для `cache_control` нет.
+2. **Исходник `packages/components/nodes/chatmodels/ChatAnthropic/ChatAnthropic.ts`:**
+   ```typescript
+   const obj: Partial<AnthropicInput> & BaseLLMParams = {
+       temperature, modelName, anthropicApiKey,
+       streaming, maxTokens, topP, topK, cache
+   }
+   ```
+   Строго типизированный объект без `additionalConfig` / `modelKwargs` / `extraParams` / custom headers. Workaround на уровне ноды нет.
+3. **GitHub Issues — feature requests открыты и висят:**
+   - [#4289](https://github.com/FlowiseAI/Flowise/issues/4289) *«Support for Anthropic Prompt Caching»* — open с 2025-04-20, без ответа maintainer'ов
+   - [#4634](https://github.com/FlowiseAI/Flowise/issues/4634) *«Native Prompt Caching & Token Optimization»* — open с 2026-03-18, пользователи в комментариях пишут про 40% лишних токенов
+
+**Как инжектить (решение A3):** для cache-heavy путей (длинный system prompt, большой retrieved context, повторяющиеся tool definitions) — тонкий сервис в NestJS с `@anthropic-ai/sdk` напрямую + `cache_control: { type: 'ephemeral' }`. Для остального — через Flowise как обычно.
+
+**Watch list:** подписаться на #4289 и #4634. Если Flowise когда-то реализует — переезжаем на штатный путь.
 
 ### Speech-to-Text в embedded-чате
 

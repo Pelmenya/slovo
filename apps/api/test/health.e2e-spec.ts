@@ -7,18 +7,18 @@ import { PrismaService } from '@slovo/database';
 import request from 'supertest';
 import { HealthModule } from '../src/modules/health/health.module';
 
-interface HealthResponse {
+type THealthResponse = {
     status: string;
     service: string;
     timestamp: string;
-}
+};
 
-interface ReadinessResponse {
+type TReadinessResponse = {
     status: 'ok' | 'degraded';
     checks: { db: boolean };
     timestamp: string;
     message?: string;
-}
+};
 
 describe('Health endpoints (e2e)', () => {
     let app: INestApplication;
@@ -60,7 +60,7 @@ describe('Health endpoints (e2e)', () => {
     describe('GET /health (liveness)', () => {
         it('возвращает 200 с корректной структурой', async () => {
             const response = await request(server).get('/health').expect(200);
-            const body = response.body as unknown as HealthResponse;
+            const body = response.body as unknown as THealthResponse;
 
             expect(body.status).toBe('ok');
             expect(body.service).toBe('slovo-api');
@@ -78,7 +78,7 @@ describe('Health endpoints (e2e)', () => {
             prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
 
             const response = await request(server).get('/health/ready').expect(200);
-            const body = response.body as unknown as ReadinessResponse;
+            const body = response.body as unknown as TReadinessResponse;
 
             expect(body.status).toBe('ok');
             expect(body.checks.db).toBe(true);
@@ -90,7 +90,7 @@ describe('Health endpoints (e2e)', () => {
             prismaMock.$queryRaw.mockRejectedValue(new Error('ECONNREFUSED'));
 
             const response = await request(server).get('/health/ready').expect(503);
-            const body = response.body as unknown as ReadinessResponse;
+            const body = response.body as unknown as TReadinessResponse;
 
             expect(body.status).toBe('degraded');
             expect(body.checks.db).toBe(false);

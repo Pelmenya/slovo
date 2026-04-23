@@ -45,6 +45,20 @@ export default tseslint.config(
             ],
             '@typescript-eslint/no-floating-promises': 'error',
             '@typescript-eslint/no-misused-promises': 'error',
+            // Жёсткое предпочтение разработчика: только `type`, никаких `interface`.
+            // Причины: единый синтаксис (не два способа делать одно и то же),
+            // `type` поддерживает unions/intersections/computed types нативно.
+            '@typescript-eslint/consistent-type-definitions': ['error', 'type'],
+            // Все типы (type aliases) с префиксом T — C#-style.
+            // Помогает глазом отличать тип от переменной / класса в импортах.
+            '@typescript-eslint/naming-convention': [
+                'error',
+                {
+                    selector: 'typeAlias',
+                    format: ['PascalCase'],
+                    prefix: ['T'],
+                },
+            ],
         },
     },
 );

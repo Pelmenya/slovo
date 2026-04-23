@@ -25,7 +25,7 @@
 
 ### Архитектурные принципы
 
-1. **Polymorphic ingestion с первого дня.** Любой источник (текст, видео, аудио, PDF, URL) проходит через `ISourceAdapter` → унифицированный `extractedText` → одинаковый chunking/embedding pipeline.
+1. **Polymorphic ingestion с первого дня.** Любой источник (текст, видео, аудио, PDF, URL) проходит через `TSourceAdapter` → унифицированный `extractedText` → одинаковый chunking/embedding pipeline.
 2. **Транскрибация — один из адаптеров.** Не отдельная фича, не отдельный libs/модуль верхнего уровня. Живёт в `libs/ingest/adapters/video/`.
 3. **Phases по ценности, не по технологии.** MVP — text-only (минимум работы, максимум validation). Phase 2 — video (основной use case разработчика). Phase 3 — первая domain-фича как showcase.
 4. **Storage абстрагирован.** S3-compatible API (MinIO в dev, любой managed S3 в prod). Видео/аудио/PDF не попадают в Postgres.
@@ -35,7 +35,7 @@
 
 ```
 libs/storage/       — S3/MinIO абстракция
-libs/ingest/        — ISourceAdapter + реализации (text, video через Groq Whisper, ...)
+libs/ingest/        — TSourceAdapter + реализации (text, video через Groq Whisper, ...)
 libs/llm/           — тонкий HTTP-клиент к Flowise Prediction API (ADR-004)
 
 apps/api/src/modules/knowledge/   — REST API для ingestion + search + ask

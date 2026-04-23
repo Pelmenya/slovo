@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import type { AppEnv } from '@slovo/common';
+import type { TAppEnv } from '@slovo/common';
 
 const ALLOWED_PROTOCOLS = new Set(['postgres:', 'postgresql:']);
 
@@ -25,7 +25,7 @@ function assertValidPostgresUrl(raw: string): void {
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(PrismaService.name);
 
-    constructor(config: ConfigService<AppEnv, true>) {
+    constructor(config: ConfigService<TAppEnv, true>) {
         const connectionString = config.getOrThrow('DATABASE_URL', { infer: true });
         assertValidPostgresUrl(connectionString);
         const isDev = config.get('NODE_ENV', { infer: true }) === 'development';

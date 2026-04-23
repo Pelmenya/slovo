@@ -1,9 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { AppEnv } from '@slovo/common';
+import type { TAppEnv } from '@slovo/common';
 import { PrismaService } from './prisma.service';
 
-type TestConfigService = ConfigService<AppEnv, true>;
+type TTestConfigService = ConfigService<TAppEnv, true>;
 
 jest.mock('@prisma/client', () => {
     class MockPrismaClient {
@@ -18,7 +18,7 @@ jest.mock('@prisma/adapter-pg', () => ({
     PrismaPg: jest.fn().mockImplementation((opts: unknown) => ({ opts })),
 }));
 
-function makeConfig(partial: Partial<Record<'DATABASE_URL' | 'NODE_ENV', string>>): TestConfigService {
+function makeConfig(partial: Partial<Record<'DATABASE_URL' | 'NODE_ENV', string>>): TTestConfigService {
     const store: Record<string, unknown> = { ...partial };
     return {
         getOrThrow: jest.fn((key: string) => {
@@ -28,7 +28,7 @@ function makeConfig(partial: Partial<Record<'DATABASE_URL' | 'NODE_ENV', string>
             return store[key];
         }),
         get: jest.fn((key: string) => store[key]),
-    } as unknown as TestConfigService;
+    } as unknown as TTestConfigService;
 }
 
 describe('PrismaService', () => {

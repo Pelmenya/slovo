@@ -3,7 +3,7 @@ import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/comm
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger as PinoLogger } from 'nestjs-pino';
-import { parseCorsOrigin, type AppEnv } from '@slovo/common';
+import { parseCorsOrigin, type TAppEnv } from '@slovo/common';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -13,7 +13,7 @@ async function bootstrap() {
 
     app.useLogger(app.get(PinoLogger));
 
-    const configService = app.get<ConfigService<AppEnv, true>>(ConfigService);
+    const configService = app.get<ConfigService<TAppEnv, true>>(ConfigService);
     const logger = new Logger('Bootstrap');
 
     const corsOrigin = parseCorsOrigin(configService.get('CORS_ORIGIN', { infer: true }));
