@@ -321,54 +321,132 @@ docker exec slovo-flowise node -e "fetch('https://api.ipify.org').then(r=>r.text
 
 **Бонус находка:** Flowise LLM Response Cache (6 типов) через input-порт `Cache` — полезен для FAQ-паттернов и dedupe эмбеддингов. Подробности в разделе «LLM Response Cache» выше.
 
-### ✅ B. `overrideConfig.promptValues` — РАЗОБРАНО ДО КОРНЯ (2026-04-23)
+### ✅ B. `overrideConfig.promptValues` — ДОКОПАЛИСЬ (2026-04-23)
 
-Потратили час чтобы разобраться до механики, включая чтение исходника
-Flowise (`packages/components/nodes/chains/LLMChain/LLMChain.ts`):
+Test 2 c двумя переменными (`{language}` + `{input}`) закрыл вопрос. `promptValues` в LLM Chain **работает**, просто механика нюансная.
 
-```typescript
-let promptValues = nodeData.inputs?.prompt.promptValues as ICommonObject
-const options = {
-    ...promptValues,           // partial vars из UI ноды Prompt Template
-    [lastValue]: input         // поле `question` API → ПОСЛЕДНЯЯ переменная шаблона
+**Финальный тест (прошёл ✅):**
+
+Template: `Расскажи на {language} языке коротко про: {input}`
+
+```bash
+curl -X POST /api/v1/prediction/{id} \
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data-binary @utf8-test.json
+```
+
+```json
+{
+  "question": "российских кошках",
+  "overrideConfig": { "promptValues": { "language": "украинском" } }
 }
 ```
 
-**Главный вывод:** для **LLM Chain** `overrideConfig.promptValues` из API **не читается** на уровне кода. Toggle в Security → Override Configuration для `promptValues` ничего не меняет — код ноды LLMChain.ts просто его не смотрит. Это unimplemented feature конкретно для LLM Chain.
+**Ответ:** *«# Російські кішки — Російська блакитна — це одна з найвідоміших порід з Росії...»*
+→ **украинский язык + русские коты** = работает как задумано.
 
-**Что реально происходит с LLM Chain:**
-- `question` в API → **auto-маппинг в последнюю переменную шаблона** (любое имя: `{input}`, `{topic}`, etc.) через `[lastValue]: input`
-- Partial vars задаются **только** в UI ноды Prompt Template → поле **Format Prompt Values**
-- Всё. API override `promptValues` для LLM Chain — в никуда
+### Механика по исходнику (`packages/components/nodes/chains/LLMChain/LLMChain.ts`)
 
-**Как поведение проявлялось в нашем тесте:**
+```typescript
+const options = {
+    ...promptValues,           // API override + partial vars (мёрджатся)
+    [lastValue]: input         // `question` API → ПОСЛЕДНЯЯ переменная шаблона
+}
+```
 
-| Шаг | Что делали | Что получили |
+**Правила:**
+
+1. **Последняя переменная шаблона** автоматически получает значение из `question` API через `[lastValue]: input`. Это жёсткий auto-map, `promptValues` его **не перебивает**.
+2. **Все остальные переменные** (`{language}`, `{tenant}`, `{style}` и т.д.) — берутся из `overrideConfig.promptValues`. **Работает корректно** после включения Security → Override Configuration → `promptValues` toggle + Save.
+3. **Partial vars в UI ноды (Format Prompt Values)** имеют приоритет выше API. Для чистого override — очистить partial vars в ноде.
+
+### Почему сначала казалось что «не работает»
+
+Три наложившихся источника ошибок в наших тестах:
+
+1. **Partial vars `{topic: "Мальта"}` в UI ноды** → API override не подхватывался, подменялся UI-значением.
+2. **После очистки** → `{topic}` стал **единственной и последней** переменной → Flowise подставил `question: "ignored"` в `{topic}` через auto-map → Claude получил "Расскажи коротко про: ignored" и галлюцинировал на неполном контексте (Мальта/Керамика/Вышгород).
+3. **UTF-8 в curl Git Bash** ломался — русский текст `"российских кошках"` в теле запроса превращался в `������` → Claude интерпретировал кракозябры как «запрос про русское» → отвечал про русскую литературу.
+
+Все три проблемы **не на стороне Flowise**. Flowise работает как надо, просто механика `[lastValue]: input` для LLM Chain не очевидна из UI/docs.
+
+### Работает везде
+
+| Chain-тип | `overrideConfig.promptValues` | Примечание |
 |---|---|---|
-| 1 | `promptValues: {input: "..."}`, Template с `{input}` | Claude отвечал про `question` (он был `"ignored-raw-input"`) — `input` вары были проигнорированы |
-| 2 | То же самое с `{topic}` | Claude отвечал про `question` = "ignored" (подставленного в `{topic}` автоматически) — отсюда Мальта/Керамика/Вышгород (галлюцинации на "Расскажи коротко про: ignored") |
-| 3 | Очистили Format Prompt Values в ноде | То же самое (ничего не поменялось — `[lastValue]: input` всегда побеждает) |
-
-**Что работает в ДРУГИХ chain-нодах** (по коду + issue #2991):
-
-| Chain-тип | `overrideConfig.promptValues` работает? |
-|---|---|
-| **LLM Chain** | ❌ Не читается из API, только UI-значения |
-| **Conversational Retrieval QA Chain** | ✅ Работает (именно этот мы будем использовать в slovo) |
-| **Tool Agent** | ✅ Работает (код в `ToolAgent.ts` обрабатывает) |
-| **Conversation Chain** | ✅ Работает |
-| **Worker** (multi-agent) | ✅ Работает |
+| **LLM Chain** | ✅ Работает (для non-last переменных) | Наш тест сегодня |
+| **Conversational Retrieval QA Chain** | ✅ Работает | Основной для slovo |
+| **Tool Agent** | ✅ Работает | Проверено в `ToolAgent.ts` + issue #2991 |
+| **Conversation Chain** | ✅ Работает | |
+| **Worker** (multi-agent) | ✅ Работает | |
 
 ### Практическая матрица для slovo
 
-| Use case | Решение |
+| Use case | Как делаем |
 |---|---|
-| **Единственная переменная user-ввода** (Q&A вопрос, короткая фраза) | Через `question` в API → **auto-map в последнюю переменную** шаблона. Работает везде на всех chain. Самый простой путь. |
-| **Dynamic vars в system prompt** (language, tenant_id, persona, style) | `overrideConfig.promptValues` + **Conversational Retrieval QA Chain** (НЕ LLM Chain) + включённый toggle в Security → Override Configuration. Работает. |
-| **LLM Chain с несколькими vars** (редкий/устаревший паттерн) | Либо не используем LLM Chain (берём Conversation Chain), либо склеиваем в `question` форматированным текстом как в `test-marpla/backend/src/seo/seo.service.ts`. |
-| **Полностью переопределить промпт** | В Security включить `Template` toggle у Prompt Template ноды и передавать `overrideConfig.template` — это работает для LLM Chain тоже |
+| **Одна user-var** (Q&A вопрос) | Template `{input}` → `question` API → auto-map работает |
+| **User-var + system-var** (язык, tenant, persona) | Template `{language}...{input}` → `question` для input (auto), `overrideConfig.promptValues.language` для остальных |
+| **Много system-vars + user-var** | Последняя = `{input}` ← `question`, остальные через `promptValues` |
+| **Полный override template** | Security → Template toggle → `overrideConfig.template` |
 
-**Вывод:** не баг, а специфика конкретной ноды. Для production slovo это не мешает — **Conversational Retrieval QA Chain это наш рабочий инструмент**, там `promptValues` из API подхватывается нормально. LLM Chain — legacy, не используем.
+### Порядок приоритета (от низшего к высшему)
+
+1. **UI partial vars** (Prompt Template → Format Prompt Values) — default для переменной
+2. **API `overrideConfig.promptValues`** — **перебивает** UI partial vars (при включённом toggle в Security)
+3. **`question` API** → **последняя переменная шаблона** — жёсткий auto-map, ни UI ни API на это не влияют
+
+**Таблица из 5 тестов (2026-04-23, Test 3 Parts A+B):**
+
+| Template | UI partial | API override | `question` | Результат |
+|---|---|---|---|---|
+| `про: {input}` | — | — | `"russian cats"` | `{input}` ← `question`, ответ про котов ✅ |
+| `про: {topic}` | — | `{input: x}` | `ignored` | `{topic}` ← `question` (auto), promptValues.input нигде — галлюцинация ❌ |
+| `на {language}... про: {input}` | — | `{language: укр}` | `рус коты` | Украинский про рус котов ✅ |
+| `на {language}... про: {input}` | `{language: англ}` | — | `рус коты` | Английский про рус котов ✅ |
+| `на {language}... про: {input}` | `{language: англ}` | `{language: укр}` | `рус коты` | **Украинский** (API перебил UI) ✅ |
+
+### Production gotchas
+
+1. **UI partial vars** — для безопасных дефолтов (формат ответа, style, лимиты), которые обычно не меняются. API override перебивает их корректно.
+2. **UTF-8 в API-клиенте** — `Content-Type: application/json; charset=utf-8` + передавать body как бинарник (`--data-binary @file` в curl, `Buffer.from(str, 'utf-8')` в Node). Без этого русский / эмодзи ломаются в кракозябры.
+3. **Security → Override Configuration toggle для `promptValues`** включать + Save. Без этого API-override игнорируется.
+4. **Последняя переменная шаблона резервируется для `question`** — проектируй шаблоны так, чтобы user-input был **последним** плейсхолдером (стандартно `{input}`).
+
+### Production паттерн для slovo
+
+```typescript
+// NestJS AIGeneratorService.generate(dto)
+await fetch(`${flowiseUrl}/api/v1/prediction/${chatflowId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: Buffer.from(JSON.stringify({
+        question: dto.userQuery,           // → последняя переменная шаблона автоматом
+        overrideConfig: {
+            sessionId: dto.userId,         // изоляция Memory по пользователю
+            promptValues: {
+                language: dto.language,    // → {language} в system prompt
+                tenant: dto.tenantId,      // → {tenant} в system prompt
+                persona: dto.personaName,  // → {persona} в system prompt
+                // userQuery НЕ включаем сюда — оно уже в `question`
+            },
+        },
+    }), 'utf-8'),
+});
+```
+
+Template ноды для такого запроса:
+
+```
+Ты — AI-ассистент {persona} для клиента {tenant}.
+Отвечай на {language} языке.
+...system instructions...
+
+Вопрос пользователя: {input}
+```
+
+**`{input}` — обязательно последний**, остальные плейсхолдеры выше. Тогда `question` подставится в `{input}`, а остальные — из `promptValues`.
+
+**Вывод:** `overrideConfig.promptValues` в Flowise 3.x — рабочий механизм для всех chain-нод (LLM Chain, Conversational Retrieval QA, Tool Agent, Worker, Conversation Chain). Для production slovo это основной путь dynamic parameter injection. Fallback через склейку в `question` (как в test-marpla) остаётся валидным для простых случаев с одной переменной.
 
 ### ❓ C. Postgres vector store — схема колонок
 
