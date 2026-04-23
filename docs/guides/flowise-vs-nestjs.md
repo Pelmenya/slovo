@@ -118,6 +118,22 @@
 
 **Как инжектить:** для cache-heavy путей (длинный system prompt или большой retrieved context, который повторяется между запросами) пишем тонкий сервис в NestJS с `@anthropic-ai/sdk` напрямую + `cache_control: { type: 'ephemeral' }`. Для остального — через Flowise как обычно.
 
+### Speech-to-Text в embedded-чате
+
+Chatflow Configuration → **Speech To Text** — транскрибация голосовых сообщений **внутри** Flowise-чата в real-time. Провайдеры:
+
+- **OpenAI Whisper** — через OpenAI API
+- **Groq Whisper** — быстрый и дешёвый (у нас уже используется в батче, ключ будет готов)
+- **Assembly AI**
+- **LocalAI STT** — self-hosted
+- **Azure Cognitive Services**
+
+Применение для slovo: в Phase 3 Q&A-чат пользователь сможет **говорить голосом**, не печатать. Ноль кода — галочка в Chatflow Config. **Но работает только с short voice-message, не с upload'ом большого видео** — для batch-ingestion нужен наш worker, см. раздел «Batch-транскрибация» ниже.
+
+### Text-to-Speech
+
+Тоже в Chatflow Configuration — озвучка ответов LLM. Провайдеры: OpenAI TTS, ElevenLabs, Azure TTS, LocalAI. Опционально для Phase 3 если захочется voice-ответы.
+
 ### LLM: Claude Extended Thinking (reasoning)
 
 В `ChatAnthropic` ноде есть toggle **Extended Thinking** — включает chain-of-thought reasoning mode для Claude Sonnet 3.7+ / Claude 4. Модель «думает» перед ответом, это даёт лучшее качество на сложных задачах (анализ, multi-step логика).
@@ -161,11 +177,20 @@
 
 ## ❌ Чего Flowise НЕ умеет (нужно инжектить)
 
-### 1. Транскрибация аудио/видео — **точно нет, критично**
+### 1. Batch-транскрибация больших видео/аудио — **нет, критично**
 
-**Нет ноды Whisper Loader** (ни OpenAI Whisper, ни Groq Whisper, ни self-hosted faster-whisper). Flowise вообще не работает с audio/video input'ом напрямую.
+**Важное уточнение (2026-04-23):** в Flowise 3.1.2 **есть** встроенный **Speech-to-Text** в Chatflow Configuration с провайдерами **OpenAI Whisper, Groq Whisper, Assembly AI, LocalAI STT, Azure Cognitive Services**. Но это **live voice input для embedded-чата**, не batch-ingestion.
 
-**Как инжектить:** NestJS worker делает транскрибацию, Flowise получает уже готовый текст.
+| Сценарий | Подходит Flowise Speech-to-Text? |
+|---|---|
+| Юзер нажимает микрофон в Flowise-чате → записывает короткий voice-question 10-30 секунд → Flowise транскрибирует on-the-fly → LLM отвечает | ✅ Да, встроено одной галочкой в Chatflow Config → Speech To Text |
+| Юзер загружает 2-часовой вебинар → нужно фоново транскрибировать, вернуть прогресс, сохранить в knowledge base | ❌ Нет — sync HTTP-запрос, timeout ~30s, весь аудио-буфер в RAM Flowise-процесса, нет retry/fallback, нет прогресса для клиента |
+
+**Для slovo:**
+- **Live voice Q&A по knowledge base** (Phase 3) → используем встроенный Flowise Speech-to-Text с Groq Whisper. Ноль кода.
+- **Batch ingestion видео/аудио для knowledge base** (Phase 2) → обязателен собственный NestJS worker + RMQ. Без этого большие файлы ляжут.
+
+**Как инжектить batch-pipeline:** NestJS worker делает транскрибацию (retry/fallback, chunking, прогресс), Flowise получает уже готовый `extractedText` через Vector Upsert API.
 
 ```
 Video upload (S3/MinIO)
@@ -296,40 +321,54 @@ docker exec slovo-flowise node -e "fetch('https://api.ipify.org').then(r=>r.text
 
 **Бонус находка:** Flowise LLM Response Cache (6 типов) через input-порт `Cache` — полезен для FAQ-паттернов и dedupe эмбеддингов. Подробности в разделе «LLM Response Cache» выше.
 
-### ✅ B. `overrideConfig.promptValues` в Flowise 3.x — ЗАКРЫТ (2026-04-23)
+### ✅ B. `overrideConfig.promptValues` — РАЗОБРАНО ДО КОРНЯ (2026-04-23)
 
-**Результат: НЕ работает для LLM Chain** (как и в 2.x).
+Потратили час чтобы разобраться до механики, включая чтение исходника
+Flowise (`packages/components/nodes/chains/LLMChain/LLMChain.ts`):
 
-Тест: chatflow с `PromptTemplate = "Расскажи коротко про: {input}"` + LLM Chain + ChatAnthropic. Вызов:
-
-```json
-POST /api/v1/prediction/{id}
-{
-    "question": "ignored-raw-input",
-    "overrideConfig": { "promptValues": { "input": "российских кошках" } }
+```typescript
+let promptValues = nodeData.inputs?.prompt.promptValues as ICommonObject
+const options = {
+    ...promptValues,           // partial vars из UI ноды Prompt Template
+    [lastValue]: input         // поле `question` API → ПОСЛЕДНЯЯ переменная шаблона
 }
 ```
 
-Claude ответил про **"ignored-raw-input"** (пытаясь интерпретировать как React ESLint rule) — значение из `promptValues.input` **было проигнорировано**. Flowise подставил в `{input}` шаблона содержимое поля `question`.
+**Главный вывод:** для **LLM Chain** `overrideConfig.promptValues` из API **не читается** на уровне кода. Toggle в Security → Override Configuration для `promptValues` ничего не меняет — код ноды LLMChain.ts просто его не смотрит. Это unimplemented feature конкретно для LLM Chain.
 
-**Решение для slovo:** обходим через форматированный `question` — как в `test-marpla/backend/src/seo/seo.service.ts`:
+**Что реально происходит с LLM Chain:**
+- `question` в API → **auto-маппинг в последнюю переменную шаблона** (любое имя: `{input}`, `{topic}`, etc.) через `[lastValue]: input`
+- Partial vars задаются **только** в UI ноды Prompt Template → поле **Format Prompt Values**
+- Всё. API override `promptValues` для LLM Chain — в никуда
 
-```typescript
-const question = [
-    `Тема: ${dto.topic}`,
-    `Язык: ${dto.language}`,
-    `Ограничения: ${dto.constraints.join(', ')}`,
-].join('\n');
+**Как поведение проявлялось в нашем тесте:**
 
-await fetch(`${flowiseUrl}/api/v1/prediction/${chatflowId}`, {
-    method: 'POST',
-    body: JSON.stringify({ question, overrideConfig: { sessionId } }),
-});
-```
+| Шаг | Что делали | Что получили |
+|---|---|---|
+| 1 | `promptValues: {input: "..."}`, Template с `{input}` | Claude отвечал про `question` (он был `"ignored-raw-input"`) — `input` вары были проигнорированы |
+| 2 | То же самое с `{topic}` | Claude отвечал про `question` = "ignored" (подставленного в `{topic}` автоматически) — отсюда Мальта/Керамика/Вышгород (галлюцинации на "Расскажи коротко про: ignored") |
+| 3 | Очистили Format Prompt Values в ноде | То же самое (ничего не поменялось — `[lastValue]: input` всегда побеждает) |
 
-В PromptTemplate тогда используется либо `{input}` (получит весь склеенный текст), либо пустой template — Flowise сам всё подставит.
+**Что работает в ДРУГИХ chain-нодах** (по коду + issue #2991):
 
-**Гнаться за promptValues не надо.** `question` + склейка — рабочий production паттерн, покрытый тестами в test-marpla.
+| Chain-тип | `overrideConfig.promptValues` работает? |
+|---|---|
+| **LLM Chain** | ❌ Не читается из API, только UI-значения |
+| **Conversational Retrieval QA Chain** | ✅ Работает (именно этот мы будем использовать в slovo) |
+| **Tool Agent** | ✅ Работает (код в `ToolAgent.ts` обрабатывает) |
+| **Conversation Chain** | ✅ Работает |
+| **Worker** (multi-agent) | ✅ Работает |
+
+### Практическая матрица для slovo
+
+| Use case | Решение |
+|---|---|
+| **Единственная переменная user-ввода** (Q&A вопрос, короткая фраза) | Через `question` в API → **auto-map в последнюю переменную** шаблона. Работает везде на всех chain. Самый простой путь. |
+| **Dynamic vars в system prompt** (language, tenant_id, persona, style) | `overrideConfig.promptValues` + **Conversational Retrieval QA Chain** (НЕ LLM Chain) + включённый toggle в Security → Override Configuration. Работает. |
+| **LLM Chain с несколькими vars** (редкий/устаревший паттерн) | Либо не используем LLM Chain (берём Conversation Chain), либо склеиваем в `question` форматированным текстом как в `test-marpla/backend/src/seo/seo.service.ts`. |
+| **Полностью переопределить промпт** | В Security включить `Template` toggle у Prompt Template ноды и передавать `overrideConfig.template` — это работает для LLM Chain тоже |
+
+**Вывод:** не баг, а специфика конкретной ноды. Для production slovo это не мешает — **Conversational Retrieval QA Chain это наш рабочий инструмент**, там `promptValues` из API подхватывается нормально. LLM Chain — legacy, не используем.
 
 ### ❓ C. Postgres vector store — схема колонок
 

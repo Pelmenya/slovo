@@ -225,8 +225,77 @@ enum KnowledgeSourceStatus {
 
 - **`notes-rag`** — простой Q&A эндпоинт: `POST /ask` (query + sourceId) → retrieval top-K → Claude отвечает с цитатами
 - **`water-analysis`** light — сравнение результата анализа воды с методологией (если есть готовая методичка загруженная в knowledge base)
+- **`video-to-artifact`** ⭐ *(идея 2026-04-23)* — auto-generate Word/UML/Markdown из видео на основе контекста. См. Phase 2.5 backlog ниже.
 
-Выбирается после созвона разработчика с самим собой 🙂 — что интереснее прямо сейчас попробовать.
+Выбирается после Phase 2 когда будет готова транскрибация.
+
+### Phase 2.5 backlog: `video-to-artifact` — auto-document generation ⭐
+
+**Идея** *(2026-04-23, от разработчика)*: пользователь грузит видео → получает **автоматически сгенерированный артефакт** в формате, подходящем под контекст видео.
+
+**Pipeline:**
+
+```
+Video upload → Whisper transcription (Phase 2 уже готова)
+  ↓
+Claude Haiku classifier (structured output):
+  {
+    type: "tutorial" | "lecture" | "architecture" | "interview" | "mixed",
+    topics: [...],
+    suggested_formats: ["docx", "mermaid", "markdown", "article"]
+  }
+  ↓
+Claude Sonnet generator (выбранный формат):
+  • "tutorial"     → Word-конспект (npm `docx`, программная генерация)
+  • "architecture" → Mermaid UML-диаграммы в `.md` с описанием
+  • "lecture"      → Markdown-статья со структурой
+  • "interview"    → Transcript с тайм-кодами (speaker diarization — позже)
+  ↓
+Artifact в S3/MinIO + preview в UI:
+  • .docx         → `docx-preview` (render в canvas)
+  • Mermaid `.md` → `mermaid.js` (render в SVG на клиенте)
+  • Markdown     → `rehype` render
+  ↓
+Q&A поверх артефакта (knowledge-base под капотом):
+  retrieval из chunks того же источника → Claude с цитатами
+```
+
+**Модели данных (расширение `KnowledgeSource`):**
+
+```prisma
+model KnowledgeArtifact {
+    id         String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    sourceId   String              @db.Uuid
+    source     KnowledgeSource     @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+    type       ArtifactType
+    storageKey String              // S3 ключ
+    status     ArtifactStatus      @default(pending)
+    metadata   Json?               // title, suggested_format, длительность генерации, cost
+    createdAt  DateTime            @default(now()) @map("created_at")
+    @@index([sourceId, type])
+    @@map("knowledge_artifacts")
+}
+
+enum ArtifactType       { docx mermaid markdown transcript summary }
+enum ArtifactStatus     { pending generating ready failed }
+```
+
+**Зависимости:**
+
+- Сервер: `docx` (программная генерация), опционально `@mermaid-js/mermaid-cli` для pre-render SVG
+- Клиент: `mermaid.js`, `docx-preview`, `rehype-stringify` + `remark-gfm`
+
+**Уникальность (честно):** похожие куски есть в Descript / Otter / Tldv / Fireflies / Gemini Deep Research. Но **конкретная связка «auto-classify → suggest format → inline preview + Q&A поверх»** в одном бесшовном UI — свежая эргономика, продаваемый demo-кейс для SaaS.
+
+**Объём работы:** ~2 недели вечерних (после того как Phase 1 + Phase 2 готовы) — classifier prompt + 3 generator'а + preview в UI + API.
+
+**Не делаем в Phase 2.5:**
+- Speaker diarization (отдельная фича, ресурсо-ёмкая)
+- Translation
+- Full-blown article editor на стороне юзера (max — download + view)
+- A/B перегенерация форматов (сначала только один формат на артефакт)
+
+Детальный план — отдельным документом `docs/features/video-to-artifact.md` когда Phase 2 почти закончена (по образцу этого knowledge-base.md).
 
 ### Фаза 4+ — остальные адаптеры
 

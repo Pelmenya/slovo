@@ -85,6 +85,9 @@ services:
             # Node.js fetch (undici) не читает HTTP_PROXY автоматически —
             # preload-скрипт monkey-patch'ит глобальный dispatcher на ProxyAgent.
             NODE_OPTIONS: --require /scripts/flowise-proxy-bootstrap.cjs
+            # Отключаем кеш скомпилированного chatflow — иначе overrideConfig.promptValues
+            # может не срабатывать (из GitHub issue FlowiseAI/Flowise#2991 от maintainer HenryHengZJ).
+            DISABLE_CHATFLOW_REUSE: "true"
         extra_hosts:
             # Для Linux host.docker.internal не работает из коробки;
             # на Windows/Mac Docker Desktop резолвит сам, эта строка игнорируется.

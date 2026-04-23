@@ -163,6 +163,8 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 
 Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал разработчика — `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` (5 уровней).
 
+**Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно различия в поведении между chain-нодами (LLM Chain vs Conversational Retrieval QA vs Tool Agent vs Worker). При непонятном поведении — **сразу лезь в исходник** на `https://github.com/FlowiseAI/Flowise`, конкретный файл ноды в `packages/components/nodes/chains/<ChainName>/<ChainName>.ts` или `packages/components/nodes/agents/<AgentName>/`. Один пример: `overrideConfig.promptValues` для LLM Chain **не реализован на уровне кода** (см. `LLMChain.ts` — использует `[lastValue]: input` вместо API override), но работает в Conversational Retrieval QA Chain — это в документации не указано. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут. Параллельно полезно смотреть GitHub Issues (maintainer HenryHengZJ даёт конкретные ответы), но приоритет — код.
+
 ---
 
 ## Стек (версии на апрель 2026)
