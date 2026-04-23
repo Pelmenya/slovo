@@ -27,6 +27,12 @@ export type TPresignedUrlOptions = {
     expiresInSeconds?: number;
 };
 
+export type TPresignedUploadOptions = TPresignedUrlOptions & {
+    contentType?: string;
+    contentLength?: number;
+    metadata?: Record<string, string>;
+};
+
 export type TGetObjectStreamResult = {
     key: string;
     body: Readable;

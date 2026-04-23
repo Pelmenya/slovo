@@ -5,6 +5,7 @@
 // Запуск:  npx ts-node scripts/check-storage.ts
 
 import { CreateBucketCommand, HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { validateEnv } from '@slovo/common';
 import 'dotenv/config';
 import { StorageService } from '../libs/storage/src/storage.service';
 
@@ -18,27 +19,32 @@ async function ensureBucket(client: S3Client, bucket: string): Promise<void> {
     }
 }
 
-async function main(): Promise<void> {
-    const endpoint = process.env.S3_ENDPOINT ?? 'http://localhost:9010';
-    const region = process.env.S3_REGION ?? 'us-east-1';
-    const accessKeyId = process.env.S3_ACCESS_KEY ?? 'minioadmin';
-    const secretAccessKey = process.env.S3_SECRET_KEY;
-    const bucket = process.env.S3_BUCKET ?? 'slovo-sources';
-
-    if (!secretAccessKey) {
-        throw new Error('S3_SECRET_KEY is required — load .env before running');
+function redactUrl(url: string): string {
+    try {
+        const u = new URL(url);
+        return `${u.origin}${u.pathname}`;
+    } catch {
+        return '[invalid-url]';
     }
+}
+
+async function main(): Promise<void> {
+    // Единая точка валидации env — не дублируем схему и дефолты из env.schema.ts.
+    const env = validateEnv(process.env);
 
     const client = new S3Client({
-        endpoint,
-        region,
-        credentials: { accessKeyId, secretAccessKey },
-        forcePathStyle: true,
+        endpoint: env.S3_ENDPOINT || undefined,
+        region: env.S3_REGION,
+        credentials: {
+            accessKeyId: env.S3_ACCESS_KEY,
+            secretAccessKey: env.S3_SECRET_KEY,
+        },
+        forcePathStyle: env.S3_FORCE_PATH_STYLE,
     });
 
-    await ensureBucket(client, bucket);
+    await ensureBucket(client, env.S3_BUCKET);
 
-    const storage = new StorageService(client, bucket);
+    const storage = new StorageService(client, env.S3_BUCKET);
     const key = `check/${Date.now()}.txt`;
     const payload = `slovo storage check — ${new Date().toISOString()}`;
 
@@ -66,7 +72,8 @@ async function main(): Promise<void> {
     }
 
     const presigned = await storage.getPresignedDownloadUrl(key, { expiresInSeconds: 120 });
-    console.log(`[check] presigned: ${presigned.slice(0, 120)}...`);
+    // Redact signature — показываем только origin+path, X-Amz-Signature не попадёт в лог.
+    console.log(`[check] presigned (redacted): ${redactUrl(presigned)}`);
 
     await storage.deleteObject(key);
     console.log(`[check] deleted ${key}`);
@@ -75,9 +82,9 @@ async function main(): Promise<void> {
     if (exists) {
         throw new Error('object still exists after delete');
     }
-    console.log('[check] objectExists after delete = false ✓');
+    console.log('[check] objectExists after delete = false OK');
 
-    console.log('[check] OK');
+    console.log('[check] done');
 }
 
 main().catch((err) => {

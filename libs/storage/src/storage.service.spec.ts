@@ -6,7 +6,8 @@ import {
     PutObjectCommand,
     S3Client,
 } from '@aws-sdk/client-s3';
-import { NotFoundException } from '@nestjs/common';
+import { InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { sdkStreamMixin } from '@smithy/util-stream';
 import { mockClient } from 'aws-sdk-client-mock';
 import { Readable } from 'node:stream';
 import { StorageService } from './storage.service';
@@ -75,9 +76,11 @@ describe('StorageService', () => {
 
     describe('getObjectStream', () => {
         it('возвращает stream и метаданные', async () => {
-            const body = Readable.from(['chunk1', 'chunk2']);
+            // sdkStreamMixin добавляет SDK-методы (transformToString и т.д.) к Readable —
+            // именно этот тип AWS SDK v3 возвращает в Body в Node-рантайме.
+            const body = sdkStreamMixin(Readable.from(['chunk1', 'chunk2']));
             s3Mock.on(GetObjectCommand).resolves({
-                Body: body as unknown as never,
+                Body: body,
                 ContentType: 'text/plain',
                 ContentLength: 12,
                 LastModified: new Date('2026-04-23'),
@@ -89,6 +92,16 @@ describe('StorageService', () => {
             expect(result.contentType).toBe('text/plain');
             expect(result.contentLength).toBe(12);
             expect(result.body).toBe(body);
+        });
+
+        it('InternalServerErrorException если Body не Readable', async () => {
+            // Имитируем runtime где SDK вернул WebStream вместо Readable (маловероятно,
+            // но если SDK major-update поменяет поведение — падаем явной ошибкой).
+            const fakeNonReadable = { on: () => undefined } as unknown as never;
+            s3Mock.on(GetObjectCommand).resolves({ Body: fakeNonReadable });
+            await expect(service.getObjectStream('k')).rejects.toBeInstanceOf(
+                InternalServerErrorException,
+            );
         });
 
         it('NotFoundException если объекта нет (NoSuchKey)', async () => {
@@ -181,6 +194,11 @@ describe('StorageService', () => {
                 Key: 'sources/a/original',
             });
         });
+
+        it('пробрасывает ошибки S3 (AccessDenied и пр.)', async () => {
+            s3Mock.on(DeleteObjectCommand).rejects(new Error('AccessDenied'));
+            await expect(service.deleteObject('k')).rejects.toThrow('AccessDenied');
+        });
     });
 
     describe('getPresignedDownloadUrl', () => {
@@ -211,11 +229,26 @@ describe('StorageService', () => {
             expect(url).toContain('sources/b/original');
             expect(url).toMatch(/X-Amz-Signature=/);
         });
-    });
 
-    describe('bucketName', () => {
-        it('отдаёт имя бакета из конструктора', () => {
-            expect(service.bucketName).toBe(TEST_BUCKET);
+        it('разная contentType → разные подписи', async () => {
+            // SigV4 presigner подписывает опции в header-canon, поэтому URLs
+            // с разными contentType дают разные X-Amz-Signature.
+            const urlMp4 = await service.getPresignedUploadUrl('k', {
+                contentType: 'video/mp4',
+            });
+            const urlPdf = await service.getPresignedUploadUrl('k', {
+                contentType: 'application/pdf',
+            });
+            const sigMp4 = new URL(urlMp4).searchParams.get('X-Amz-Signature');
+            const sigPdf = new URL(urlPdf).searchParams.get('X-Amz-Signature');
+            expect(sigMp4).toBeTruthy();
+            expect(sigPdf).toBeTruthy();
+            expect(sigMp4).not.toBe(sigPdf);
+        });
+
+        it('использует кастомный TTL', async () => {
+            const url = await service.getPresignedUploadUrl('k', { expiresInSeconds: 30 });
+            expect(url).toContain('X-Amz-Expires=30');
         });
     });
 });

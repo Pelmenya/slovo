@@ -20,7 +20,10 @@ const s3ClientProvider: Provider = {
             credentials: { accessKeyId, secretAccessKey },
             forcePathStyle,
         };
-        if (endpoint) {
+        // S3_ENDPOINT пустая строка означает «использовать AWS S3 default endpoint
+        // для региона». Непустое значение — кастомный endpoint (MinIO в dev,
+        // Cloudflare R2 / DigitalOcean Spaces в prod).
+        if (endpoint && endpoint.length > 0) {
             clientConfig.endpoint = endpoint;
         }
         return new S3Client(clientConfig);
@@ -34,6 +37,11 @@ const bucketProvider: Provider = {
         config.getOrThrow('S3_BUCKET', { infer: true }),
 };
 
+// StorageModule намеренно НЕ @Global(). Импортируется в каждый feature-модуль
+// которому нужен S3 (knowledge-module, в будущем — avatars/exports). Плюсы:
+// (a) границы зависимостей явные в графе модулей; (b) когда появится split
+// public vs private bucket — каждый feature сможет инстанцировать StorageModule
+// со своим BUCKET-токеном. Минус — 1 строка импорта в каждом модуле, ок.
 @Module({
     imports: [ConfigModule],
     providers: [s3ClientProvider, bucketProvider, StorageService],

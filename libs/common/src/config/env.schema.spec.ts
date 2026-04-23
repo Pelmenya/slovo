@@ -27,6 +27,7 @@ const BASE_ENV: Record<string, string> = {
     S3_ACCESS_KEY: 'test-only-s3-access',
     S3_SECRET_KEY: 'test-only-s3-secret',
     S3_BUCKET: 'test-only-bucket',
+    MINIO_ROOT_USER: 'test-only-minio-root-user',
     MINIO_ROOT_PASSWORD: 'test-only-minio-root-password',
 };
 
@@ -47,7 +48,9 @@ describe('validateEnv', () => {
     });
 
     it('применяет S3/MinIO дефолты', () => {
-        const parsed = validateEnv(BASE_ENV);
+        // Убираем MINIO_ROOT_USER чтобы проверить дефолт — в BASE_ENV он переопределён.
+        const { MINIO_ROOT_USER: _, ...envNoUser } = BASE_ENV;
+        const parsed = validateEnv(envNoUser);
         expect(parsed.S3_REGION).toBe('us-east-1');
         expect(parsed.S3_ENDPOINT).toBe('');
         expect(parsed.S3_FORCE_PATH_STYLE).toBe(true);
@@ -159,6 +162,15 @@ describe('validateEnv', () => {
                     MINIO_ROOT_PASSWORD: 'slovo_dev_minio_password_change_me',
                 }),
             ).toThrow(/MINIO_ROOT_PASSWORD/);
+        });
+
+        it('падает если MINIO_ROOT_USER = dev-дефолт minioadmin', () => {
+            expect(() =>
+                validateEnv({
+                    ...PROD_BASE,
+                    MINIO_ROOT_USER: 'minioadmin',
+                }),
+            ).toThrow(/MINIO_ROOT_USER/);
         });
 
         it('прод с сильными секретами — проходит', () => {

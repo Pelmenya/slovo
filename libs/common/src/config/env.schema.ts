@@ -84,12 +84,13 @@ export const envSchema = z
         if (env.NODE_ENV !== 'production') {
             return;
         }
-        const weakDefaults: Array<[keyof typeof env, string]> = [
+        const weakDefaults: Array<[keyof TAppEnv, string]> = [
             ['JWT_SECRET', 'change_me_in_production'],
             ['POSTGRES_PASSWORD', 'slovo_dev_password_change_me'],
             ['RABBITMQ_PASSWORD', 'slovo_dev_password_change_me'],
             ['LANGFUSE_POSTGRES_PASSWORD', 'langfuse_dev_password_change_me'],
             ['MINIO_ROOT_PASSWORD', 'slovo_dev_minio_password_change_me'],
+            ['MINIO_ROOT_USER', 'minioadmin'],
             ['S3_SECRET_KEY', 'slovo_dev_minio_password_change_me'],
             ['S3_ACCESS_KEY', 'minioadmin'],
         ];
