@@ -4,6 +4,14 @@
 // driver'ом Postgres vector store ноды при первом upsert. Связь с sources —
 // через metadata.source_id (app-level FK, не DB constraint).
 // См. ADR-006 → «Дизайн таблиц».
+//
+// CHECK-констрейнты живут вне schema.prisma (Prisma 7 их не поддерживает
+// декларативно). См. 20260423145407_add_knowledge_sources_check_constraints:
+//   - knowledge_sources_payload_exclusive_chk — ровно одно из storage_key /
+//     source_url / raw_text заполнено на момент создания
+//   - knowledge_sources_progress_range_chk — progress BETWEEN 0 AND 100
+// При нарушении Postgres отвергнет INSERT/UPDATE, service-слой должен
+// транслировать в BadRequestException.
 
 model KnowledgeSource {
     id            String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
