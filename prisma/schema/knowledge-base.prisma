@@ -1,0 +1,54 @@
+// Knowledge Base — реестр источников пользователя (видео/текст/PDF/...)
+// владение: Prisma управляет только метаданными (эта таблица).
+// knowledge_chunks — отдельная Flowise-managed таблица, создаётся TypeORM
+// driver'ом Postgres vector store ноды при первом upsert. Связь с sources —
+// через metadata.source_id (app-level FK, не DB constraint).
+// См. ADR-006 → «Дизайн таблиц».
+
+model KnowledgeSource {
+    id            String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    userId        String?               @map("user_id") @db.Uuid
+    sourceType    KnowledgeSourceType   @map("source_type")
+    status        KnowledgeSourceStatus @default(pending)
+    progress      Int                   @default(0)
+    title         String?               @db.VarChar(256)
+
+    // Полиморфные поля по типу источника:
+    storageKey    String?               @map("storage_key")   // S3/MinIO ключ для video/audio/pdf/docx
+    sourceUrl     String?               @map("source_url")    // для YouTube/article URL адаптеров
+    rawText       String?               @map("raw_text")      @db.Text  // TEXT адаптер — вход как есть
+    extractedText String?               @map("extracted_text") @db.Text // унифицированный результат после адаптера
+
+    metadata      Json?                                                 // свободные метаданные (длительность, автор, FF-флаги)
+    error         String?                                    @db.Text   // текст последней ошибки ingestion (если failed)
+
+    createdAt     DateTime              @default(now())      @map("created_at")
+    updatedAt     DateTime              @updatedAt           @map("updated_at")
+    startedAt     DateTime?                                  @map("started_at")
+    completedAt   DateTime?                                  @map("completed_at")
+
+    @@index([userId, createdAt])
+    @@index([status, createdAt])
+    @@map("knowledge_sources")
+}
+
+enum KnowledgeSourceType {
+    text     // plain text payload — адаптер Phase 1 (MVP)
+    video    // mp4/mkv/... → Groq Whisper через NestJS worker (Phase 2)
+    audio    // mp3/wav/... → Groq Whisper (Phase 2)
+    pdf      // PDF документ → pdf-parse (Phase 3)
+    docx     // DOCX документ (Phase 3)
+    youtube  // YouTube URL → yt-dlp + Whisper (Phase 4)
+    article  // web URL → cheerio + readability (Phase 4)
+
+    @@map("knowledge_source_type")
+}
+
+enum KnowledgeSourceStatus {
+    pending     // создан, ждёт обработки
+    processing  // идёт ingestion/embedding
+    ready       // готов к retrieval
+    failed      // ошибка, детали в error
+
+    @@map("knowledge_source_status")
+}
