@@ -48,23 +48,55 @@
 
 **Embedding provider:** `OpenAI text-embedding-3-small` 1536 dim — настраивается **в Flowise-ноде**, slovo про это не знает. Переключить в будущем на Cohere / Ollama — меняем ноду во Flowise UI, slovo не трогаем.
 
-### Rich context сборка — на стороне feeder'а
+### Rich context сборка — в два шага
 
-**Feeder (crm-aqua-kinetics-back) сам собирает текст для embedding** и шлёт в slovo готовый `contentForEmbedding: string`. Причины:
-- CRM уже знает про System Bundle структуру MoySklad, `parseServiceRefs`, `parseComponentRefs`, `GroupService.getGroupBundle`
-- slovo остаётся generic — просто форвардит то что пришло Flowise'у, не парсит чужие custom-attributes
-- Новый feeder (1С когда будет) сам решает как собирать rich text
+**Часть 1 — feeder шлёт "сырой" текст:**
 
-Что включает feeder в `contentForEmbedding`:
+`crm-aqua-kinetics-back` собирает текстовую часть (без картинок) из MoySklad структуры:
+- CRM знает про System Bundle, `parseServiceRefs`, `parseComponentRefs`, `GroupService.getGroupBundle`
+- slovo остаётся generic — не парсит чужие custom-attributes
+- Новый feeder (1С в будущем) сам решает как собирать rich text
+
+Что включает feeder в `contentForEmbedding` (text-part):
 ```
 Товар: ${product.name}
-${product.description ? 'Описание: ' + product.description : ''}
+${product.description ? 'Описание: ' + product.description : '(описание отсутствует)'}
 Категория: ${group.pathName}
 Контекст группы: ${systemBundle?.description ?? ''}
 ${relevant_attributes.map(a => a.name + ': ' + a.value).join('\n')}
+Услуги для этого товара: ${relatedServicesNames.join(', ')}
+Расходники (картриджи): ${relatedCartridgesNames.join(', ')}
 ```
 
-slovo принимает эту строку + метаданные → кладёт метаданные в свою Prisma БД + шлёт текст в Flowise upsert endpoint (Flowise эмбедит и хранит в своём pgvector).
+**Описание часто отсутствует** в MoySklad (менеджеры не всегда его заполняют) — поэтому vision-extraction картинок становится главным источником семантики для embedding.
+
+**Часть 2 — slovo обогащает через vision описания картинок:**
+
+Feeder шлёт `imageUrls: string[]` для каждого товара. slovo:
+1. Считает `imagesHash = SHA-256(sorted(urls).join('\n'))`.
+2. Если hash совпадает с сохранённым в Prisma — берёт кэшированный `visionDescriptionsText`, не перегенерирует.
+3. Если hash новый / изменился — параллельно прогоняет каждую картинку через `vision-describer` chatflow, aggregating descriptions, сохраняет в Prisma.
+4. Вставляет в финальный embedding-text блок `Вид на фото: ${visionDescriptionsText}`.
+
+Итоговый rich text (feeder-text + vision-text) → slovo отправляет в Flowise upsert → OpenAI embeddings + Postgres Vector Store.
+
+**Почему vision cache важен:**
+
+- MoySklad картинки меняются редко (новые модели раз в месяцы, фотографии ревизируются ещё реже)
+- Re-generate vision при каждом sync = лишние $1.50 на каждые 500 товаров (даже если текст не изменился)
+- Hash-based инвалидация: изменилась картинка → только для этого товара новый vision pass. Dev стоимость: первоначальный full sync ~$1.50, далее < $0.10 в неделю.
+
+### Изображения — что где хранится
+
+| Артефакт | Где живёт | Зачем |
+|---|---|---|
+| Бинарные файлы картинок | **MoySklad** (первоисточник) / CDN если есть | slovo их не скачивает, только URLs |
+| `imageUrls: string[]` | Prisma `catalog_items.image_urls` JSONB | для отображения на фронте и расчёта imagesHash |
+| `imagesHash` | Prisma `catalog_items.images_hash` CHAR(64) | инвалидация vision-cache |
+| `visionDescriptionsText` | Prisma `catalog_items.vision_descriptions_text` TEXT | aggregate vision-описаний для embedding + диагностики |
+| Embedding vector | Flowise-managed таблица в той же БД | semantic search |
+
+Per-image vision descriptions не храним **отдельно** (выделенная таблица `catalog_item_images`) пока не понадобится показывать на фронте "по этой картинке AI сказал X". Сейчас aggregate-текст достаточен.
 
 ### Services: единая таблица, не отдельная
 
@@ -108,21 +140,27 @@ MoySklad `ProductFolder.pathName` — **не таксономия**, а исто
 ### Ingestion (push от внешних feeder'ов через bulk API)
 
 ```mermaid
-flowchart LR
-    subgraph external["Feeder'ы (CRM / 1C / скрипты)"]
-        FEEDER[CRM cache<br/>invalidation / manual refresh]
-    end
+flowchart TB
+    FEEDER[CRM feeder<br/>cache invalidation] -->|POST /catalog/items/bulk<br/>+ items: имя, описание, imageUrls, attrs| API[slovo<br/>CatalogIngestController]
+    API --> VALIDATE[Валидация DTO + API key]
 
-    FEEDER -->|POST /catalog/items/bulk<br/>+ API key| API[slovo<br/>CatalogIngestController]
-    API --> PARSE[Валидация + нормализация]
-    PARSE --> DIFF{content_hash<br/>изменился?}
-    DIFF -->|новая запись<br/>или hash поменялся| FWUP[Flowise<br/>POST /api/v1/vector/upsert/catalog]
-    FWUP --> EMBED[OpenAI text-embedding-3-small<br/>внутри Flowise]
-    EMBED --> VSTORE[(pgvector<br/>Flowise-managed)]
-    DIFF -->|hash совпадает| META[UPDATE только metadata<br/>price, attrs, last_seen_at]
-    META --> META_DB[(catalog_items<br/>Prisma-managed)]
-    PARSE --> META_DB
-    PARSE -->|syncMode=full| GC[SOFT-DELETE Prisma items<br/>+ DELETE vectors в Flowise]
+    VALIDATE --> IMGDIFF{imagesHash<br/>изменился?}
+    IMGDIFF -->|да, или новая запись| FWVIS[Flowise vision-describer<br/>параллельно по всем imageUrls]
+    FWVIS --> AGG[aggregate vision<br/>descriptions text]
+    AGG --> RICH[Собираем rich text:<br/>feeder-text + vision-text]
+    IMGDIFF -->|совпадает| CACHE[берём visionDescriptionsText<br/>из Prisma кэша]
+    CACHE --> RICH
+
+    RICH --> CHDIFF{contentHash<br/>изменился?}
+    CHDIFF -->|да| FWUP[Flowise catalog-embed-search<br/>POST /vector/upsert]
+    FWUP --> EMBED[OpenAI embedding 1536-dim]
+    EMBED --> VSTORE[(Flowise-managed<br/>pgvector)]
+    CHDIFF -->|нет| META_ONLY[UPDATE только метаданные]
+
+    RICH --> META_DB[(Prisma catalog_items:<br/>base + imageUrls + imagesHash<br/>+ visionDescriptionsText + contentHash)]
+    META_ONLY --> META_DB
+
+    VALIDATE -->|syncMode=full| GC[SOFT-DELETE items<br/>+ DELETE vectors]
     GC --> META_DB
     GC --> FWDEL[Flowise vector delete]
 ```
@@ -274,12 +312,18 @@ model CatalogItem {
     description        String?   @db.Text
     salePriceKopecks   Int?      @map("sale_price_kopecks")
     categoryPath       String?   @map("category_path")
-    imageUrl           String?   @map("image_url")
     isVisible          Boolean   @default(true) @map("is_visible")
     rangForApp         Int?      @map("rang_for_app")  // ручной приоритет из MoySklad для ranking boost
 
-    // Rich content — то что feeder собрал для embedding (для re-embed при смене
-    // модели можно пересчитать не ходя в MoySklad)
+    // Картинки — массив URL из MoySklad. slovo их не скачивает, только URL.
+    // Используется для отображения на фронте и для вычисления vision-cache.
+    imageUrls              Json?   @map("image_urls")                 // string[]
+    imagesHash             String? @map("images_hash") @db.Char(64)   // SHA-256(sorted urls) — ключ vision-cache
+    visionDescriptionsText String? @map("vision_descriptions_text") @db.Text  // aggregate от всех картинок после vision-describer
+
+    // Rich content для embedding — собирается в slovo как:
+    //   feeder-text + "Вид на фото: " + visionDescriptionsText
+    // Хранится для re-embed при смене модели или изменении rich text формата.
     contentForEmbedding String   @map("content_for_embedding") @db.Text
 
     // Связи (ID list в JSONB) — для enrichment при search:
@@ -333,16 +377,20 @@ Content-Type: application/json
 
       // Базовые поля для отображения / фильтрации
       name: "Аквафор DWM-101S",
-      description: "Фильтр обратного осмоса с минерализатором",
+      description: "Фильтр обратного осмоса с минерализатором",   // может быть null / пустой
       salePriceKopecks: 4500000,            // 45,000.00 ₽
       categoryPath: "Фильтры / Обратный осмос",
-      imageUrl: "https://...",
+      imageUrls: [                           // массив всех картинок товара из MoySklad
+        "https://api.moysklad.ru/images/abc-1.jpg",
+        "https://api.moysklad.ru/images/abc-2.jpg"
+      ],
       isVisible: true,
       rangForApp: 5,                        // ручной приоритет менеджера из MoySklad
 
-      // Rich content для embedding — feeder уже собрал из name + description +
-      // group.systemBundle.description + attributes. slovo эмбедит как есть.
-      contentForEmbedding: "Товар: Аквафор DWM-101S\nОписание: ...\nКатегория: ...\nКонтекст группы: ...",
+      // Rich content (text-part) для embedding — feeder собрал из name + description +
+      // group.systemBundle.description + attributes + related services/cartridges names.
+      // slovo дополнит блок "Вид на фото" из vision-cache и затем эмбедит.
+      contentForEmbedding: "Товар: Аквафор DWM-101S\nОписание: ...\nКатегория: ...\nКонтекст группы: ...\nУслуги: Монтаж, Настройка\nРасходники: K1-07, K5-17",
 
       // Связи — ID list, feeder собирает из parseServiceRefs / parseComponentRefs.
       // slovo хранит в JSONB attributes, при search-enrichment JOIN по этим id.
@@ -377,6 +425,154 @@ Response:
 **Impact:** если MoySklad обновил только цену товара (name/description/group.description не тронуты) — `contentForEmbedding` у feeder'а получится тот же → тот же hash → embedding не пересчитываем, экономим OpenAI-вызов.
 
 Если изменилось хоть одно из полей которые feeder включает в rich text (например менеджер поправил описание группы) — hash меняется → слово пересчитывается. Это правильное поведение: группа влияет на все товары в ней, при её редактировании пересчитать embeddings — ок.
+
+---
+
+## UX сценарии для фронта
+
+Три основных сценария использования со стороны `prostor-app` / `crm-aqua-kinetics-front`. Все идут через `crm-aqua-kinetics-back` (он proxy'ит запросы к slovo и обогащает PII-специфичной логикой если нужно).
+
+### Сценарий 1 — поиск товаров/услуг текстом
+
+**Экран:** поисковая строка в prostor-app, пользователь (менеджер / инженер / клиент) пишет query на естественном языке.
+
+```mermaid
+sequenceDiagram
+    participant UI as prostor-app (фронт)
+    participant CRM as crm-aqua-kinetics-back
+    participant S as slovo /catalog/search/text
+    participant FW as Flowise catalog-embed-search
+    participant DB as Prisma catalog_items
+
+    UI->>CRM: POST /api/catalog/search<br/>{ q: "фильтр для жёсткой воды", limit: 10 }
+    CRM->>S: POST /catalog/search/text<br/>+ SLOVO_API_KEY
+    S->>FW: /prediction/<id> { question: q }
+    FW-->>S: ranked docs [{ catalogItemId, score }]
+    S->>DB: SELECT + enrichment (services, cartridges)
+    DB-->>S: enriched items
+    S-->>CRM: { products, services, cartridges }
+    CRM->>CRM: фильтрация по правам пользователя, добавление PII-контекста (например userOrders)
+    CRM-->>UI: JSON
+    Note over UI: Рендер карточек товаров<br/>кнопки "заказать монтаж" / "купить картриджи"
+```
+
+**Что видит пользователь:**
+- Карточка товара: картинка + название + цена + краткое описание
+- Рядом badges: «монтаж 2,500 ₽», «сменные картриджи от 700 ₽» (из enrichment)
+- Кнопка «В заказ» (добавляет товар + выбранные услуги/расходники)
+- Badge AI-score (опционально для дебага менеджера)
+
+### Сценарий 2 — поиск по фото
+
+**Экран:** кнопка «📷 Подобрать по фото», клиент прислал фото в WhatsApp / Telegram, менеджер загружает в prostor-app.
+
+```mermaid
+sequenceDiagram
+    participant UI as prostor-app
+    participant CRM as crm-aqua-kinetics-back
+    participant S as slovo /catalog/search/image
+    participant FWV as Flowise vision-describer
+    participant FWE as Flowise catalog-embed-search
+    participant DB as Prisma
+
+    UI->>CRM: multipart image + { limit: 5 }
+    CRM->>S: /catalog/search/image (multipart forward)
+    S->>FWV: /prediction/<vision-id> + image base64
+    FWV-->>S: JSON { is_relevant, category, brand, description_ru, confidence }
+
+    alt is_relevant = false (кот, документ)
+        S-->>CRM: 400 + vision_output
+        CRM-->>UI: "На фото не оборудование, уточните текстом"
+    else is_relevant = true
+        S->>FWE: /prediction/<search-id> { question: description_ru + features }
+        FWE-->>S: ranked docs
+        S->>DB: enrichment
+        DB-->>S: items + services + cartridges
+        S-->>CRM: { products, services, cartridges, vision_output }
+        CRM-->>UI: + vision output для прозрачности
+    end
+
+    Note over UI: Шапка «AI распознал: обратный осмос Аквафор PRO»<br/>Ниже — карточки товаров как в сценарии 1
+```
+
+**Что видит пользователь:**
+- В шапке результата: badge «AI распознал: {category}, бренд {brand}, уверенность {confidence}»
+- Кнопка «Уточнить» (открывает text search с предзаполненным описанием)
+- Список карточек товаров (тот же UX что в сценарии 1)
+
+### Сценарий 3 — ассистент по проблемам с водой (будущее, post-PR8)
+
+**Экран:** чат-бот в prostor-app — клиент описывает проблему естественным языком.
+
+```mermaid
+sequenceDiagram
+    participant UI as prostor-app чат
+    participant CRM as crm-aqua-kinetics-back
+    participant S as slovo /advice/water-problem
+    participant LLM as Flowise claude-haiku-classifier
+    participant FW as Flowise catalog-embed-search
+
+    UI->>CRM: "У меня жёлтая вода из под крана"
+    CRM->>S: /advice/water-problem { message }
+    S->>LLM: классифицирует проблему → "железо"
+    LLM-->>S: { problems: ["iron"], severity: "medium" }
+    S->>FW: search "обезжелезиватель для дома"
+    FW-->>S: ranked docs
+    S-->>CRM: { diagnosis, products, cross_sell: water_analysis_link }
+    CRM-->>UI: чат-ответ с карточками товаров + предложение заказать анализ воды
+```
+
+Это уже **агентский flow**, появится в PR после PR8 когда будет готова catalog-search база.
+
+### Response DTO — что получает фронт
+
+```typescript
+// GET-like ответ на все сценарии поиска
+type CatalogSearchResponse = {
+    products: Array<{
+        id: string                   // slovo CatalogItem.id
+        externalId: string            // MoySklad uuid — для cross-reference с CRM
+        name: string
+        description: string | null
+        imageUrls: string[]           // 0..N, фронт показывает первую или слайдер
+        salePriceKopecks: number | null
+        categoryPath: string | null
+        score: number                 // final_score из hybrid ranking
+        scoreBreakdown?: {            // только в dev для отладки
+            vector: number
+            rang: number
+            category: number
+        }
+    }>
+    services: Array<{
+        id: string
+        name: string
+        rateOfHours: number | null
+        salePriceKopecks: number | null
+        sourceProductIds: string[]    // из каких товаров подтянули (для UI группировки)
+    }>
+    cartridges: Array<{
+        id: string
+        name: string
+        salePriceKopecks: number | null
+        lifespanMonths: number | null
+        sourceProductIds: string[]
+    }>
+    visionOutput?: {                  // только для image search
+        isRelevant: boolean
+        category: string | null
+        brand: string | null
+        description: string
+        confidence: 'high' | 'medium' | 'low'
+    }
+    debug?: {                         // только в dev
+        queryText: string
+        embeddingProvider: string
+    }
+}
+```
+
+Фронт получает **всё нужное одним запросом** — больше не делает запросы за услугами или картриджами. Всё уже enrichment'ом подтянуто.
 
 ---
 
@@ -449,6 +645,20 @@ Response:
 - ❌ Не думаем про prod-деплой / cost optimization
 
 Финал Phase 0 — **один JSON-файл с промптом который работает** + репорт "на 15 фото работает N/15 корректно". Этот промпт идёт в PR5.
+
+---
+
+## Стоимость — разово и инкрементально
+
+| Операция | Единица | Цена | Частота | Итого |
+|---|---|---|---|---|
+| **Первый full ingest** 500 товаров с 3 картинками в среднем | 500 Vision-пассов + 500 embedding | Claude Vision $0.003 × 1500 + OpenAI embed $0.003 × 500 | разово | **~$6** |
+| **Incremental update** каталога (5-10 товаров поменялось в день) | vision только для изменившихся картинок + embedding | ~$0.01-0.05/день | ежедневно | **$0.30-1.50/мес** |
+| **Text search** запрос | 1 OpenAI embedding (~20 tokens) | $0.0000004 | 100 в день | **$0.001/мес** |
+| **Image search** запрос | 1 Vision + 1 embedding + 1 search | $0.003 + $0.0000004 + $0 | 50 в день | **$4.5/мес** |
+| **ИТОГО в месяц работы** | | | | **$5-10/мес** |
+
+На этом масштабе — **не повод для беспокойства**. Cost оптимизация понадобится если масштаб вырастет на порядок (5K товаров, 1K image searches в день).
 
 ---
 
