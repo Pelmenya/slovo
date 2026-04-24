@@ -2,4 +2,8 @@ export * from './config/app-config.module';
 export * from './config/env.schema';
 export * from './config/parse-cors-origin';
 export * from './errors/sanitize-ingestion-error';
+export * from './http/dev-only-header-auth.guard';
+export * from './http/headers';
+export * from './http/t-user-context';
+export * from './http/user-context.decorator';
 export * from './logger/app-logger.module';

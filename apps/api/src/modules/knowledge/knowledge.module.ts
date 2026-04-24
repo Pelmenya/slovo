@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '@slovo/database';
-import { StorageModule } from '@slovo/storage';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeService } from './knowledge.service';
 
-// Phase 1 (PR4+): CRUD + text-ingestion endpoint.
-// Phase 2 (PR5+): Flowise upsert интеграция + worker для video/pdf адаптеров.
+// Phase 1 (PR4): CRUD + text-ingestion endpoint (синхронно, без worker'а).
+// Phase 2 (PR5+): StorageModule вернётся (video/pdf blob lifecycle),
+// плюс Flowise upsert интеграция + worker для тяжёлых адаптеров.
 // См. docs/features/knowledge-base.md.
 @Module({
-    imports: [DatabaseModule, StorageModule],
+    imports: [DatabaseModule],
     controllers: [KnowledgeController],
     providers: [KnowledgeService],
     exports: [KnowledgeService],

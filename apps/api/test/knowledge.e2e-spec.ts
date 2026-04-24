@@ -158,7 +158,7 @@ describe('Knowledge endpoints (e2e)', () => {
         });
 
         it('аноним не видит источник с userId (ownership)', async () => {
-            const userId = '00000000-0000-0000-0000-000000000099';
+            const userId = '11111111-1111-4111-8111-111111111199';
             const created = await createSource('owned', userId);
             // Без X-User-Id — anonymous → не видит owned источник
             await request(server).get(`/knowledge/sources/${created.id}`).expect(404);
@@ -219,6 +219,18 @@ describe('Knowledge endpoints (e2e)', () => {
         it('400 при невалидных query params', async () => {
             await request(server).get('/knowledge/sources?limit=999').expect(400);
             await request(server).get('/knowledge/sources?page=0').expect(400);
+            await request(server).get('/knowledge/sources?limit=abc').expect(400);
+        });
+
+        it('400 если X-User-Id невалидный UUID', async () => {
+            await request(server)
+                .get('/knowledge/sources')
+                .set('X-User-Id', 'not-a-uuid')
+                .expect(400);
+            await request(server)
+                .get('/knowledge/sources')
+                .set('X-User-Id', 'admin')
+                .expect(400);
         });
     });
 
@@ -236,7 +248,7 @@ describe('Knowledge endpoints (e2e)', () => {
         });
 
         it('аноним не может удалить чужое (ownership)', async () => {
-            const userId = '00000000-0000-0000-0000-000000000088';
+            const userId = '22222222-2222-4222-8222-222222222288';
             const created = await createSource('foreign', userId);
             await request(server).delete(`/knowledge/sources/${created.id}`).expect(404);
             // Всё ещё существует

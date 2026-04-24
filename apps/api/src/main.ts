@@ -1,17 +1,28 @@
 import { NestFactory, Reflector } from '@nestjs/core';
 import { ClassSerializerInterceptor, Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
 import { Logger as PinoLogger } from 'nestjs-pino';
 import { parseCorsOrigin, type TAppEnv } from '@slovo/common';
 import { AppModule } from './app.module';
 
+// Лимит body согласован с MAX_TEXT_SOURCE_LENGTH (500KB) в knowledge-модуле.
+// 600KB — 500KB payload + запас под JSON-обёртку + metadata в будущем.
+// Без явного лимита Express defaulted бы на 100KB — и крупные text-source
+// получали бы 413 до ValidationPipe, без понятной ошибки валидации.
+const BODY_PARSER_LIMIT = '600kb';
+
 async function bootstrap() {
-    const app = await NestFactory.create(AppModule, {
+    const app = await NestFactory.create<NestExpressApplication>(AppModule, {
         bufferLogs: true,
     });
 
     app.useLogger(app.get(PinoLogger));
+
+    app.use(json({ limit: BODY_PARSER_LIMIT }));
+    app.use(urlencoded({ extended: true, limit: BODY_PARSER_LIMIT }));
 
     const configService = app.get<ConfigService<TAppEnv, true>>(ConfigService);
     const logger = new Logger('Bootstrap');

@@ -1,4 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import { DevOnlyHeaderAuthGuard, type TUserContext } from '@slovo/common';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeService } from './knowledge.service';
 import type { KnowledgeSourceResponseDto } from './dto/knowledge-source.response.dto';
@@ -10,6 +11,10 @@ type TKnowledgeServiceMock = {
     list: jest.Mock<Promise<PaginatedKnowledgeSourcesResponseDto>, unknown[]>;
     delete: jest.Mock<Promise<void>, unknown[]>;
 };
+
+const ANON: TUserContext = { anonymous: true };
+const USER_UUID = '00000000-0000-0000-0000-000000000001';
+const USER: TUserContext = { userId: USER_UUID };
 
 const SAMPLE_RESPONSE: KnowledgeSourceResponseDto = {
     id: '479d5323-4268-4add-8ea6-76cd21ad892d',
@@ -39,40 +44,44 @@ describe('KnowledgeController', () => {
         const module: TestingModule = await Test.createTestingModule({
             controllers: [KnowledgeController],
             providers: [{ provide: KnowledgeService, useValue: service }],
-        }).compile();
+        })
+            // Guard-логика (throw на NODE_ENV=production) проверяется отдельным
+            // спеком guard'а и e2e. Здесь нам важно только делегирование в service.
+            .overrideGuard(DevOnlyHeaderAuthGuard)
+            .useValue({ canActivate: () => true })
+            .compile();
 
         controller = module.get<KnowledgeController>(KnowledgeController);
     });
 
     describe('POST /knowledge/sources/text', () => {
-        it('делегирует в service с dto + userId', async () => {
+        it('делегирует в service с dto + user context', async () => {
             service.createTextSource.mockResolvedValue(SAMPLE_RESPONSE);
 
-            const userId = '00000000-0000-0000-0000-000000000001';
             const result = await controller.createText(
                 { title: 'Методика', rawText: 'текст' },
-                userId,
+                USER,
             );
 
             expect(service.createTextSource).toHaveBeenCalledWith(
                 { title: 'Методика', rawText: 'текст' },
-                userId,
+                USER,
             );
             expect(result).toBe(SAMPLE_RESPONSE);
         });
 
-        it('userId=null при отсутствии header (anonymous)', async () => {
+        it('работает с anonymous контекстом', async () => {
             service.createTextSource.mockResolvedValue(SAMPLE_RESPONSE);
-            await controller.createText({ rawText: 'текст' });
+            await controller.createText({ rawText: 'текст' }, ANON);
             expect(service.createTextSource).toHaveBeenCalledWith(
                 { rawText: 'текст' },
-                null,
+                ANON,
             );
         });
     });
 
     describe('GET /knowledge/sources', () => {
-        it('прокидывает query и userId в service.list', async () => {
+        it('прокидывает query и user в service.list', async () => {
             const page: PaginatedKnowledgeSourcesResponseDto = {
                 items: [SAMPLE_RESPONSE],
                 total: 1,
@@ -81,37 +90,37 @@ describe('KnowledgeController', () => {
             };
             service.list.mockResolvedValue(page);
 
-            const result = await controller.list({ page: 1, limit: 20 }, 'u1');
-            expect(service.list).toHaveBeenCalledWith({ page: 1, limit: 20 }, 'u1');
+            const result = await controller.list({ page: 1, limit: 20 }, USER);
+            expect(service.list).toHaveBeenCalledWith({ page: 1, limit: 20 }, USER);
             expect(result).toBe(page);
         });
     });
 
     describe('GET /knowledge/sources/:id', () => {
-        it('делегирует в service.findById с userId', async () => {
+        it('делегирует в service.findById с user', async () => {
             service.findById.mockResolvedValue(SAMPLE_RESPONSE);
-            const result = await controller.findOne(SAMPLE_RESPONSE.id, 'u1');
-            expect(service.findById).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, 'u1');
+            const result = await controller.findOne(SAMPLE_RESPONSE.id, USER);
+            expect(service.findById).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, USER);
             expect(result).toBe(SAMPLE_RESPONSE);
         });
 
-        it('anonymous режим при отсутствии header', async () => {
+        it('anonymous контекст', async () => {
             service.findById.mockResolvedValue(SAMPLE_RESPONSE);
-            await controller.findOne(SAMPLE_RESPONSE.id);
-            expect(service.findById).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, null);
+            await controller.findOne(SAMPLE_RESPONSE.id, ANON);
+            expect(service.findById).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, ANON);
         });
     });
 
     describe('DELETE /knowledge/sources/:id', () => {
-        it('делегирует в service.delete с userId', async () => {
+        it('делегирует в service.delete с user', async () => {
             service.delete.mockResolvedValue(undefined);
-            await controller.delete(SAMPLE_RESPONSE.id, 'u1');
-            expect(service.delete).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, 'u1');
+            await controller.delete(SAMPLE_RESPONSE.id, USER);
+            expect(service.delete).toHaveBeenCalledWith(SAMPLE_RESPONSE.id, USER);
         });
 
-        it('возвращает void (без ответа)', async () => {
+        it('возвращает void', async () => {
             service.delete.mockResolvedValue(undefined);
-            const result = await controller.delete(SAMPLE_RESPONSE.id);
+            const result = await controller.delete(SAMPLE_RESPONSE.id, ANON);
             expect(result).toBeUndefined();
         });
     });
