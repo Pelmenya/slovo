@@ -1,0 +1,29 @@
+{
+    "_meta": {
+        "test_number": 6,
+        "image_description": "Большая группа людей на улице, некоторые держат белые пластиковые вёдра. Гуманитарная раздача воды или аналогичная сцена. Оборудования водоочистки в кадре нет.",
+        "ground_truth": {
+            "is_relevant": false,
+            "semi_relevant_edge": "вёдра могут выглядеть как 'контейнеры для воды', но это НЕ оборудование водоочистки"
+        },
+        "timestamp": "2026-04-24T07:40:00Z",
+        "prompt_version": "v1",
+        "model": "claude-sonnet-4-6",
+        "assessment": {
+            "is_relevant_correct": true,
+            "no_false_positive": "вёдра не спутаны с оборудованием — Claude правильно не триггерится на присутствие 'водного' контекста",
+            "description_accurate": true,
+            "confidence_high_justified": true
+        }
+    },
+    "output": {
+        "is_relevant": false,
+        "category": null,
+        "brand": null,
+        "model_hint": null,
+        "features": [],
+        "condition": null,
+        "description_ru": "На фото большая группа людей на улице, некоторые держат белые пластиковые ведра или контейнеры. Оборудование водоочистки отсутствует.",
+        "confidence": "high"
+    }
+}

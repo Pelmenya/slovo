@@ -1,0 +1,32 @@
+{
+    "_meta": {
+        "test_number": 3,
+        "image_description": "Стрит-арт коллаж: женская фигура в жёлтой рубашке и красной юбке, сидящая на стуле, с головой кошки, фон — закат.",
+        "source": "loremflickr.com/400/300/cat/all",
+        "ground_truth": {
+            "is_relevant": false,
+            "expected_behavior": "все категорийные поля null, description_ru описывает что на фото, confidence: high (уверен в нерелевантности)"
+        },
+        "timestamp": "2026-04-24T07:32:00Z",
+        "prompt_version": "v1",
+        "model": "claude-sonnet-4-6",
+        "via": "Flowise API /api/v1/prediction",
+        "assessment": {
+            "is_relevant_correct": true,
+            "nullification_correct": "category/brand/model_hint все null, features [] — как в промпте",
+            "description_accurate": true,
+            "confidence_high_justified": true,
+            "minor_deviation": "condition=null, а промпт ожидал 'не определено' для is_relevant=false — обновить v2 (разрешить оба) либо уточнить в схеме"
+        }
+    },
+    "output": {
+        "is_relevant": false,
+        "category": null,
+        "brand": null,
+        "model_hint": null,
+        "features": [],
+        "condition": null,
+        "description_ru": "На фото арт-коллаж с изображением фигуры в одежде с головой кошки, сидящей на стуле на фоне заката.",
+        "confidence": "high"
+    }
+}

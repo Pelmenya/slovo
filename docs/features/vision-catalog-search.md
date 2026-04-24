@@ -26,6 +26,60 @@
 
 ---
 
+## Архитектурные решения
+
+### Развёртывание
+
+**slovo — standalone API-сервис.** Отдельный репо, отдельный Docker deploy, HTTP API для внешних feeder'ов. `crm-aqua-kinetics-back` — первый feeder, подключается через HTTP к `POST /catalog/items/bulk` и query endpoints.
+
+**Долгосрочный путь (когда усложнится):** выделить pure logic в `slovo/libs/catalog/` + публиковать как `@slovo/catalog` в private npm registry. CRM получит выбор — HTTP или прямой импорт lib. Сейчас YAGNI, начинаем с HTTP.
+
+### Embedding провайдер
+
+**OpenAI `text-embedding-3-small`** (1536 dim) через `@anthropic-ai/sdk`-style клиент. Причины:
+- Доступен через уже настроенный proxy (host.docker.internal:10810 → DE)
+- Работает с существующим billing (credits на аккаунте)
+- Цена копейки: `$0.02 / 1M tokens × ~300 tokens × 500 items = $0.003` за полный re-embed каталога
+
+**Абстракция `EmbedderService`** в `libs/llm/` — с переключением провайдера через env (`EMBEDDING_PROVIDER=openai|cohere|ollama`). Если в будущем:
+- Нужна сильная multilingual для mixed RU/EN описаний → Cohere `embed-multilingual-light-v3` (через ту же BYOK модель)
+- Локальный fallback / zero-cost → Ollama `bge-m3` или `multilingual-e5-large` на доступной GPU (пример локального vision-стека есть в `water-analysis-parser` проекте, инфра знакома)
+
+Но всё это — потом. На PR7 берём OpenAI напрямую.
+
+### Rich context сборка — на стороне feeder'а
+
+**Feeder (crm-aqua-kinetics-back) сам собирает текст для embedding** и шлёт в slovo готовый `contentForEmbedding: string`. Причины:
+- CRM уже знает про System Bundle структуру MoySklad, `parseServiceRefs`, `parseComponentRefs`, `GroupService.getGroupBundle`
+- slovo остаётся generic — просто эмбедит то что пришло, не парсит чужие custom-attributes
+- Новый feeder (1С когда будет) сам решает как собирать rich text
+
+Что включает feeder в `contentForEmbedding`:
+```
+Товар: ${product.name}
+${product.description ? 'Описание: ' + product.description : ''}
+Категория: ${group.pathName}
+Контекст группы: ${systemBundle?.description ?? ''}
+${relevant_attributes.map(a => a.name + ': ' + a.value).join('\n')}
+```
+
+slovo просто получает эту строку и прогоняет через embedder. Field `rawContent` можно хранить в БД для аудита / re-embed (если сменим модель → пересчитаем embeddings без повторного fetch из MoySklad).
+
+### Services: единая таблица, не отдельная
+
+`CatalogItem` с discriminator `type: 'product' | 'service' | 'bundle' | 'cartridge'`. Все — в одной pgvector таблице.
+- Услуги ищутся текстом (`"монтаж обратного осмоса"`) — embedding pipeline тот же
+- Image search фильтрует `WHERE type IN ('product', 'cartridge')`, услуги исключаются
+- Связи через ID list в JSONB `attributes` (MVP) — не нормализуем таблицы связей пока не понадобится reverse lookup
+
+### Игнорируем кривые категории MoySklad как primary signal
+
+MoySklad `ProductFolder.pathName` — **не таксономия**, а исторически сложенная иерархия менеджеров. Используем только как **дополнительный сигнал** в rich text для embedding. Основной matching — через semantic similarity по description/attributes/group-context, не через filter WHERE category=X.
+
+Если Vision вернул `category: "обратный осмос"` — используем для **ranking boost** при совпадении, но не для жёсткого фильтра.
+
+---
+
 ## Pipeline
 
 ### Ingestion (push от внешних feeder'ов через bulk API)
@@ -67,15 +121,17 @@ sequenceDiagram
     participant OAI as OpenAI embeddings
     participant PG as pgvector (HNSW)
 
-    Client->>API: { q: "фильтр для жёсткой воды", limit: 5 }
+    Client->>API: { q: "фильтр для жёсткой воды", limit: 5, includeServices: true }
     API->>OAI: embed(q)
     OAI-->>API: vector[1536]
-    API->>PG: SELECT *, embedding <-> $1 AS distance<br/>FROM catalog_items<br/>WHERE is_visible AND deleted_at IS NULL<br/>ORDER BY embedding <-> $1<br/>LIMIT 5
-    PG-->>API: top-5 items
-    API-->>Client: [ { id, name, price, imageUrl, score } ]
+    API->>PG: SELECT *, embedding <-> $1 AS distance<br/>FROM catalog_items<br/>WHERE is_visible AND deleted_at IS NULL<br/>AND external_type IN ('product','service','cartridge')<br/>ORDER BY hybrid_score DESC<br/>LIMIT 20
+    PG-->>API: top-20 items
+    API->>PG: SELECT * FROM catalog_items<br/>WHERE id = ANY($relatedServiceIds from top-20)
+    PG-->>API: enrichment services
+    API-->>Client: { products, services, cartridges, debug }
 ```
 
-### Query — image (hybrid)
+### Query — image (hybrid vision→text→embedding)
 
 ```mermaid
 sequenceDiagram
@@ -86,16 +142,87 @@ sequenceDiagram
     participant PG as pgvector
 
     Client->>API: multipart image + { limit: 5 }
-    API->>CV: messages.create with image block + prompt
-    CV-->>API: structured JSON { category, model_hint, features[], description }
-    API->>OAI: embed(description + features)
-    OAI-->>API: vector[1536]
-    API->>PG: cosine top-K SELECT
-    PG-->>API: top-5 items
-    API-->>Client: { items, vision_output } (оба — для прозрачности)
+    API->>CV: messages.create with image block + prompt v1
+    CV-->>API: structured JSON { is_relevant, category, brand, features[], description_ru }
+
+    alt is_relevant=false
+        API-->>Client: { error: "image_not_relevant", vision_output }
+    else is_relevant=true
+        API->>OAI: embed(description_ru + features joined)
+        OAI-->>API: vector[1536]
+        API->>PG: hybrid search<br/>WHERE type IN ('product','cartridge')<br/>+ optional category_boost
+        PG-->>API: top-K items
+        API->>PG: enrichment (related services/components)
+        API-->>Client: { products, services, cartridges, vision_output, debug }
+    end
 ```
 
-**Почему "hybrid":** Vision даёт текст → embedding от текста → поиск по каталогу embedding'ов. Не сравниваем image embedding напрямую с текст embedding — это разные семантические пространства (CLIP решает эту проблему, но не нужен при 500 товарах — text bridge проще).
+**Почему "hybrid" именно через текстовый мост:** Vision → текст → embedding → поиск по каталогу embedding'ов. Не сравниваем image-embedding напрямую с text-embedding (разные семантические пространства). CLIP мог бы решить это напрямую, но не нужен при 500 товарах — text bridge проще и использует ту же embedding-модель что и text search.
+
+### Hybrid ranking
+
+Финальный score для каждого кандидата:
+
+```
+final_score = 0.7 × vector_similarity_normalized   // 0..1 из cosine distance
+            + 0.2 × rang_boost                      // 0..1 из rangForApp (нормализованный)
+            + 0.1 × category_boost                  // 0..1 если Vision category совпала с item.categoryPath
+```
+
+- `vector_similarity_normalized = 1 - cosine_distance` (cosine в pgvector даёт 0 для идентичных, нам нужно наоборот)
+- `rang_boost = coalesce(rangForApp, 0) / max_rang` — нормализация относительно максимума в каталоге. Поднимает "поставленные менеджером в приоритет" товары.
+- `category_boost` — если Vision вернул `category='обратный осмос'` и у товара `categoryPath` содержит "осмос" — +0.1. Иначе 0. Мягкий boost, не жёсткий фильтр.
+
+Веса 0.7 / 0.2 / 0.1 — начальные. Тунить по реальному UX.
+
+### Enrichment payload — что отдаём клиенту
+
+```json
+{
+  "products": [
+    {
+      "id": "...",
+      "externalId": "moysklad-uuid",
+      "name": "Аквафор DWM-101S",
+      "description": "...",
+      "salePriceKopecks": 4500000,
+      "imageUrl": "...",
+      "categoryPath": "Фильтры/Обратный осмос",
+      "score": 0.87,
+      "score_breakdown": {
+        "vector": 0.82,
+        "rang": 0.8,
+        "category": 1.0
+      }
+    }
+  ],
+  "services_suggested": [
+    {
+      "id": "...",
+      "name": "Монтаж фильтра под мойкой",
+      "rateOfHours": 2,
+      "source_product_ids": ["product-uuid-1"],   // из какого товара подтянули
+      "salePriceKopecks": 500000
+    }
+  ],
+  "cartridges_compatible": [
+    {
+      "id": "...",
+      "name": "K1-07 префильтр",
+      "salePriceKopecks": 70000,
+      "lifespan_months": 6,
+      "source_product_ids": ["product-uuid-1"]
+    }
+  ],
+  "vision_output": { ... },                 // при image search — для прозрачности
+  "debug": {
+    "query_text": "...",                   // для text search или description_ru из vision
+    "embedding_provider": "openai:text-embedding-3-small"
+  }
+}
+```
+
+Клиент получает **всё нужное за один запрос** — не ходит дополнительно за услугами и картриджами. Пользовательский UX: товар, сразу под ним кнопки "заказать монтаж" / "нужны картриджи".
 
 ---
 
@@ -110,19 +237,30 @@ model CatalogItem {
     // externalId — id в источнике истины (moyskladId для MoySklad).
     externalSource     String    @map("external_source") @db.VarChar(64)
     externalId         String    @map("external_id")     @db.VarChar(256)
-    externalType       String    @map("external_type")   @db.VarChar(32)   // product | service | bundle
+    externalType       String    @map("external_type")   @db.VarChar(32)   // product | service | bundle | cartridge
     externalUpdatedAt  DateTime  @map("external_updated_at")
 
+    // Базовые поля для отображения / фильтрации
     name               String    @db.VarChar(512)
     description        String?   @db.Text
-    attributes         Json?                                       // raw attributes from feeder
-    salePriceKopecks   Int?      @map("sale_price_kopecks")       // в копейках, без float
+    salePriceKopecks   Int?      @map("sale_price_kopecks")
     categoryPath       String?   @map("category_path")
     imageUrl           String?   @map("image_url")
     isVisible          Boolean   @default(true) @map("is_visible")
+    rangForApp         Int?      @map("rang_for_app")  // ручной приоритет из MoySklad для ranking boost
+
+    // Rich content — то что feeder собрал для embedding (для re-embed при смене
+    // модели можно пересчитать не ходя в MoySklad)
+    contentForEmbedding String   @map("content_for_embedding") @db.Text
+
+    // Связи (ID list в JSONB) — для enrichment при search:
+    //   { relatedServiceIds: ["..."], relatedComponentIds: ["..."] }
+    // MVP без нормализации. Когда понадобится reverse-lookup ("какие товары
+    // совместимы с этим картриджем") — выделим catalog_item_components table.
+    attributes         Json?                                       // raw MoySklad attrs + relatedServiceIds + relatedComponentIds
 
     // Delta-sync маркеры
-    contentHash        String    @map("content_hash") @db.Char(64) // SHA-256(name + description)
+    contentHash        String    @map("content_hash") @db.Char(64) // SHA-256(contentForEmbedding)
     lastSeenAt         DateTime  @default(now()) @map("last_seen_at")
     deletedAt          DateTime? @map("deleted_at")
 
@@ -135,6 +273,7 @@ model CatalogItem {
 
     @@unique([externalSource, externalId])
     @@index([isVisible, deletedAt])
+    @@index([externalType, isVisible, deletedAt])  // для image-search (фильтр по type)
     @@index([lastSeenAt])
     @@index([externalUpdatedAt])
     @@map("catalog_items")
@@ -158,16 +297,34 @@ Content-Type: application/json
   items: [
     {
       externalId: "a0b1c2d3-...",           // id у feeder'а (moyskladId для CRM)
-      externalSource: "moysklad",            // дискриминатор источника
-      externalType: "product",               // product | service | bundle | ...
+      externalSource: "moysklad",           // дискриминатор источника
+      externalType: "product",              // product | service | bundle | cartridge
       externalUpdatedAt: "2026-04-24T07:00:00Z",
+
+      // Базовые поля для отображения / фильтрации
       name: "Аквафор DWM-101S",
       description: "Фильтр обратного осмоса с минерализатором",
-      attributes: { weight: "12кг", rang: 5 },
-      salePriceKopecks: 4500000,             // 45,000.00 ₽
+      salePriceKopecks: 4500000,            // 45,000.00 ₽
       categoryPath: "Фильтры / Обратный осмос",
       imageUrl: "https://...",
-      isVisible: true
+      isVisible: true,
+      rangForApp: 5,                        // ручной приоритет менеджера из MoySklad
+
+      // Rich content для embedding — feeder уже собрал из name + description +
+      // group.systemBundle.description + attributes. slovo эмбедит как есть.
+      contentForEmbedding: "Товар: Аквафор DWM-101S\nОписание: ...\nКатегория: ...\nКонтекст группы: ...",
+
+      // Связи — ID list, feeder собирает из parseServiceRefs / parseComponentRefs.
+      // slovo хранит в JSONB attributes, при search-enrichment JOIN по этим id.
+      relatedServiceIds: ["svc-uuid-1", "svc-uuid-2"],       // до 3 услуг
+      relatedComponentIds: ["cart-uuid-1", "cart-uuid-2"],   // до 5 картриджей
+
+      // Произвольные MoySklad-специфичные атрибуты — свободный JSONB для UI /
+      // будущих фильтров (lifespan, warranty и т.п.).
+      attributes: {
+        lifespanMonths: 12,
+        warrantyRequired: true
+      }
     }
   ]
 }
@@ -176,12 +333,20 @@ Response:
 {
   received: 25,
   created: 3,
-  updated_metadata_only: 18,   // hash совпал, embedding не пересчитан
-  re_embedded: 4,              // hash поменялся или новая запись
+  updated_metadata_only: 18,   // contentHash совпал, embedding не пересчитан
+  re_embedded: 4,              // contentHash поменялся или новая запись
   soft_deleted: 2,             // при syncMode=full
   errors: []
 }
 ```
+
+### Что за `contentHash` и когда пересчитывается embedding
+
+`contentHash = SHA-256(contentForEmbedding)`. Это отличается от v1 плана (где хэш считался по `name + description`) — теперь **весь rich text** участвует в хэше.
+
+**Impact:** если MoySklad обновил только цену товара (name/description/group.description не тронуты) — `contentForEmbedding` у feeder'а получится тот же → тот же hash → embedding не пересчитываем, экономим OpenAI-вызов.
+
+Если изменилось хоть одно из полей которые feeder включает в rich text (например менеджер поправил описание группы) — hash меняется → слово пересчитывается. Это правильное поведение: группа влияет на все товары в ней, при её редактировании пересчитать embeddings — ок.
 
 ---
 
@@ -189,12 +354,13 @@ Response:
 
 | PR | Скоуп | Новая технология |
 |---|---|---|
-| **Phase 0 (сейчас)** | Flowise chatflow "Vision Describer" — экспериментируем с промптами и форматом structured output. Финальный промпт уходит в `libs/llm/prompts/vision-catalog.ts`. | Claude Vision в Flowise UI |
-| **PR5** | `libs/llm/` — тонкая обёртка над `@anthropic-ai/sdk` с vision-методом + `POST /vision/describe` endpoint. Multer upload, base64 encode, Claude sonnet-4-6. Без каталога пока — просто "image → JSON". | Anthropic SDK, multipart upload |
-| **PR6** | `CatalogItem` модель + миграция + `CatalogIngestService` + `POST /catalog/items/bulk` push endpoint с `ApiKeyGuard`. Partial/full sync modes, content-hash delta, soft-delete через last_seen_at. Embeddings **пока не считаем**. slovo не зависит от MoySklad API. | ApiKey auth, idempotent bulk upsert |
-| **PR7** | `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW индекс миграцией. Интеграция с OpenAI embeddings API. `/catalog/search/text` endpoint. Embedding пересчитывается в PR6-флоу только если content-hash поменялся. | pgvector HNSW, OpenAI embeddings |
-| **PR8** | `/catalog/search/image` — полный hybrid pipeline из PR5-7 склеен. Swagger примеры с реальными фото. | End-to-end e2e |
-| **Вне slovo** | Feeder side — в `crm-aqua-kinetics-back` (собственный продукт): cache invalidation hook → POST /catalog/items/bulk. Отдельный PR в том репозитории, к slovo не относится. | crm-aqua-kinetics → slovo integration |
+| **Phase 0 (✅ в процессе)** | Flowise chatflow "Vision Describer" — эксперименты с промптом v1 на тестовых фото. Промпт v1 валидирован на 6 тестах (happy path, edge cases, не-Аквафор бренды, расходники, is_relevant=false). Обнаружены 2 точечных улучшения для v2 (open brand/category вместо closed enum). Финальный промпт → `libs/llm/prompts/vision-catalog.ts` в PR5. | Claude Vision в Flowise UI |
+| **PR5** | `libs/llm/` — `EmbedderService` абстракция + `AnthropicVisionService` (Claude Sonnet 4.6). `POST /vision/describe` endpoint: multipart upload, base64, structured JSON output. Используется в PR8 для image search. | Anthropic SDK, multipart, Claude Vision |
+| **PR6** | `CatalogItem` Prisma-модель (type discriminator product/service/cartridge/bundle) + миграция. `CatalogIngestService` + `POST /catalog/items/bulk` с `ApiKeyGuard`. Partial/full sync, content_hash delta, soft-delete через last_seen_at. JSONB attributes для relatedServiceIds / relatedComponentIds. Embeddings **пока не считаем**. | ApiKey auth, idempotent bulk upsert |
+| **PR7** | Миграция `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW index `vector_cosine_ops`. OpenAI text-embedding-3-small через `EmbedderService`. Пересчёт embedding при INSERT / когда content_hash изменился в PR6-флоу. `/catalog/search/text` endpoint с hybrid ranking (vector × 0.7 + rang × 0.2 + category × 0.1) + enrichment (связанные services/cartridges через JSONB ID-lookup). | pgvector HNSW, OpenAI embeddings, hybrid ranking |
+| **PR8** | `/catalog/search/image` — склейка PR5-7: Claude Vision → `description_ru + features` → embedding → hybrid search → enrichment. Handling `is_relevant=false` → 400 с vision_output. Swagger примеры с реальными фото из test-set Phase 0. | End-to-end vision → catalog search |
+| **PR9 (если понадобится)** | A/B-тест OpenAI vs Cohere multilingual vs Ollama local на реальных RU/EN описаниях. Конфиг `EMBEDDING_PROVIDER` в env. Если OpenAI small справляется — PR9 пропускаем. | Provider-agnostic embedder |
+| **Вне slovo (параллельно)** | Feeder side — в `crm-aqua-kinetics-back`: сервис сборки `contentForEmbedding` из `name + description + group.pathName + systemBundle.description + attributes`. Extraction `relatedServiceIds` / `relatedComponentIds` через существующие `parseServiceRefs`/`parseComponentRefs`. Hook на cache invalidation → POST к slovo. Отдельный PR в crm репозитории. | crm → slovo HTTP integration |
 
 ---
 
@@ -259,10 +425,10 @@ Response:
 
 ## Открытые вопросы
 
-1. **Кто тренирует промпт — ты или я?** Я могу сгенерить 3-4 варианта промпта, ты протестируешь на реальных фото. Или наоборот — ты пишешь, я даю обратную связь.
-2. **Структура JSON output** — окей такая, или что-то добавить/убрать? Возможно `price_hint` (ориентировочная цена) если Claude узнаёт модель?
-3. **Fallback если Vision не уверен.** Возвращать `confidence: 'low'` и запрашивать текст у пользователя? Или сразу искать по тому что распознали?
-4. **Cost budget.** $0.003 за image в Sonnet. 100 запросов в день = $0.30. OK или целимся в Haiku ($0.001/img) ценой качества?
+1. **Промпт v2 после Phase 0.** По результатам 6 тестов в Phase 0 промпт v1 хорош на 4/6 (2 проблемы с closed enum brand/category). Нужен ли v2 с open fields? **Решение:** open fields + post-processing canonicalization в NestJS перед записью в БД.
+2. **Cost budget на Claude Vision.** $0.003 за image в Sonnet. 100 запросов в день = $0.30/день. OK. Haiku ($0.001/img) — запасной вариант если объём превысит 1000/день.
+3. **Веса hybrid ranking (0.7 / 0.2 / 0.1)** — тюнить по UX. Возможна UI с кнопкой "сдвинуть приоритет в сторону популярных" (увеличить rang weight).
+4. **Category canonicalization.** Как маппить Vision `category: "обратный осмос"` → MoySklad `categoryPath: "Фильтры/Обратный осмос/..."`? Lookup table или LLM-based? Решение: lookup table с синонимами в `libs/llm/taxonomy/water-equipment.ts`, LLM-маппинг избыточен для 20-30 категорий.
 
 ---
 

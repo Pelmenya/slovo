@@ -1,0 +1,43 @@
+{
+    "_meta": {
+        "test_number": 2,
+        "image_description": "Аквафор серии PRO (V500?) — моноблочный обратный осмос, чёрный корпус + белые картриджи PRO1 и PRO BMg. Чёткие надписи на картриджах: AQUAPHOR, PRO 1, PRO BMg.",
+        "ground_truth": {
+            "brand": "Аквафор",
+            "product": "Аквафор PRO V500 (или аналогичная PRO-серия)",
+            "category": "обратный осмос",
+            "cartridges": ["PRO 1", "PRO BMg"]
+        },
+        "timestamp": "2026-04-24T07:30:00Z",
+        "prompt_version": "v1",
+        "model": "claude-sonnet-4-6",
+        "via": "Flowise UI chat",
+        "assessment": {
+            "category_correct": true,
+            "brand_correct": true,
+            "model_hint_partial": "прочитал 'Аквафор PRO' — это серия, не точная модель. Claude не знает точный SKU (V500/V550/etc). Но для поиска в каталоге через embedding — достаточно.",
+            "features_accurate": "картриджи PRO1 и PRO BMg правильно прочитаны",
+            "description_ru_quality": "high — конкретные термины (обратный осмос, антибактериальная минерализация, магний)",
+            "confidence_high_justified": true,
+            "json_format_valid": true,
+            "no_markdown_wrapper": true,
+            "no_hallucination": true
+        }
+    },
+    "output": {
+        "is_relevant": true,
+        "category": "обратный осмос",
+        "brand": "Аквафор",
+        "model_hint": "Аквафор PRO",
+        "features": [
+            "картриджи PRO1 и PRO BMg",
+            "чёрно-белый корпус",
+            "под мойкой или настольный",
+            "минерализация с магнием",
+            "антибактериальная защита"
+        ],
+        "condition": "новый в упаковке",
+        "description_ru": "Система обратного осмоса Аквафор PRO с картриджами PRO1 (комбинированная очистка) и PRO BMg (антибактериальная минерализация с магнием). Фильтр питьевой воды под мойку в чёрно-белом корпусе с несколькими ступенями очистки.",
+        "confidence": "high"
+    }
+}

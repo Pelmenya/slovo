@@ -1,0 +1,37 @@
+{
+    "_meta": {
+        "test_number": 5,
+        "image_description": "Мешок таблетированной соли Diamond Crystal Pellets с надписями 'PELLETS', 'Works to ALL Water Softeners', 'Softener Care formula'. Расходник для регенерации ионообменных умягчителей.",
+        "ground_truth": {
+            "brand": "Diamond Crystal",
+            "product_type": "расходник / регенерирующая соль (пеллеты)",
+            "use": "соль для всех ионообменных умягчителей"
+        },
+        "timestamp": "2026-04-24T07:40:00Z",
+        "prompt_version": "v1",
+        "model": "claude-sonnet-4-6",
+        "assessment": {
+            "is_relevant_debatable": "true — расходник для оборудования водоочистки. Если в каталоге MoySklad есть соли/реагенты — то да. Если нет — то false.",
+            "category_wrong": "❌ 'умягчитель' — это не умягчитель, это РАСХОДНИК для умягчителя. В моём enum нет категории 'соль' / 'расходник' / 'реагент'. Claude взял ближайшее доступное.",
+            "brand_issue_same_as_test4": "❌ Diamond Crystal прочитан (в description_ru), но brand=неизвестно. Та же проблема что в #4 — бренд не в enum.",
+            "features_quality": "high — пеллеты, 20 кг, совместимость, Softener Care",
+            "description_ru_quality": "high — keywords для embedding (соль, регенерирующая, ионообменный, пеллеты)"
+        }
+    },
+    "output": {
+        "is_relevant": true,
+        "category": "умягчитель",
+        "brand": "неизвестно",
+        "model_hint": null,
+        "features": [
+            "соль в гранулах (пеллеты)",
+            "для всех умягчителей воды",
+            "формула Softener Care",
+            "упаковка ~20 кг",
+            "рядом с баком умягчителя"
+        ],
+        "condition": "новый в упаковке",
+        "description_ru": "Соль для умягчителей воды Diamond Crystal Pellets в гранулах, подходит для всех ионообменных умягчителей. Регенерирующая соль таблетки пеллеты для водоумягчающего оборудования.",
+        "confidence": "high"
+    }
+}
