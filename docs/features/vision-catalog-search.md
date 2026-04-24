@@ -9,11 +9,11 @@
 
 ## Что строим
 
-Гибридный поиск по каталогу из MoySklad:
+Гибридный поиск по каталогу:
 - **text query** `"фильтр для жёсткой воды"` → embedding → pgvector cosine top-K
 - **image query** фото узла → Claude Vision → структурированное описание → embedding → тот же pgvector top-K
 
-Каталог синхронизируется с MoySklad периодически (delta sync с content hash и soft-delete).
+Каталог наполняется **push-модели** от внешних систем (CRM, 1С, ручной импорт): slovo получает events `/catalog/items/bulk` и апсертит. Сам slovo **не знает** что такое MoySklad — это generic RAG-слой над каталогом.
 
 ---
 
@@ -28,25 +28,35 @@
 
 ## Pipeline
 
-### Ingestion (sync с MoySklad, раз в сутки / по триггеру)
+### Ingestion (push от внешних feeder'ов через bulk API)
 
 ```mermaid
 flowchart LR
-    CRON[Cron / manual POST /catalog/sync] --> FETCH[GET MoySklad entity/product]
-    FETCH --> DIFF{content_hash<br/>изменился?}
-    DIFF -->|да или нет записи| EMBED[OpenAI text-embedding-3-small]
+    subgraph external["Feeder'ы (CRM / 1C / скрипты)"]
+        FEEDER[CRM cache<br/>invalidation / manual refresh]
+    end
+
+    FEEDER -->|POST /catalog/items/bulk<br/>+ API key| API[CatalogIngestController]
+    API --> PARSE[Валидация + нормализация]
+    PARSE --> DIFF{content_hash<br/>изменился?}
+    DIFF -->|новая запись<br/>или hash поменялся| EMBED[OpenAI text-embedding-3-small]
     EMBED --> DB[(catalog_items<br/>+ embedding vector 1536)]
-    DIFF -->|нет| META[UPDATE только metadata<br/>price, attrs, last_seen_at]
+    DIFF -->|hash совпадает| META[UPDATE только metadata<br/>price, attrs, last_seen_at]
     META --> DB
-    FETCH --> SEEN[SET last_seen_at = NOW]
-    SEEN --> GC[SOFT-DELETE если<br/>last_seen_at &lt; sync_start]
+    PARSE -->|syncMode=full| GC[SOFT-DELETE items<br/>не попавшие в batch]
     GC --> DB
 ```
 
 **Детали:**
+- **Push, не pull.** slovo не знает про MoySklad API / MOY_SKLAD_API_KEY. Feeder (CRM Aqua Kinetika сейчас, 1С или другой завтра) выкачивает данные из источника истины, нормализует в generic schema, шлёт в slovo. Добавить второго tenant'а = написать ещё одного feeder'а, slovo не трогается.
+- **Два режима sync:**
+  - `syncMode: "partial"` — feeder шлёт только изменённые items (при invalidation конкретного ключа Redis). Быстро, без soft-delete GC.
+  - `syncMode: "full"` — feeder шлёт весь каталог (полный сброс кеша / manual refresh в админке). slovo чистит отсутствующие через `last_seen_at < sync_start`.
 - `content_hash = SHA-256(name + description)` — маркер изменения _текстовых_ полей (того что идёт в embedding). Изменение цены или атрибутов **не** триггерит пересчёт embedding — экономит 90% OpenAI-вызовов при типичном паттерне.
-- `last_seen_at` каждого присутствующего в API товара обновляется. После sync — все `last_seen_at < sync_start` помечаются `deleted_at = NOW()`. Soft-delete, не жёсткое удаление: дилер может искать снятый с продажи товар.
-- Visibility: фильтр `isVisible` из атрибута `IS_VISIBLE_FOR_APP` MoySklad. Хранится как колонка, чтобы unhide не требовал пересчёта embedding.
+- `last_seen_at` каждого присутствующего в batch item'а обновляется. При `syncMode=full` — всё что не попало в batch с `last_seen_at < sync_start` помечается `deleted_at = NOW()`. Soft-delete, не жёсткое удаление: дилер может искать снятый с продажи товар.
+- **Аутентификация:** `Authorization: Bearer <SLOVO_INGEST_API_KEY>` — machine-to-machine, отдельный API key в env обеих сторон. `@UseGuards(ApiKeyGuard)` на endpoint. Не JWT — для service-to-service не нужен.
+- **Rate limiting:** отдельный throttle на `/catalog/items/bulk` (например 10 batch/min — batch может содержать до 500 items).
+- **Идемпотентность:** `@@unique([externalSource, externalId])` гарантирует идемпотентный upsert. Повторный batch с теми же данными = no-op (hash не меняется).
 
 ### Query — text
 
@@ -94,11 +104,18 @@ sequenceDiagram
 ```prisma
 model CatalogItem {
     id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-    moyskladId         String    @unique @map("moysklad_id")
-    moyskladType       String    @map("moysklad_type")            // product | service | bundle
+
+    // External identity — slovo не знает про MoySklad специфично.
+    // externalSource = 'moysklad' | '1c' | 'manual' | любой другой feeder.
+    // externalId — id в источнике истины (moyskladId для MoySklad).
+    externalSource     String    @map("external_source") @db.VarChar(64)
+    externalId         String    @map("external_id")     @db.VarChar(256)
+    externalType       String    @map("external_type")   @db.VarChar(32)   // product | service | bundle
+    externalUpdatedAt  DateTime  @map("external_updated_at")
+
     name               String    @db.VarChar(512)
     description        String?   @db.Text
-    attributes         Json?                                       // raw MoySklad attributes
+    attributes         Json?                                       // raw attributes from feeder
     salePriceKopecks   Int?      @map("sale_price_kopecks")       // в копейках, без float
     categoryPath       String?   @map("category_path")
     imageUrl           String?   @map("image_url")
@@ -106,7 +123,6 @@ model CatalogItem {
 
     // Delta-sync маркеры
     contentHash        String    @map("content_hash") @db.Char(64) // SHA-256(name + description)
-    moyskladUpdatedAt  DateTime  @map("moysklad_updated_at")
     lastSeenAt         DateTime  @default(now()) @map("last_seen_at")
     deletedAt          DateTime? @map("deleted_at")
 
@@ -117,14 +133,55 @@ model CatalogItem {
     // (Prisma не поддерживает pgvector типы декларативно, см. ADR-005).
     // + HNSW-индекс с vector_cosine_ops.
 
+    @@unique([externalSource, externalId])
     @@index([isVisible, deletedAt])
     @@index([lastSeenAt])
-    @@index([moyskladUpdatedAt])
+    @@index([externalUpdatedAt])
     @@map("catalog_items")
 }
 ```
 
-Отдельная таблица, не `knowledge_sources` — разные домены (user uploads vs org catalog), разные lifecycle (ad-hoc vs periodic sync), разная авторизация (user-scoped vs read-all / admin-sync).
+**Ключевые решения:**
+- `externalSource + externalId` — composite unique key, multi-source ready. `moysklad:abc-123` и `1c:def-456` одновременно живут в одной таблице.
+- Отдельная таблица, не `knowledge_sources` — разные домены (user uploads vs org catalog), разные lifecycle (ad-hoc vs push-sync), разная авторизация (user-scoped vs read-all + ingest-key-protected).
+- `externalType` не enum, а string — расширяется через код feeder'а без миграций БД (завтра добавим `sparepart`, `manual`, etc.).
+
+### Контракт bulk ingest API
+
+```typescript
+POST /catalog/items/bulk
+Authorization: Bearer <SLOVO_INGEST_API_KEY>
+Content-Type: application/json
+
+{
+  syncMode: "partial" | "full",
+  items: [
+    {
+      externalId: "a0b1c2d3-...",           // id у feeder'а (moyskladId для CRM)
+      externalSource: "moysklad",            // дискриминатор источника
+      externalType: "product",               // product | service | bundle | ...
+      externalUpdatedAt: "2026-04-24T07:00:00Z",
+      name: "Аквафор DWM-101S",
+      description: "Фильтр обратного осмоса с минерализатором",
+      attributes: { weight: "12кг", rang: 5 },
+      salePriceKopecks: 4500000,             // 45,000.00 ₽
+      categoryPath: "Фильтры / Обратный осмос",
+      imageUrl: "https://...",
+      isVisible: true
+    }
+  ]
+}
+
+Response:
+{
+  received: 25,
+  created: 3,
+  updated_metadata_only: 18,   // hash совпал, embedding не пересчитан
+  re_embedded: 4,              // hash поменялся или новая запись
+  soft_deleted: 2,             // при syncMode=full
+  errors: []
+}
+```
 
 ---
 
@@ -134,10 +191,10 @@ model CatalogItem {
 |---|---|---|
 | **Phase 0 (сейчас)** | Flowise chatflow "Vision Describer" — экспериментируем с промптами и форматом structured output. Финальный промпт уходит в `libs/llm/prompts/vision-catalog.ts`. | Claude Vision в Flowise UI |
 | **PR5** | `libs/llm/` — тонкая обёртка над `@anthropic-ai/sdk` с vision-методом + `POST /vision/describe` endpoint. Multer upload, base64 encode, Claude sonnet-4-6. Без каталога пока — просто "image → JSON". | Anthropic SDK, multipart upload |
-| **PR6** | `CatalogItem` модель + миграция + `CatalogSyncService` + `POST /catalog/sync` manual trigger. Delta-sync с content hash, soft-delete через last_seen_at. Embeddings **пока не считаем**. | Prisma migration, MoySklad API integration |
-| **PR7** | `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW индекс миграцией. Интеграция с OpenAI embeddings API. `/catalog/search/text` endpoint. | pgvector HNSW, OpenAI embeddings |
+| **PR6** | `CatalogItem` модель + миграция + `CatalogIngestService` + `POST /catalog/items/bulk` push endpoint с `ApiKeyGuard`. Partial/full sync modes, content-hash delta, soft-delete через last_seen_at. Embeddings **пока не считаем**. slovo не зависит от MoySklad API. | ApiKey auth, idempotent bulk upsert |
+| **PR7** | `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW индекс миграцией. Интеграция с OpenAI embeddings API. `/catalog/search/text` endpoint. Embedding пересчитывается в PR6-флоу только если content-hash поменялся. | pgvector HNSW, OpenAI embeddings |
 | **PR8** | `/catalog/search/image` — полный hybrid pipeline из PR5-7 склеен. Swagger примеры с реальными фото. | End-to-end e2e |
-| **PR9** (потом) | `@nestjs/schedule` cron + webhooks MoySklad + reconciliation | Cron + webhook handlers |
+| **Вне slovo** | CRM Aqua Kinetika side — cache invalidation hook → POST /catalog/items/bulk. Это отдельный PR в `crm-aqua-kinetics-back`, к slovo не относится. | CRM → slovo integration |
 
 ---
 
