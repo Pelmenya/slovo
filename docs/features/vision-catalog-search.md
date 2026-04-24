@@ -3,7 +3,7 @@
 > **Статус:** 🟡 черновик / Phase 1 — Flowise эксперименты
 > **Связи:** [knowledge-base.md](knowledge-base.md), [ADR-006](../architecture/decisions/006-knowledge-base-as-first-feature.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md)
 
-Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**. Встраивается в CRM дилера — клиент прислал фото сломанного узла, дилер за пару секунд видит подходящую замену из 500 товаров MoySklad.
+Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**. Встраивается в `crm-aqua-kinetics` (собственный продукт разработчика) — пользователь CRM (менеджер / инженер) присылает фото сломанного узла, за пару секунд видит подходящую замену из каталога ~500 товаров MoySklad.
 
 ---
 
@@ -19,8 +19,8 @@
 
 ## Зачем
 
-1. **Замена вручную-листания каталога.** Дилер находит нужное за секунды, не минуты.
-2. **SME-ассистент для новых инженеров.** `"всё про обезжелезиватели, диапазон цен"` — smart-filtering вместо иерархии папок.
+1. **Замена вручную-листания каталога.** Пользователь CRM находит нужное за секунды, не минуты.
+2. **SME-ассистент для новых сотрудников.** `"всё про обезжелезиватели, диапазон цен"` — smart-filtering вместо иерархии папок.
 3. **Vision для клиентских кейсов.** Клиент прислал WhatsApp фото — не надо просить «опишите модель», AI определяет сам.
 4. **Фундамент для water-analysis.** Когда AI рекомендует «нужен обратный осмос» — из каталога сразу тянется конкретный SKU с ценой.
 
@@ -48,7 +48,7 @@ flowchart LR
 ```
 
 **Детали:**
-- **Push, не pull.** slovo не знает про MoySklad API / MOY_SKLAD_API_KEY. Feeder (CRM Aqua Kinetika сейчас, 1С или другой завтра) выкачивает данные из источника истины, нормализует в generic schema, шлёт в slovo. Добавить второго tenant'а = написать ещё одного feeder'а, slovo не трогается.
+- **Push, не pull.** slovo не знает про MoySklad API / MOY_SKLAD_API_KEY. Feeder (`crm-aqua-kinetics-back` сейчас — собственный продукт разработчика с уже готовой интеграцией MoySklad, 1С или другой источник завтра) выкачивает данные из источника истины, нормализует в generic schema, шлёт в slovo. Добавить второй источник каталога = написать ещё одного feeder'а, slovo не трогается.
 - **Два режима sync:**
   - `syncMode: "partial"` — feeder шлёт только изменённые items (при invalidation конкретного ключа Redis). Быстро, без soft-delete GC.
   - `syncMode: "full"` — feeder шлёт весь каталог (полный сброс кеша / manual refresh в админке). slovo чистит отсутствующие через `last_seen_at < sync_start`.
@@ -194,7 +194,7 @@ Response:
 | **PR6** | `CatalogItem` модель + миграция + `CatalogIngestService` + `POST /catalog/items/bulk` push endpoint с `ApiKeyGuard`. Partial/full sync modes, content-hash delta, soft-delete через last_seen_at. Embeddings **пока не считаем**. slovo не зависит от MoySklad API. | ApiKey auth, idempotent bulk upsert |
 | **PR7** | `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW индекс миграцией. Интеграция с OpenAI embeddings API. `/catalog/search/text` endpoint. Embedding пересчитывается в PR6-флоу только если content-hash поменялся. | pgvector HNSW, OpenAI embeddings |
 | **PR8** | `/catalog/search/image` — полный hybrid pipeline из PR5-7 склеен. Swagger примеры с реальными фото. | End-to-end e2e |
-| **Вне slovo** | CRM Aqua Kinetika side — cache invalidation hook → POST /catalog/items/bulk. Это отдельный PR в `crm-aqua-kinetics-back`, к slovo не относится. | CRM → slovo integration |
+| **Вне slovo** | Feeder side — в `crm-aqua-kinetics-back` (собственный продукт): cache invalidation hook → POST /catalog/items/bulk. Отдельный PR в том репозитории, к slovo не относится. | crm-aqua-kinetics → slovo integration |
 
 ---
 
