@@ -42,3 +42,8 @@ prisma/migrations/dev.db*
 
 # Claude Code
 .claude/settings.local.json
+
+# Временные изображения для тестов в root (перемещаются в docs/experiments/)
+/image*.webp
+/image*.png
+/image*.jpg

@@ -34,24 +34,25 @@
 
 **Долгосрочный путь (когда усложнится):** выделить pure logic в `slovo/libs/catalog/` + публиковать как `@slovo/catalog` в private npm registry. CRM получит выбор — HTTP или прямой импорт lib. Сейчас YAGNI, начинаем с HTTP.
 
-### Embedding провайдер
+### Embedding — через Flowise, не напрямую OpenAI
 
-**OpenAI `text-embedding-3-small`** (1536 dim) через `@anthropic-ai/sdk`-style клиент. Причины:
-- Доступен через уже настроенный proxy (host.docker.internal:10810 → DE)
-- Работает с существующим billing (credits на аккаунте)
-- Цена копейки: `$0.02 / 1M tokens × ~300 tokens × 500 items = $0.003` за полный re-embed каталога
+По решению в `memory/project_flowise_runtime_decision.md` (2026-04-22): **Flowise — LLM runtime, slovo — тонкий HTTP клиент**. slovo-api НЕ вызывает OpenAI SDK напрямую.
 
-**Абстракция `EmbedderService`** в `libs/llm/` — с переключением провайдера через env (`EMBEDDING_PROVIDER=openai|cohere|ollama`). Если в будущем:
-- Нужна сильная multilingual для mixed RU/EN описаний → Cohere `embed-multilingual-light-v3` (через ту же BYOK модель)
-- Локальный fallback / zero-cost → Ollama `bge-m3` или `multilingual-e5-large` на доступной GPU (пример локального vision-стека есть в `water-analysis-parser` проекте, инфра знакома)
+**Причины этого решения:**
+- Flowise на Linux Alpine — корректный TLS fingerprint (OpenAI не блокирует, в отличие от Windows node.js)
+- Credentials OpenAI/Anthropic живут в одном месте — Flowise Credentials UI
+- Flowise умеет multi-provider (OpenAI / Anthropic / Cohere / Ollama) — переключение без изменения slovo-кода
+- В prod это split-архитектуре (152-ФЗ): slovo-api в РФ, Flowise в EU zone
+- Observability через Langfuse уже встроена во Flowise
+- Streaming и prompt caching — фичи Flowise из коробки
 
-Но всё это — потом. На PR7 берём OpenAI напрямую.
+**Embedding provider:** `OpenAI text-embedding-3-small` 1536 dim — настраивается **в Flowise-ноде**, slovo про это не знает. Переключить в будущем на Cohere / Ollama — меняем ноду во Flowise UI, slovo не трогаем.
 
 ### Rich context сборка — на стороне feeder'а
 
 **Feeder (crm-aqua-kinetics-back) сам собирает текст для embedding** и шлёт в slovo готовый `contentForEmbedding: string`. Причины:
 - CRM уже знает про System Bundle структуру MoySklad, `parseServiceRefs`, `parseComponentRefs`, `GroupService.getGroupBundle`
-- slovo остаётся generic — просто эмбедит то что пришло, не парсит чужие custom-attributes
+- slovo остаётся generic — просто форвардит то что пришло Flowise'у, не парсит чужие custom-attributes
 - Новый feeder (1С когда будет) сам решает как собирать rich text
 
 Что включает feeder в `contentForEmbedding`:
@@ -63,7 +64,7 @@ ${product.description ? 'Описание: ' + product.description : ''}
 ${relevant_attributes.map(a => a.name + ': ' + a.value).join('\n')}
 ```
 
-slovo просто получает эту строку и прогоняет через embedder. Field `rawContent` можно хранить в БД для аудита / re-embed (если сменим модель → пересчитаем embeddings без повторного fetch из MoySklad).
+slovo принимает эту строку + метаданные → кладёт метаданные в свою Prisma БД + шлёт текст в Flowise upsert endpoint (Flowise эмбедит и хранит в своём pgvector).
 
 ### Services: единая таблица, не отдельная
 
@@ -80,6 +81,28 @@ MoySklad `ProductFolder.pathName` — **не таксономия**, а исто
 
 ---
 
+## Flowise chatflows (Phase 0 — создаём в UI)
+
+**Нужно два chatflow:**
+
+1. **`vision-catalog-describer-v1`** (уже готов в Phase 0, 2026-04-24) — фото → JSON описание товара через Claude Vision. Используется в image search pipeline как первый шаг.
+
+2. **`catalog-embed-search`** (создать в Phase 0 следующим шагом) — для товарного каталога:
+   - **OpenAI Embeddings** нода — `text-embedding-3-small`, 1536 dim, credentials из Flowise
+   - **Postgres Vector Store** нода — подключение к той же slovo БД (`slovo-postgres:5432`), Flowise сам создаст таблицу `langchain_pg_embedding` или подобную
+   - **Custom JSON Loader** / **Document Store** — для приёма items через upsert API
+   - **Retriever-only output** (без LLM ноды) — чтобы prediction API возвращал ranked docs, не generated answer
+
+**Flowise API endpoints** (у каждого chatflow свой ID):
+- Upsert: `POST /api/v1/vector/upsert/<catalog-embed-search-id>` — JSON body с текстами
+- Search: `POST /api/v1/prediction/<catalog-embed-search-id>` — text query → ranked docs с metadata
+
+**Credentials в Flowise:**
+- `anthropic-dev` (уже есть) — для Vision chatflow
+- `openai-dev` (создать) — для Embeddings ноды
+
+---
+
 ## Pipeline
 
 ### Ingestion (push от внешних feeder'ов через bulk API)
@@ -90,15 +113,18 @@ flowchart LR
         FEEDER[CRM cache<br/>invalidation / manual refresh]
     end
 
-    FEEDER -->|POST /catalog/items/bulk<br/>+ API key| API[CatalogIngestController]
+    FEEDER -->|POST /catalog/items/bulk<br/>+ API key| API[slovo<br/>CatalogIngestController]
     API --> PARSE[Валидация + нормализация]
     PARSE --> DIFF{content_hash<br/>изменился?}
-    DIFF -->|новая запись<br/>или hash поменялся| EMBED[OpenAI text-embedding-3-small]
-    EMBED --> DB[(catalog_items<br/>+ embedding vector 1536)]
+    DIFF -->|новая запись<br/>или hash поменялся| FWUP[Flowise<br/>POST /api/v1/vector/upsert/catalog]
+    FWUP --> EMBED[OpenAI text-embedding-3-small<br/>внутри Flowise]
+    EMBED --> VSTORE[(pgvector<br/>Flowise-managed)]
     DIFF -->|hash совпадает| META[UPDATE только metadata<br/>price, attrs, last_seen_at]
-    META --> DB
-    PARSE -->|syncMode=full| GC[SOFT-DELETE items<br/>не попавшие в batch]
-    GC --> DB
+    META --> META_DB[(catalog_items<br/>Prisma-managed)]
+    PARSE --> META_DB
+    PARSE -->|syncMode=full| GC[SOFT-DELETE Prisma items<br/>+ DELETE vectors в Flowise]
+    GC --> META_DB
+    GC --> FWDEL[Flowise vector delete]
 ```
 
 **Детали:**
@@ -117,18 +143,17 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as /catalog/search/text
-    participant OAI as OpenAI embeddings
-    participant PG as pgvector (HNSW)
+    participant Slovo as slovo<br/>/catalog/search/text
+    participant FW as Flowise<br/>catalog-embed-search chatflow
+    participant Prisma as Prisma<br/>catalog_items
 
-    Client->>API: { q: "фильтр для жёсткой воды", limit: 5, includeServices: true }
-    API->>OAI: embed(q)
-    OAI-->>API: vector[1536]
-    API->>PG: SELECT *, embedding <-> $1 AS distance<br/>FROM catalog_items<br/>WHERE is_visible AND deleted_at IS NULL<br/>AND external_type IN ('product','service','cartridge')<br/>ORDER BY hybrid_score DESC<br/>LIMIT 20
-    PG-->>API: top-20 items
-    API->>PG: SELECT * FROM catalog_items<br/>WHERE id = ANY($relatedServiceIds from top-20)
-    PG-->>API: enrichment services
-    API-->>Client: { products, services, cartridges, debug }
+    Client->>Slovo: { q: "фильтр для жёсткой воды", limit: 5 }
+    Slovo->>FW: POST /api/v1/prediction/<search-chatflow-id><br/>{ question: q, overrideConfig: { topK: 20 } }
+    Note over FW: OpenAI embed(q) → pgvector cosine search
+    FW-->>Slovo: ranked docs с metadata.catalogItemId
+    Slovo->>Prisma: SELECT * WHERE id IN (catalogItemIds)
+    Prisma-->>Slovo: full items + related services/components
+    Slovo-->>Client: { products, services, cartridges, debug }
 ```
 
 ### Query — image (hybrid vision→text→embedding)
@@ -136,44 +161,48 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as /catalog/search/image
-    participant CV as Claude Vision<br/>(sonnet-4-6)
-    participant OAI as OpenAI embeddings
-    participant PG as pgvector
+    participant Slovo as slovo<br/>/catalog/search/image
+    participant FWV as Flowise<br/>vision-describer chatflow
+    participant FWE as Flowise<br/>catalog-embed-search chatflow
+    participant Prisma as Prisma<br/>catalog_items
 
-    Client->>API: multipart image + { limit: 5 }
-    API->>CV: messages.create with image block + prompt v1
-    CV-->>API: structured JSON { is_relevant, category, brand, features[], description_ru }
+    Client->>Slovo: multipart image + { limit: 5 }
+    Slovo->>FWV: POST /prediction/<vision-chatflow-id><br/>+ image upload (base64)
+    FWV-->>Slovo: JSON { is_relevant, category, description_ru, features, confidence }
 
     alt is_relevant=false
-        API-->>Client: { error: "image_not_relevant", vision_output }
+        Slovo-->>Client: 400 + vision_output
     else is_relevant=true
-        API->>OAI: embed(description_ru + features joined)
-        OAI-->>API: vector[1536]
-        API->>PG: hybrid search<br/>WHERE type IN ('product','cartridge')<br/>+ optional category_boost
-        PG-->>API: top-K items
-        API->>PG: enrichment (related services/components)
-        API-->>Client: { products, services, cartridges, vision_output, debug }
+        Slovo->>FWE: POST /prediction/<search-chatflow-id><br/>{ question: description_ru + features }
+        FWE-->>Slovo: ranked docs
+        Slovo->>Prisma: SELECT * WHERE id IN (...)
+        Prisma-->>Slovo: items + related
+        Slovo-->>Client: { products, services, cartridges, vision_output }
     end
 ```
 
-**Почему "hybrid" именно через текстовый мост:** Vision → текст → embedding → поиск по каталогу embedding'ов. Не сравниваем image-embedding напрямую с text-embedding (разные семантические пространства). CLIP мог бы решить это напрямую, но не нужен при 500 товарах — text bridge проще и использует ту же embedding-модель что и text search.
+**Почему "hybrid" через текстовый мост:** Vision → текст → embedding → поиск по каталогу embedding'ов. Не сравниваем image-embedding напрямую с text-embedding (разные семантические пространства). CLIP мог бы решить это напрямую, но не нужен при 500 товарах — text bridge проще и использует ту же embedding-модель что для text search.
 
-### Hybrid ranking
+**Почему Flowise делает два шага (embed + search) в одном prediction call:** Chatflow содержит OpenAI Embeddings + Postgres Vector Store + Retriever ноды связанные последовательно. Slovo шлёт query, Flowise всё внутри обрабатывает и возвращает готовый ranked список. Slovo остаётся **тонким клиентом** — один HTTP вызов на search, одна миграция для CatalogItem.
 
-Финальный score для каждого кандидата:
+### Hybrid ranking (в slovo, после Flowise retrieve)
+
+Flowise Retriever возвращает docs ranked только по **vector cosine similarity**. Дополнительный re-ranking (rang_for_app, category boost) делает **slovo** на стороне /catalog/search/* endpoint:
+
+1. Flowise → top-20 docs by pure vector similarity
+2. slovo JOIN с Prisma `catalog_items` по `metadata.catalogItemId` → достаёт `rangForApp`, `categoryPath`, `relatedServiceIds`, `relatedComponentIds`
+3. slovo пересчитывает score:
 
 ```
-final_score = 0.7 × vector_similarity_normalized   // 0..1 из cosine distance
-            + 0.2 × rang_boost                      // 0..1 из rangForApp (нормализованный)
-            + 0.1 × category_boost                  // 0..1 если Vision category совпала с item.categoryPath
+final_score = 0.7 × vector_similarity_normalized   // от Flowise
+            + 0.2 × rang_boost                      // coalesce(rangForApp, 0) / max_rang
+            + 0.1 × category_boost                  // 0.1 если Vision.category совпадает с categoryPath substring
 ```
 
-- `vector_similarity_normalized = 1 - cosine_distance` (cosine в pgvector даёт 0 для идентичных, нам нужно наоборот)
-- `rang_boost = coalesce(rangForApp, 0) / max_rang` — нормализация относительно максимума в каталоге. Поднимает "поставленные менеджером в приоритет" товары.
-- `category_boost` — если Vision вернул `category='обратный осмос'` и у товара `categoryPath` содержит "осмос" — +0.1. Иначе 0. Мягкий boost, не жёсткий фильтр.
+4. slovo → top-5/limit из пересорченного списка
+5. slovo enrichment (related services/cartridges) → response клиенту
 
-Веса 0.7 / 0.2 / 0.1 — начальные. Тунить по реальному UX.
+Веса 0.7 / 0.2 / 0.1 — начальные. Тюним по реальному UX. Все вычисления простые (JS map/sort на массиве 20 элементов) — не нужен SQL, не нужен pgvector напрямую в slovo.
 
 ### Enrichment payload — что отдаём клиенту
 
@@ -267,9 +296,10 @@ model CatalogItem {
     createdAt          DateTime  @default(now()) @map("created_at")
     updatedAt          DateTime  @updatedAt @map("updated_at")
 
-    // Колонка embedding vector(1536) добавляется отдельной миграцией
-    // (Prisma не поддерживает pgvector типы декларативно, см. ADR-005).
-    // + HNSW-индекс с vector_cosine_ops.
+    // Embedding vector(1536) НЕ в этой таблице — живёт во Flowise-managed
+    // таблице (обычно langchain_pg_embedding), с metadata.catalogItemId как
+    // app-level FK. То же разделение что в ADR-006 для knowledge_chunks.
+    // slovo про embeddings не знает, форвардит всё в Flowise.
 
     @@unique([externalSource, externalId])
     @@index([isVisible, deletedAt])
@@ -354,12 +384,11 @@ Response:
 
 | PR | Скоуп | Новая технология |
 |---|---|---|
-| **Phase 0 (✅ в процессе)** | Flowise chatflow "Vision Describer" — эксперименты с промптом v1 на тестовых фото. Промпт v1 валидирован на 6 тестах (happy path, edge cases, не-Аквафор бренды, расходники, is_relevant=false). Обнаружены 2 точечных улучшения для v2 (open brand/category вместо closed enum). Финальный промпт → `libs/llm/prompts/vision-catalog.ts` в PR5. | Claude Vision в Flowise UI |
-| **PR5** | `libs/llm/` — `EmbedderService` абстракция + `AnthropicVisionService` (Claude Sonnet 4.6). `POST /vision/describe` endpoint: multipart upload, base64, structured JSON output. Используется в PR8 для image search. | Anthropic SDK, multipart, Claude Vision |
-| **PR6** | `CatalogItem` Prisma-модель (type discriminator product/service/cartridge/bundle) + миграция. `CatalogIngestService` + `POST /catalog/items/bulk` с `ApiKeyGuard`. Partial/full sync, content_hash delta, soft-delete через last_seen_at. JSONB attributes для relatedServiceIds / relatedComponentIds. Embeddings **пока не считаем**. | ApiKey auth, idempotent bulk upsert |
-| **PR7** | Миграция `ALTER TABLE ADD COLUMN embedding vector(1536)` + HNSW index `vector_cosine_ops`. OpenAI text-embedding-3-small через `EmbedderService`. Пересчёт embedding при INSERT / когда content_hash изменился в PR6-флоу. `/catalog/search/text` endpoint с hybrid ranking (vector × 0.7 + rang × 0.2 + category × 0.1) + enrichment (связанные services/cartridges через JSONB ID-lookup). | pgvector HNSW, OpenAI embeddings, hybrid ranking |
-| **PR8** | `/catalog/search/image` — склейка PR5-7: Claude Vision → `description_ru + features` → embedding → hybrid search → enrichment. Handling `is_relevant=false` → 400 с vision_output. Swagger примеры с реальными фото из test-set Phase 0. | End-to-end vision → catalog search |
-| **PR9 (если понадобится)** | A/B-тест OpenAI vs Cohere multilingual vs Ollama local на реальных RU/EN описаниях. Конфиг `EMBEDDING_PROVIDER` в env. Если OpenAI small справляется — PR9 пропускаем. | Provider-agnostic embedder |
+| **Phase 0 (✅ частично)** | В Flowise UI: (a) `vision-catalog-describer-v1` готов — валидирован на 6 тестах (PR1-3 сегодня); (b) **следующий шаг** — создать `catalog-embed-search` chatflow с OpenAI Embeddings + Postgres Vector Store + Retriever; (c) upsert + search на 3-5 тестовых товарах. | Flowise Postgres Vector Store, OpenAI Embeddings нода |
+| **PR5** | `libs/llm/` — **тонкий HTTP-клиент `FlowiseClient`** к локальному Flowise API. Методы: `predictVision(imageBase64)`, `upsertCatalog(items)`, `searchCatalog(query, topK)`. Внутри — httpClient с retry + logging. NO Anthropic SDK, NO OpenAI SDK в slovo! | Thin HTTP client pattern |
+| **PR6** | `CatalogItem` Prisma-модель (type discriminator product/service/cartridge/bundle) + миграция. `CatalogIngestController` + `POST /catalog/items/bulk` с `ApiKeyGuard`. Content_hash delta, soft-delete через last_seen_at. При изменении hash → вызов `flowiseClient.upsertCatalog(...)`. JSONB `attributes` для relatedServiceIds / relatedComponentIds. | ApiKey auth, idempotent bulk upsert |
+| **PR7** | `/catalog/search/text` endpoint. slovo → `flowiseClient.searchCatalog(query, topK=20)` → Flowise возвращает ranked docs → slovo JOIN с Prisma по catalogItemId → hybrid re-rank (rang + category) → enrichment (related services/cartridges) → response. | Thin orchestration |
+| **PR8** | `/catalog/search/image` — multipart image → `flowiseClient.predictVision(image)` → description → `flowiseClient.searchCatalog(description)` → тот же flow что PR7. Handling `is_relevant=false` → 400 с vision_output. Swagger + e2e с реальными фото. | End-to-end composition |
 | **Вне slovo (параллельно)** | Feeder side — в `crm-aqua-kinetics-back`: сервис сборки `contentForEmbedding` из `name + description + group.pathName + systemBundle.description + attributes`. Extraction `relatedServiceIds` / `relatedComponentIds` через существующие `parseServiceRefs`/`parseComponentRefs`. Hook на cache invalidation → POST к slovo. Отдельный PR в crm репозитории. | crm → slovo HTTP integration |
 
 ---
@@ -425,10 +454,12 @@ Response:
 
 ## Открытые вопросы
 
-1. **Промпт v2 после Phase 0.** По результатам 6 тестов в Phase 0 промпт v1 хорош на 4/6 (2 проблемы с closed enum brand/category). Нужен ли v2 с open fields? **Решение:** open fields + post-processing canonicalization в NestJS перед записью в БД.
-2. **Cost budget на Claude Vision.** $0.003 за image в Sonnet. 100 запросов в день = $0.30/день. OK. Haiku ($0.001/img) — запасной вариант если объём превысит 1000/день.
-3. **Веса hybrid ranking (0.7 / 0.2 / 0.1)** — тюнить по UX. Возможна UI с кнопкой "сдвинуть приоритет в сторону популярных" (увеличить rang weight).
-4. **Category canonicalization.** Как маппить Vision `category: "обратный осмос"` → MoySklad `categoryPath: "Фильтры/Обратный осмос/..."`? Lookup table или LLM-based? Решение: lookup table с синонимами в `libs/llm/taxonomy/water-equipment.ts`, LLM-маппинг избыточен для 20-30 категорий.
+1. **Flowise Vector Store под капотом.** Какую таблицу Flowise создаст в slovo БД? `langchain_pg_embedding` стандарт для LangChain's PGVector. Проверить на Phase 0 → зафиксировать в docs. Удаление старых embeddings при re-embed — Flowise сам? Или нужно вручную через raw SQL?
+2. **Retriever-only chatflow без LLM.** Возможно в Flowise 3.1.2 retriever нода не даёт output без LLM ноды. Проверить в UI на Phase 0; если нельзя — использовать lightweight LLM (Haiku) только как passthrough для output formatting.
+3. **Промпт v2 после Phase 0.** По результатам 6 тестов в Phase 0 промпт v1 хорош на 4/6 (2 проблемы с closed enum brand/category). Решение: open fields + post-processing canonicalization в slovo перед записью в БД.
+4. **Cost budget.** Claude Vision $0.003/image + OpenAI embedding $0.003 / 500 товаров. 100 image searches в день = $0.30 + $0.0004. Копейки.
+5. **Веса hybrid ranking (0.7 / 0.2 / 0.1)** — тюнить по UX. Возможна UI с кнопкой "сдвинуть приоритет в сторону популярных" (увеличить rang weight).
+6. **Category canonicalization.** Как маппить Vision `category: "обратный осмос"` → MoySklad `categoryPath: "Фильтры/Обратный осмос/..."`? Lookup table с синонимами в slovo. 20-30 категорий — маленькая константа.
 
 ---
 

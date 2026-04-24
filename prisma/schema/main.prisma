@@ -8,6 +8,9 @@
 generator client {
     provider        = "prisma-client-js"
     previewFeatures = ["postgresqlExtensions"]
+    // Windows host (nativе) + Linux Alpine container — оба работают.
+    // Иначе при запуске api в Docker: "Prisma Client could not find its binary".
+    binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 generator nestjsDto {
