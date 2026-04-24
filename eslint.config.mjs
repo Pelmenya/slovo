@@ -61,4 +61,19 @@ export default tseslint.config(
             ],
         },
     },
+    {
+        // Jest asymmetric matchers (expect.objectContaining, expect.any) типизированы
+        // как any в @types/jest — это known issue, не лечится без потери читаемости.
+        // Моки обычно получают any-возвраты даже с jest.fn<T>() generics из-за сложной
+        // сигнатуры mockResolvedValue. Runtime-безопасность не страдает: это тесты,
+        // typo ловится первым прогоном. Правила ослабляются ТОЛЬКО для *.spec.ts /
+        // *.e2e-spec.ts — в прод-коде (apps/**, libs/**/*.ts) остаётся strict.
+        files: ['**/*.spec.ts', '**/*.e2e-spec.ts'],
+        rules: {
+            '@typescript-eslint/no-unsafe-assignment': 'off',
+            '@typescript-eslint/no-unsafe-member-access': 'off',
+            '@typescript-eslint/no-unsafe-call': 'off',
+            '@typescript-eslint/no-unsafe-argument': 'off',
+        },
+    },
 );
