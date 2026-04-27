@@ -72,31 +72,35 @@ ${relevant_attributes.map(a => a.name + ': ' + a.value).join('\n')}
 
 **Часть 2 — slovo обогащает через vision описания картинок:**
 
-Feeder шлёт `imageUrls: string[]` для каждого товара. slovo:
-1. Считает `imagesHash = SHA-256(sorted(urls).join('\n'))`.
-2. Если hash совпадает с сохранённым в Prisma — берёт кэшированный `visionDescriptionsText`, не перегенерирует.
-3. Если hash новый / изменился — параллельно прогоняет каждую картинку через `vision-describer` chatflow, aggregating descriptions, сохраняет в Prisma.
+Feeder шлёт `imageUrls: string[]` (S3-ключи в shared bucket `slovo-datasets`, **не URL'ы первоисточника**) и `groupImageKeys: string[]` (картинки группы из служебного Bundle MoySklad — общие для всех товаров одной категории, для vision-обогащения контекстом). slovo:
+
+1. Сравнивает `item.contentHash` (приходит от feeder'а — детерминированный sha256 над всеми полями влияющими на embedding и Vision, **включая отсортированные S3-ключи картинок**) с сохранённым в Prisma. Совпал → skip всё (ни Vision, ни embedding).
+2. Не совпал → итерирует `imageUrls + groupImageKeys`, для каждого ключа:
+   - Извлекает SHA-256 binary из имени файла (`<sha>.jpg`).
+   - Lookup в `vision_cache` Prisma таблице по этому hash. Hit → reuse JSON-описание.
+   - Miss → читает binary из MinIO (`s3.GetObject(slovo-datasets, key)`), кодирует в base64, шлёт в Flowise `vision-describer`, кладёт результат в `vision_cache`. Cache живёт глобально — переиспользуется между товарами одной группы (картинка группы — типичный кейс), между cron-синками, между ребилдами Flowise vector store.
+3. Aggregating descriptions → `visionDescriptionsText`.
 4. Вставляет в финальный embedding-text блок `Вид на фото: ${visionDescriptionsText}`.
 
-Итоговый rich text (feeder-text + vision-text) → slovo отправляет в Flowise upsert → OpenAI embeddings + Postgres Vector Store.
+Итоговый rich text → slovo отправляет в Flowise upsert → OpenAI embeddings + Postgres Vector Store.
 
-**Почему vision cache важен:**
+**Двухуровневый дедуп — главная экономия Vision/embedding cost:**
 
-- MoySklad картинки меняются редко (новые модели раз в месяцы, фотографии ревизируются ещё реже)
-- Re-generate vision при каждом sync = лишние $1.50 на каждые 500 товаров (даже если текст не изменился)
-- Hash-based инвалидация: изменилась картинка → только для этого товара новый vision pass. Dev стоимость: первоначальный full sync ~$1.50, далее < $0.10 в неделю.
+- **Item-level:** `contentHash` совпал → 0 LLM-вызовов. На повторных синках не меняющихся товаров (>95% типичный кейс) — экономим всё.
+- **Image-level:** SHA-256 binary в S3-ключе → `vision_cache` ключевая дедупликация. Уже на первом seed картинка группы (одна на ~8 товаров) обрабатывается **один раз**. Реальные цифры с первого snapshot CRM (155 товаров): 305 уникальных product images + 19 unique group images = **324 Vision-вызова** вместо ~465 наивных.
 
 ### Изображения — что где хранится
 
-| Артефакт | Где живёт | Зачем |
+| Артефакт | Где живёт | Кто пишет / читает |
 |---|---|---|
-| Бинарные файлы картинок | **MoySklad** (первоисточник) / CDN если есть | slovo их не скачивает, только URLs |
-| `imageUrls: string[]` | Prisma `catalog_items.image_urls` JSONB | для отображения на фронте и расчёта imagesHash |
-| `imagesHash` | Prisma `catalog_items.images_hash` CHAR(64) | инвалидация vision-cache |
-| `visionDescriptionsText` | Prisma `catalog_items.vision_descriptions_text` TEXT | aggregate vision-описаний для embedding + диагностики |
+| Бинарные файлы картинок | **MinIO bucket `slovo-datasets`** (shared с CRM) под `catalogs/aquaphor/images/<productId>/<sha256>.<ext>` и `catalogs/aquaphor/group-images/<bundleId>/<sha256>.<ext>` | feeder (CRM) скачивает из MoySklad и заливает; slovo читает binary через свой S3-клиент (без MoySklad-токена) |
+| `imageUrls: string[]` | Prisma `catalog_items.image_urls` JSONB | S3-ключи (НЕ URL'ы), приходят от feeder'а в snapshot |
+| `groupImageKeys: string[]` | Prisma `catalog_items.group_image_keys` JSONB | S3-ключи картинок группы — общие на всю категорию |
+| `vision_cache` | Prisma таблица `vision_cache` (key = image SHA-256, value = JSON-описание) | slovo пишет при первом Vision-pass, переиспользует между товарами/синками |
+| `visionDescriptionsText` | Prisma `catalog_items.vision_descriptions_text` TEXT | aggregate описаний всех картинок item'а (product + group) для embedding + диагностики |
 | Embedding vector | Flowise-managed таблица в той же БД | semantic search |
 
-Per-image vision descriptions не храним **отдельно** (выделенная таблица `catalog_item_images`) пока не понадобится показывать на фронте "по этой картинке AI сказал X". Сейчас aggregate-текст достаточен.
+**Почему shared bucket, а не `slovo` качает картинки сам:** binary картинки в MoySklad защищены auth-токеном; держать MoySklad-credentials в slovo нарушило бы границу "slovo не знает что такое MoySklad" (ADR-006 / generic catalog feeder pattern). Feeder (CRM) уже имеет токен и кладёт binary в bucket с content-hash в имени файла — это даёт slovo ровно одно требование: S3-доступ к bucket'у.
 
 ### Services: единая таблица, не отдельная
 
@@ -141,36 +145,41 @@ MoySklad `ProductFolder.pathName` — **не таксономия**, а исто
 
 ```mermaid
 flowchart TB
-    FEEDER[CRM feeder<br/>cache invalidation] -->|POST /catalog/items/bulk<br/>+ items: имя, описание, imageUrls, attrs| API[slovo<br/>CatalogIngestController]
-    API --> VALIDATE[Валидация DTO + API key]
+    CRM[CRM feeder<br/>resetCacheAndInitializeSettings] -->|1: скачивает binary картинок<br/>из MoySklad по downloadHref<br/>через msRequest лимитер| MINIO[(MinIO bucket<br/>slovo-datasets<br/>catalogs/aquaphor/images/...<br/>+ group-images/...)]
+    CRM -->|2: PUT latest.json<br/>с S3-keys + contentHash| MINIO
+    SLOVO[slovo CatalogIngestService<br/>cron каждые 4ч] -->|3: GET latest.json| MINIO
 
-    VALIDATE --> IMGDIFF{imagesHash<br/>изменился?}
-    IMGDIFF -->|да, или новая запись| FWVIS[Flowise vision-describer<br/>параллельно по всем imageUrls]
-    FWVIS --> AGG[aggregate vision<br/>descriptions text]
-    AGG --> RICH[Собираем rich text:<br/>feeder-text + vision-text]
-    IMGDIFF -->|совпадает| CACHE[берём visionDescriptionsText<br/>из Prisma кэша]
-    CACHE --> RICH
+    SLOVO --> ITERATE{для каждого item:<br/>item.contentHash<br/>совпал с stored?}
+    ITERATE -->|да 95% случаев| SKIP[skip — UPDATE только<br/>last_seen_at]
 
-    RICH --> CHDIFF{contentHash<br/>изменился?}
-    CHDIFF -->|да| FWUP[Flowise catalog-embed-search<br/>POST /vector/upsert]
+    ITERATE -->|нет — новый/изменился| IMGITER[итерируем imageUrls<br/>+ groupImageKeys]
+    IMGITER --> IMGCACHE{vision_cache<br/>по SHA-256<br/>в имени файла?}
+    IMGCACHE -->|hit — reuse| AGG[aggregate vision<br/>descriptions text]
+    IMGCACHE -->|miss| READS3[s3.GetObject binary]
+    READS3 --> FWVIS[Flowise vision-describer]
+    FWVIS --> CACHE_PUT[INSERT vision_cache<br/>image_hash → JSON]
+    CACHE_PUT --> AGG
+
+    AGG --> RICH[Собираем rich text:<br/>feeder-text + Вид на фото:<br/>+ visionDescriptionsText]
+    RICH --> FWUP[Flowise catalog-embed-search<br/>POST /vector/upsert]
     FWUP --> EMBED[OpenAI embedding 1536-dim]
     EMBED --> VSTORE[(Flowise-managed<br/>pgvector)]
-    CHDIFF -->|нет| META_ONLY[UPDATE только метаданные]
 
-    RICH --> META_DB[(Prisma catalog_items:<br/>base + imageUrls + imagesHash<br/>+ visionDescriptionsText + contentHash)]
-    META_ONLY --> META_DB
+    RICH --> META_DB[(Prisma catalog_items)]
+    SKIP --> META_DB
 
-    VALIDATE -->|syncMode=full| GC[SOFT-DELETE items<br/>+ DELETE vectors]
+    SLOVO -.->|syncMode=full:<br/>items не попавшие в snapshot| GC[SOFT-DELETE<br/>+ DELETE vectors]
     GC --> META_DB
     GC --> FWDEL[Flowise vector delete]
 ```
 
 **Детали:**
-- **Push, не pull.** slovo не знает про MoySklad API / MOY_SKLAD_API_KEY. Feeder (`crm-aqua-kinetics-back` сейчас — собственный продукт разработчика с уже готовой интеграцией MoySklad, 1С или другой источник завтра) выкачивает данные из источника истины, нормализует в generic schema, шлёт в slovo. Добавить второй источник каталога = написать ещё одного feeder'а, slovo не трогается.
+- **Pull, не push.** Feeder (CRM) кладёт snapshot JSON в shared MinIO bucket `slovo-datasets/catalogs/aquaphor/latest.json` + history-копии. slovo читает по cron (каждые 4ч), сравнивает с прошлым state. Преимущество перед HTTP push: feeder не зависит от availability slovo, history-папка даёт audit + rollback, добавление нового feeder'а (1С, manual) = ещё одна префикс-папка в bucket'е без изменений slovo.
+- **slovo не знает про MoySklad API / MOY_SKLAD_API_KEY.** CRM с уже готовой интеграцией MoySklad выкачивает binary картинок в bucket с content-hash в имени файла + собирает text-data в JSON. slovo читает только S3 + получает чистый generic snapshot.
 - **Два режима sync:**
-  - `syncMode: "partial"` — feeder шлёт только изменённые items (при invalidation конкретного ключа Redis). Быстро, без soft-delete GC.
-  - `syncMode: "full"` — feeder шлёт весь каталог (полный сброс кеша / manual refresh в админке). slovo чистит отсутствующие через `last_seen_at < sync_start`.
-- `content_hash = SHA-256(name + description)` — маркер изменения _текстовых_ полей (того что идёт в embedding). Изменение цены или атрибутов **не** триггерит пересчёт embedding — экономит 90% OpenAI-вызовов при типичном паттерне.
+  - `syncMode: "partial"` — snapshot содержит только изменённые items (при targeted invalidation). Без soft-delete GC.
+  - `syncMode: "full"` — snapshot содержит весь каталог. slovo по absence-from-snapshot soft-delete'ит отсутствующие через `last_seen_at < sync_start`.
+- **`contentHash` приходит от feeder'а готовый** — детерминированный sha256 над `name + description + categoryPath + groupDescription + sorted(attributes) + sorted(services) + sorted(components) + sorted(imageKeys) + sorted(groupImageKeys)`. slovo не вычисляет его сам — просто сравнивает. Изменение цены / `rangForApp` не входит в hash → не триггерит re-embed (только UPDATE метаданных). Замена картинки → её SHA-256 в S3-ключе меняется → `imageKeys` меняется → contentHash меняется → re-vision (только новых картинок благодаря `vision_cache`) + re-embed.
 - `last_seen_at` каждого присутствующего в batch item'а обновляется. При `syncMode=full` — всё что не попало в batch с `last_seen_at < sync_start` помечается `deleted_at = NOW()`. Soft-delete, не жёсткое удаление: дилер может искать снятый с продажи товар.
 - **Аутентификация:** `Authorization: Bearer <SLOVO_INGEST_API_KEY>` — machine-to-machine, отдельный API key в env обеих сторон. `@UseGuards(ApiKeyGuard)` на endpoint. Не JWT — для service-to-service не нужен.
 - **Rate limiting:** отдельный throttle на `/catalog/items/bulk` (например 10 batch/min — batch может содержать до 500 items).
@@ -315,14 +324,18 @@ model CatalogItem {
     isVisible          Boolean   @default(true) @map("is_visible")
     rangForApp         Int?      @map("rang_for_app")  // ручной приоритет из MoySklad для ranking boost
 
-    // Картинки — массив URL из MoySklad. slovo их не скачивает, только URL.
-    // Используется для отображения на фронте и для вычисления vision-cache.
-    imageUrls              Json?   @map("image_urls")                 // string[]
-    imagesHash             String? @map("images_hash") @db.Char(64)   // SHA-256(sorted urls) — ключ vision-cache
-    visionDescriptionsText String? @map("vision_descriptions_text") @db.Text  // aggregate от всех картинок после vision-describer
+    // Картинки — S3-ключи в shared bucket `slovo-datasets`, формат
+    //   "catalogs/<feeder>/images/<externalId>/<sha256>.<ext>".
+    // Binary живёт в MinIO, читается через s3.GetObject. SHA-256 содержимого
+    // в имени файла → vision_cache lookup keyed по этому hash.
+    imageUrls              Json?   @map("image_urls")                 // S3-keys string[]
+    // Картинки группы — общий контекст для всех товаров одной категории
+    // (служебный Bundle MoySklad). Те же S3-ключи в group-images/ префиксе.
+    groupImageKeys         Json?   @map("group_image_keys")           // S3-keys string[]
+    visionDescriptionsText String? @map("vision_descriptions_text") @db.Text  // aggregate описаний product+group картинок после vision-describer
 
     // Rich content для embedding — собирается в slovo как:
-    //   feeder-text + "Вид на фото: " + visionDescriptionsText
+    //   feeder.contentForEmbedding + "Вид на фото: " + visionDescriptionsText
     // Хранится для re-embed при смене модели или изменении rich text формата.
     contentForEmbedding String   @map("content_for_embedding") @db.Text
 
@@ -330,10 +343,14 @@ model CatalogItem {
     //   { relatedServiceIds: ["..."], relatedComponentIds: ["..."] }
     // MVP без нормализации. Когда понадобится reverse-lookup ("какие товары
     // совместимы с этим картриджем") — выделим catalog_item_components table.
-    attributes         Json?                                       // raw MoySklad attrs + relatedServiceIds + relatedComponentIds
+    attributes         Json?                                       // raw feeder attrs + relatedServiceIds + relatedComponentIds
 
     // Delta-sync маркеры
-    contentHash        String    @map("content_hash") @db.Char(64) // SHA-256(contentForEmbedding)
+    // contentHash приходит ГОТОВЫЙ от feeder'а (поле item.contentHash в bulk
+    // payload) — sha256 над всеми полями влияющими на embedding и Vision,
+    // включая отсортированные image-keys (которые сами хранят hash binary).
+    // slovo НЕ вычисляет hash сам — только сравнивает с stored.
+    contentHash        String    @map("content_hash") @db.Char(64)
     lastSeenAt         DateTime  @default(now()) @map("last_seen_at")
     deletedAt          DateTime? @map("deleted_at")
 
@@ -352,79 +369,151 @@ model CatalogItem {
     @@index([externalUpdatedAt])
     @@map("catalog_items")
 }
+
+// Кэш Vision-описаний картинок keyed по SHA-256 binary. Hash берётся
+// прямо из имени S3-файла (`<sha>.jpg`) — отдельно не вычисляется. Cache
+// глобальный: одна и та же картинка группы переиспользуется на ~8 товаров,
+// + переживает повторные cron-синки и ребилды Flowise vector store.
+model VisionCache {
+    imageHash    String   @id @map("image_hash") @db.Char(64)
+    description  Json     // структурированный output vision-describer chatflow
+    model        String   @db.VarChar(64)   // claude-sonnet-4-6 — для cache invalidation при смене модели
+    createdAt    DateTime @default(now()) @map("created_at")
+
+    @@map("vision_cache")
+}
 ```
 
 **Ключевые решения:**
 - `externalSource + externalId` — composite unique key, multi-source ready. `moysklad:abc-123` и `1c:def-456` одновременно живут в одной таблице.
 - Отдельная таблица, не `knowledge_sources` — разные домены (user uploads vs org catalog), разные lifecycle (ad-hoc vs push-sync), разная авторизация (user-scoped vs read-all + ingest-key-protected).
 - `externalType` не enum, а string — расширяется через код feeder'а без миграций БД (завтра добавим `sparepart`, `manual`, etc.).
+- `vision_cache.imageHash` PK (без auto-id) — hash содержимого _и есть_ естественный ключ. `INSERT … ON CONFLICT DO NOTHING` для concurrent writes. При смене Vision-модели создаём новый cache row с тем же image_hash и новой `model` — старые остаются для аудита.
 
-### Контракт bulk ingest API
+### Контракт bulk ingest — file-based через MinIO
+
+> **Изменено vs ADR-черновика:** контракт перешёл с HTTP push (`POST /catalog/items/bulk`) на **file-based pull**. Feeder кладёт snapshot в MinIO bucket `slovo-datasets/catalogs/<feeder>/latest.json` + history-копии, slovo читает по cron. Источник истины — самый новый файл с прошитым `syncedAt` ISO-timestamp в payload.
+
+**Snapshot path в MinIO:**
+- `slovo-datasets/catalogs/aquaphor/latest.json` — текущий полный/инкрементальный snapshot
+- `slovo-datasets/catalogs/aquaphor/history/2026-04-27T12-27-50-168Z.json` — audit + rollback
+- `slovo-datasets/catalogs/aquaphor/images/<productId>/<sha256>.<ext>` — binary картинок товаров
+- `slovo-datasets/catalogs/aquaphor/group-images/<bundleId>/<sha256>.<ext>` — binary картинок групп
+
+**Структура `latest.json` (TypeScript):**
 
 ```typescript
-POST /catalog/items/bulk
-Authorization: Bearer <SLOVO_INGEST_API_KEY>
-Content-Type: application/json
+type TBulkIngestPayload = {
+    syncMode: 'full' | 'partial';
+    sourceSystem: 'moysklad' | '1c' | 'manual';
+    syncedAt: string;                         // ISO timestamp
+    items: TBulkIngestItem[];
+};
 
-{
-  syncMode: "partial" | "full",
-  items: [
-    {
-      externalId: "a0b1c2d3-...",           // id у feeder'а (moyskladId для CRM)
-      externalSource: "moysklad",           // дискриминатор источника
-      externalType: "product",              // product | service | bundle | cartridge
-      externalUpdatedAt: "2026-04-24T07:00:00Z",
+type TBulkIngestItem = {
+    externalId: string;                       // id у feeder'а (moyskladId для CRM)
+    externalSource: 'moysklad' | '1c' | 'manual';
+    externalType: 'product' | 'service' | 'cartridge' | 'bundle';
+    externalUpdatedAt: string;                // ISO
 
-      // Базовые поля для отображения / фильтрации
-      name: "Аквафор DWM-101S",
-      description: "Фильтр обратного осмоса с минерализатором",   // может быть null / пустой
-      salePriceKopecks: 4500000,            // 45,000.00 ₽
-      categoryPath: "Фильтры / Обратный осмос",
-      imageUrls: [                           // массив всех картинок товара из MoySklad
-        "https://api.moysklad.ru/images/abc-1.jpg",
-        "https://api.moysklad.ru/images/abc-2.jpg"
-      ],
-      isVisible: true,
-      rangForApp: 5,                        // ручной приоритет менеджера из MoySklad
+    name: string;
+    description?: string | null;
+    salePriceKopecks?: number | null;         // 4500000 = 45,000.00 ₽
+    categoryPath?: string | null;             // "Очистка воды/Обратный осмос"
+    isVisible: boolean;
+    rangForApp?: number | null;               // приоритет менеджера для ranking boost
 
-      // Rich content (text-part) для embedding — feeder собрал из name + description +
-      // group.systemBundle.description + attributes + related services/cartridges names.
-      // slovo дополнит блок "Вид на фото" из vision-cache и затем эмбедит.
-      contentForEmbedding: "Товар: Аквафор DWM-101S\nОписание: ...\nКатегория: ...\nКонтекст группы: ...\nУслуги: Монтаж, Настройка\nРасходники: K1-07, K5-17",
+    /** S3-ключи в slovo-datasets, НЕ URL'ы. Slovo читает binary через s3.GetObject. */
+    imageUrls: string[];                      // ["catalogs/aquaphor/images/<id>/<sha>.jpg", ...]
 
-      // Связи — ID list, feeder собирает из parseServiceRefs / parseComponentRefs.
-      // slovo хранит в JSONB attributes, при search-enrichment JOIN по этим id.
-      relatedServiceIds: ["svc-uuid-1", "svc-uuid-2"],       // до 3 услуг
-      relatedComponentIds: ["cart-uuid-1", "cart-uuid-2"],   // до 5 картриджей
+    /** S3-ключи картинок группы (служебный Bundle MoySklad) — общие для всех товаров категории. */
+    groupImageKeys: string[];                 // ["catalogs/aquaphor/group-images/<bundleId>/<sha>.jpg", ...]
 
-      // Произвольные MoySklad-специфичные атрибуты — свободный JSONB для UI /
-      // будущих фильтров (lifespan, warranty и т.п.).
-      attributes: {
-        lifespanMonths: 12,
-        warrantyRequired: true
-      }
-    }
-  ]
-}
+    /** Услуги группы из servisного Bundle, разделённые по pathName услуги. Все товары группы делят общий список. */
+    relatedServices: Array<{
+        id: string;
+        name: string;
+        kind: 'installation' | 'maintenance' | 'other';
+    }>;
 
-Response:
-{
-  received: 25,
-  created: 3,
-  updated_metadata_only: 18,   // contentHash совпал, embedding не пересчитан
-  re_embedded: 4,              // contentHash поменялся или новая запись
-  soft_deleted: 2,             // при syncMode=full
-  errors: []
-}
+    /** Расходники (картриджи) per-product, из атрибутов "Первый-Пятый элемент для обслуживания". */
+    relatedComponents: Array<{ id: string; name: string }>;
+
+    /**
+     * Rich text для embedding — feeder собрал из:
+     *   name + description + categoryPath + group.systemBundle.description +
+     *   attributes + relatedServices (по категориям) + relatedComponents.
+     * slovo дополнит блок "Вид на фото" из vision-cache.
+     */
+    contentForEmbedding: string;
+
+    /**
+     * Детерминированный sha256 над всеми полями влияющими на embedding и Vision
+     * (name + description + categoryPath + groupDescription + sorted(attributes) +
+     * sorted(services) + sorted(components) + sorted(imageKeys) + sorted(groupImageKeys)).
+     * НЕ участвуют: salePriceKopecks, rangForApp, externalUpdatedAt — эти поля
+     * меняют только метаданные и не требуют re-embed.
+     * S3-ключи уже включают sha256 binary в имени — замена картинки автоматически
+     * меняет contentHash → re-vision только новых картинок.
+     */
+    contentHash: string;
+
+    /** Произвольные feeder-специфичные атрибуты для UI / будущих фильтров. */
+    attributes?: Record<string, unknown>;
+};
 ```
+
+**S3 Object metadata в `latest.json`** (для быстрой проверки delta без чтения тела):
+- `contenthash`: sha256 всего payload-а — slovo может HEAD без GET, и если совпало — пропустить cron-итерацию полностью.
+- `syncedat`: дублирует поле в payload.
+- `itemscount`: сколько items.
+- `sourcesystem`: `moysklad` / `1c` / etc.
+
+**Логика slovo-cron'а:**
+
+```
+1. HeadObject(latest.json) → metadata.contenthash
+2. Если совпал с прошлым lastSeenSnapshotHash → skip всю итерацию ($0 LLM)
+3. Иначе GetObject(latest.json), JSON.parse → payload
+4. forEach item: упомянутый delta-flow с per-item contentHash и vision_cache
+5. UPDATE last_seen_at на все items в payload
+6. Если syncMode=full → SOFT-DELETE items где last_seen_at < sync_start
+```
+
+**Что было в HTTP-push варианте, но устарело:**
+- `Authorization: Bearer <SLOVO_INGEST_API_KEY>` → теперь S3 IAM credentials (slovo читает с readonly key, feeder пишет с full-access key — два разных IAM-юзера в MinIO)
+- `Response { received, created, updated_metadata_only, ... }` → теперь slovo логирует эти числа в свой Langfuse / pino, feeder про них не знает (слабая связность)
+- Rate limiting на endpoint → теперь rate естественный: slovo сам решает как часто читать (cron каждые 4ч), feeder сам решает как часто писать (по cache-reset событиям)
 
 ### Что за `contentHash` и когда пересчитывается embedding
 
-`contentHash = SHA-256(contentForEmbedding)`. Это отличается от v1 плана (где хэш считался по `name + description`) — теперь **весь rich text** участвует в хэше.
+`contentHash` — детерминированный sha256, который **feeder вычисляет и кладёт в snapshot готовым**. Slovo не считает hash сам, только сравнивает с stored. Реализация в `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/helpers/compute-item-content-hash.ts` — рекурсивно сортирует ключи объектов в JSON.stringify (replacer), сортирует массивы по id, потом sha256.
 
-**Impact:** если MoySklad обновил только цену товара (name/description/group.description не тронуты) — `contentForEmbedding` у feeder'а получится тот же → тот же hash → embedding не пересчитываем, экономим OpenAI-вызов.
+**Что входит в hash:**
 
-Если изменилось хоть одно из полей которые feeder включает в rich text (например менеджер поправил описание группы) — hash меняется → слово пересчитывается. Это правильное поведение: группа влияет на все товары в ней, при её редактировании пересчитать embeddings — ок.
+```
+sha256(stableStringify({
+    name,
+    description,
+    categoryPath,
+    groupDescription,
+    attributes,                          // sorted keys
+    relatedServices: sorted by id,
+    relatedComponents: sorted by id,
+    imageKeys: sorted,                   // sha256 binary в каждом ключе
+    groupImageKeys: sorted,
+}))
+```
+
+**Что НЕ входит** (меняется часто, не влияет на RAG): `salePriceKopecks`, `rangForApp`, `externalUpdatedAt`, `isVisible`. Изменение цены или приоритета менеджера → UPDATE метаданных без re-embed.
+
+**Impact:**
+- MoySklad обновил только цену → hash тот же → 0 LLM-вызовов.
+- Менеджер поправил описание товара / группы → hash меняется → re-embed.
+- Менеджер заменил картинку в MoySklad → её sha256 в S3-ключе меняется → `imageKeys` массив меняется → hash меняется → re-vision этой одной картинки (остальные из `vision_cache`) + re-embed.
+- Менеджер добавил новую услугу в группу → hash меняется у **всех** товаров группы (кооректно, услуги шли в embedding) → re-embed всей группы. Это не перебор: услуги влияют на матчинг "монтаж обратного осмоса" → конкретные SKU.
+
+**Image-level vision cache отдельно от item-level contentHash:** даже если item.contentHash меняется, картинки которые остались те же (одна из 3-х заменилась — две прежние) обрабатываются Vision'ом **0 раз** благодаря `vision_cache` keyed по sha256 в имени файла.
 
 ---
 
@@ -582,10 +671,10 @@ type CatalogSearchResponse = {
 |---|---|---|
 | **Phase 0 (✅ частично)** | В Flowise UI: (a) `vision-catalog-describer-v1` готов — валидирован на 6 тестах (PR1-3 сегодня); (b) **следующий шаг** — создать `catalog-embed-search` chatflow с OpenAI Embeddings + Postgres Vector Store + Retriever; (c) upsert + search на 3-5 тестовых товарах. | Flowise Postgres Vector Store, OpenAI Embeddings нода |
 | **PR5** | `libs/llm/` — **тонкий HTTP-клиент `FlowiseClient`** к локальному Flowise API. Методы: `predictVision(imageBase64)`, `upsertCatalog(items)`, `searchCatalog(query, topK)`. Внутри — httpClient с retry + logging. NO Anthropic SDK, NO OpenAI SDK в slovo! | Thin HTTP client pattern |
-| **PR6** | `CatalogItem` Prisma-модель (type discriminator product/service/cartridge/bundle) + миграция. `CatalogIngestController` + `POST /catalog/items/bulk` с `ApiKeyGuard`. Content_hash delta, soft-delete через last_seen_at. При изменении hash → вызов `flowiseClient.upsertCatalog(...)`. JSONB `attributes` для relatedServiceIds / relatedComponentIds. | ApiKey auth, idempotent bulk upsert |
+| **PR6** | `CatalogItem` + `VisionCache` Prisma-модели (type discriminator product/service/cartridge/bundle, vision_cache keyed по image sha256) + миграции. `CatalogSyncService` с cron — читает `latest.json` из shared MinIO bucket `slovo-datasets`, сравнивает per-item contentHash, soft-delete через last_seen_at. Vision-pipeline: `s3.GetObject(imageKey)` → base64 → `flowiseClient.predictVision()` → INSERT vision_cache → aggregate → re-embed через `flowiseClient.upsertCatalog()`. | S3 SDK, cron, vision_cache |
 | **PR7** | `/catalog/search/text` endpoint. slovo → `flowiseClient.searchCatalog(query, topK=20)` → Flowise возвращает ranked docs → slovo JOIN с Prisma по catalogItemId → hybrid re-rank (rang + category) → enrichment (related services/cartridges) → response. | Thin orchestration |
 | **PR8** | `/catalog/search/image` — multipart image → `flowiseClient.predictVision(image)` → description → `flowiseClient.searchCatalog(description)` → тот же flow что PR7. Handling `is_relevant=false` → 400 с vision_output. Swagger + e2e с реальными фото. | End-to-end composition |
-| **Вне slovo (параллельно)** | Feeder side — в `crm-aqua-kinetics-back`: сервис сборки `contentForEmbedding` из `name + description + group.pathName + systemBundle.description + attributes`. Extraction `relatedServiceIds` / `relatedComponentIds` через существующие `parseServiceRefs`/`parseComponentRefs`. Hook на cache invalidation → POST к slovo. Отдельный PR в crm репозитории. | crm → slovo HTTP integration |
+| **Вне slovo (✅ готово 2026-04-27)** | Feeder side — в `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/`: `CatalogSyncService.exportSnapshotToS3()` собирает 155 items, скачивает binary картинок из MoySklad в MinIO с sha256 в имени файла (idempotent через HeadObject), вычисляет per-item contentHash, кладёт `latest.json` + history-копию. Триггерится из `MoySkladService.resetCacheAndInitializeSettings()` — best-effort, fail-fast при недоступности S3 не валит cache-reset. | Commits 148194f, da99f92 в CRM |
 
 ---
 
