@@ -1,7 +1,7 @@
 # Vision Catalog Search
 
 > **Статус:** 🟡 черновик / Phase 1 — Flowise эксперименты
-> **Связи:** [knowledge-base.md](knowledge-base.md), [ADR-006](../architecture/decisions/006-knowledge-base-as-first-feature.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md)
+> **Связи:** [knowledge-base.md](knowledge-base.md), [ADR-007 catalog ingest contract](../architecture/decisions/007-catalog-ingest-via-minio.md), [ADR-006](../architecture/decisions/006-knowledge-base-as-first-feature.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md)
 
 Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**. Встраивается в `crm-aqua-kinetics` (собственный продукт разработчика) — пользователь CRM (менеджер / инженер) присылает фото сломанного узла, за пару секунд видит подходящую замену из каталога ~500 товаров MoySklad.
 
@@ -13,7 +13,7 @@
 - **text query** `"фильтр для жёсткой воды"` → embedding → pgvector cosine top-K
 - **image query** фото узла → Claude Vision → структурированное описание → embedding → тот же pgvector top-K
 
-Каталог наполняется **push-модели** от внешних систем (CRM, 1С, ручной импорт): slovo получает events `/catalog/items/bulk` и апсертит. Сам slovo **не знает** что такое MoySklad — это generic RAG-слой над каталогом.
+Каталог наполняется через **file-based pull**: внешние feeder'ы (CRM, 1С, ручной импорт) кладут snapshot в shared MinIO bucket `slovo-datasets`, slovo по cron читает и апсертит. Контракт описан в **ADR-007**. Сам slovo **не знает** что такое MoySklad — это generic RAG-слой над каталогом.
 
 ---
 
@@ -30,9 +30,9 @@
 
 ### Развёртывание
 
-**slovo — standalone API-сервис.** Отдельный репо, отдельный Docker deploy, HTTP API для внешних feeder'ов. `crm-aqua-kinetics-back` — первый feeder, подключается через HTTP к `POST /catalog/items/bulk` и query endpoints.
+**slovo — standalone сервис.** Отдельный репо, отдельный Docker deploy. **HTTP API наружу — только query endpoints** (`/catalog/search/text`, `/catalog/search/image`). Ingest идёт через **shared MinIO bucket** `slovo-datasets` по контракту ADR-007 — feeder пишет, slovo cron читает. `crm-aqua-kinetics-back` — первый feeder.
 
-**Долгосрочный путь (когда усложнится):** выделить pure logic в `slovo/libs/catalog/` + публиковать как `@slovo/catalog` в private npm registry. CRM получит выбор — HTTP или прямой импорт lib. Сейчас YAGNI, начинаем с HTTP.
+**Долгосрочный путь (когда усложнится):** выделить pure logic в `slovo/libs/catalog/` + публиковать как `@slovo/catalog` в private npm registry. Domain-фичи получат выбор — HTTP search или прямой импорт lib. Сейчас YAGNI.
 
 ### Embedding — через Flowise, не напрямую OpenAI
 
@@ -100,7 +100,9 @@ Feeder шлёт `imageUrls: string[]` (S3-ключи в shared bucket `slovo-dat
 | `visionDescriptionsText` | Prisma `catalog_items.vision_descriptions_text` TEXT | aggregate описаний всех картинок item'а (product + group) для embedding + диагностики |
 | Embedding vector | Flowise-managed таблица в той же БД | semantic search |
 
-**Почему shared bucket, а не `slovo` качает картинки сам:** binary картинки в MoySklad защищены auth-токеном; держать MoySklad-credentials в slovo нарушило бы границу "slovo не знает что такое MoySklad" (ADR-006 / generic catalog feeder pattern). Feeder (CRM) уже имеет токен и кладёт binary в bucket с content-hash в имени файла — это даёт slovo ровно одно требование: S3-доступ к bucket'у.
+**Почему shared bucket, а не `slovo` качает картинки сам:** binary картинки в MoySklad защищены auth-токеном; держать MoySklad-credentials в slovo нарушило бы границу "slovo не знает что такое MoySklad" (ADR-006 / generic catalog feeder pattern). Feeder (CRM) уже имеет токен и кладёт binary в bucket с content-hash в имени файла — это даёт slovo ровно одно требование: S3-доступ к bucket'у. Полное обоснование контракта в **ADR-007**.
+
+**Требование к feeder'у — strip EXIF перед `s3.PutObject`.** Картинки MoySklad могут содержать EXIF GPS-координаты съёмки склада/офиса (PII). При split-deployment по 152-ФЗ binary улетает из РФ-зоны (MinIO в РФ) в EU LLM gateway (Flowise/Anthropic Vision) — без EXIF strip это нарушение трансграничной передачи. Feeder (CRM) обязан перед `PutObject` прогонять binary через `sharp().rotate().toBuffer()` (sharp по дефолту удаляет EXIF при ре-энкоде) или явный `piexif.remove`. См. **memory `project_fz152_compliance.md`**.
 
 ### Services: единая таблица, не отдельная
 
@@ -180,10 +182,11 @@ flowchart TB
   - `syncMode: "partial"` — snapshot содержит только изменённые items (при targeted invalidation). Без soft-delete GC.
   - `syncMode: "full"` — snapshot содержит весь каталог. slovo по absence-from-snapshot soft-delete'ит отсутствующие через `last_seen_at < sync_start`.
 - **`contentHash` приходит от feeder'а готовый** — детерминированный sha256 над `name + description + categoryPath + groupDescription + sorted(attributes) + sorted(services) + sorted(components) + sorted(imageKeys) + sorted(groupImageKeys)`. slovo не вычисляет его сам — просто сравнивает. Изменение цены / `rangForApp` не входит в hash → не триггерит re-embed (только UPDATE метаданных). Замена картинки → её SHA-256 в S3-ключе меняется → `imageKeys` меняется → contentHash меняется → re-vision (только новых картинок благодаря `vision_cache`) + re-embed.
-- `last_seen_at` каждого присутствующего в batch item'а обновляется. При `syncMode=full` — всё что не попало в batch с `last_seen_at < sync_start` помечается `deleted_at = NOW()`. Soft-delete, не жёсткое удаление: дилер может искать снятый с продажи товар.
-- **Аутентификация:** `Authorization: Bearer <SLOVO_INGEST_API_KEY>` — machine-to-machine, отдельный API key в env обеих сторон. `@UseGuards(ApiKeyGuard)` на endpoint. Не JWT — для service-to-service не нужен.
-- **Rate limiting:** отдельный throttle на `/catalog/items/bulk` (например 10 batch/min — batch может содержать до 500 items).
-- **Идемпотентность:** `@@unique([externalSource, externalId])` гарантирует идемпотентный upsert. Повторный batch с теми же данными = no-op (hash не меняется).
+- `last_seen_at` каждого присутствующего в snapshot item'а обновляется. При `syncMode=full` — всё что не попало в payload с `last_seen_at < sync_start` помечается `deleted_at = NOW()`. Soft-delete, не жёсткое удаление: дилер может искать снятый с продажи товар. **Cleanup векторов:** при re-embed item'а slovo дополнительно делает `flowiseClient.deleteVectorsByMetadata({ catalogItemId })` чтобы старые chunks не загрязняли retrieval. При soft-delete — то же самое.
+- **Аутентификация:** S3 IAM-ключи в env обеих сторон. Feeder имеет write-доступ к `catalogs/<own-feeder>/*`, slovo — readonly ко всему `catalogs/*` префиксу. JWT/ApiKey-guard'ы не нужны — нет HTTP ingress для ingest.
+- **Rate limiting:** естественный — slovo сам решает как часто читать (cron каждые 4ч), feeder сам решает как часто писать (по cache-reset событиям). Защита от runaway-feeder'а — на стороне MinIO IAM по PUT operations.
+- **Идемпотентность:** `@@unique([externalSource, externalId])` гарантирует идемпотентный upsert. Повторный snapshot с теми же contentHash — no-op (skip каждого item'а на первой же проверке).
+- **Atomicity при чтении.** В bucket'е включён S3 Object Versioning. slovo при `GetObject(latest.json)` использует `If-Match: <etag>` — если между HEAD и GET feeder перезаписал файл, GET вернёт 412 Precondition Failed → slovo ретрит итерацию с новым etag (TOCTOU защита).
 
 ### Query — text
 
@@ -671,7 +674,7 @@ type CatalogSearchResponse = {
 |---|---|---|
 | **Phase 0 (✅ частично)** | В Flowise UI: (a) `vision-catalog-describer-v1` готов — валидирован на 6 тестах (PR1-3 сегодня); (b) **следующий шаг** — создать `catalog-embed-search` chatflow с OpenAI Embeddings + Postgres Vector Store + Retriever; (c) upsert + search на 3-5 тестовых товарах. | Flowise Postgres Vector Store, OpenAI Embeddings нода |
 | **PR5** | `libs/llm/` — **тонкий HTTP-клиент `FlowiseClient`** к локальному Flowise API. Методы: `predictVision(imageBase64)`, `upsertCatalog(items)`, `searchCatalog(query, topK)`. Внутри — httpClient с retry + logging. NO Anthropic SDK, NO OpenAI SDK в slovo! | Thin HTTP client pattern |
-| **PR6** | `CatalogItem` + `VisionCache` Prisma-модели (type discriminator product/service/cartridge/bundle, vision_cache keyed по image sha256) + миграции. `CatalogSyncService` с cron — читает `latest.json` из shared MinIO bucket `slovo-datasets`, сравнивает per-item contentHash, soft-delete через last_seen_at. Vision-pipeline: `s3.GetObject(imageKey)` → base64 → `flowiseClient.predictVision()` → INSERT vision_cache → aggregate → re-embed через `flowiseClient.upsertCatalog()`. | S3 SDK, cron, vision_cache |
+| **PR6** | `CatalogItem` + `VisionCache` Prisma-модели (type discriminator product/service/cartridge/bundle, vision_cache keyed по image sha256) + миграции. **`CatalogSyncService` живёт в `apps/worker`, не в `apps/api`** — long-running task (≥minutes per snapshot) не должен жить в request-path; per ADR-001 modular monolith границы + ADR-003 RMQ для async-задач. Триггер: RMQ message `catalog.sync` каждые 4ч (через `apps/worker` scheduler — `@nestjs/schedule` или RMQ delayed-message). Логика: `s3.HeadObject(latest.json)` → metadata.contenthash совпал? skip. Иначе `GetObject` (с `If-Match` etag — TOCTOU), forEach item — сравнение contentHash, soft-delete через last_seen_at, vision-pipeline (`s3.GetObject(imageKey)` → base64 → `flowiseClient.predictVision()` → INSERT vision_cache → aggregate → `flowiseClient.upsertCatalog()`). При re-embed item'а — `flowiseClient.deleteVectorsByMetadata({ catalogItemId })` для cleanup stale chunks. | S3 SDK (уже есть `libs/storage`), RMQ scheduler в worker, vision_cache |
 | **PR7** | `/catalog/search/text` endpoint. slovo → `flowiseClient.searchCatalog(query, topK=20)` → Flowise возвращает ranked docs → slovo JOIN с Prisma по catalogItemId → hybrid re-rank (rang + category) → enrichment (related services/cartridges) → response. | Thin orchestration |
 | **PR8** | `/catalog/search/image` — multipart image → `flowiseClient.predictVision(image)` → description → `flowiseClient.searchCatalog(description)` → тот же flow что PR7. Handling `is_relevant=false` → 400 с vision_output. Swagger + e2e с реальными фото. | End-to-end composition |
 | **Вне slovo (✅ готово 2026-04-27)** | Feeder side — в `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/`: `CatalogSyncService.exportSnapshotToS3()` собирает 155 items, скачивает binary картинок из MoySklad в MinIO с sha256 в имени файла (idempotent через HeadObject), вычисляет per-item contentHash, кладёт `latest.json` + history-копию. Триггерится из `MoySkladService.resetCacheAndInitializeSettings()` — best-effort, fail-fast при недоступности S3 не валит cache-reset. | Commits 148194f, da99f92 в CRM |
@@ -888,6 +891,8 @@ WHERE to_tsvector('russian', name || ' ' || description) @@ websearch_to_tsquery
 4. **Cost budget.** Claude Vision $0.003/image + OpenAI embedding $0.003 / 500 товаров. 100 image searches в день = $0.30 + $0.0004. Копейки.
 5. **Веса hybrid ranking (0.7 / 0.2 / 0.1)** — тюнить по UX. Возможна UI с кнопкой "сдвинуть приоритет в сторону популярных" (увеличить rang weight).
 6. **Category canonicalization.** Как маппить Vision `category: "обратный осмос"` → MoySklad `categoryPath: "Фильтры/Обратный осмос/..."`? Lookup table с синонимами в slovo. 20-30 категорий — маленькая константа.
+7. **VisionCache GC.** За год накопится 10-100k записей при ребрендах/удалениях товаров (запись ~200-500 байт JSON-описание). Нужен ли cron-vacuum по `lastUsedAt < NOW() - 6 months`, или достаточно «никогда не чистим»? Решить после первого года в проде. См. ADR-007 open question 1.
+8. **Bucket layout per environment.** В prod нужен отдельный bucket `slovo-datasets-prod` или префикс `<env>/catalogs/...`? Решить когда дойдём до prod-deploy. См. ADR-007 open question 2.
 
 ---
 

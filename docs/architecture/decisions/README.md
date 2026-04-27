@@ -33,3 +33,4 @@
 | [004](004-claude-as-primary-llm.md) | Claude как основная LLM | ✅ Принято |
 | [005](005-prisma-with-pgvector.md) | Prisma + raw queries для векторов | ✅ Принято |
 | [006](006-knowledge-base-as-first-feature.md) | Knowledge Base как первая фича и core capability | 🟡 В обсуждении |
+| [007](007-catalog-ingest-via-minio.md) | Catalog ingest contract — file-based pull через shared MinIO bucket | ✅ Принято |
