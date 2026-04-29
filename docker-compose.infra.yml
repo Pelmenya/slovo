@@ -124,6 +124,15 @@ services:
             # Отключаем кеш скомпилированного chatflow — иначе overrideConfig.promptValues
             # может не срабатывать (из GitHub issue FlowiseAI/Flowise#2991 от maintainer HenryHengZJ).
             DISABLE_CHATFLOW_REUSE: "true"
+            # AWS SDK env-переменные для подключения S3 Loader Flowise к MinIO.
+            # Flowise S3 File Loader сам не передаёт endpoint/forcePathStyle в S3Client —
+            # @aws-sdk/client-s3 читает их из этих env как fallback.
+            # Используется в Document Store → S3 File Loader для пуллинга
+            # catalogs/<feeder>/latest.json и binary картинок из shared bucket
+            # `slovo-datasets` (см. ADR-007 + experiments/vision-catalog/).
+            AWS_ENDPOINT_URL_S3: http://slovo-minio:9000
+            AWS_S3_FORCE_PATH_STYLE: "true"
+            AWS_DEFAULT_REGION: us-east-1
         extra_hosts:
             # Для Linux host.docker.internal не работает из коробки;
             # на Windows/Mac Docker Desktop резолвит сам, эта строка игнорируется.
