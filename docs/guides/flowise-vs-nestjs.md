@@ -577,6 +577,131 @@ ON knowledge_chunks
 USING gin (metadata);
 ```
 
+### ✅ D. Phase 0 vision-catalog-search — ЗАКРЫТ (2026-04-29)
+
+Smoke-test полного pipeline на 3 sample items из CRM-snapshot:
+
+```
+Json File loader → Recursive Splitter (chunk=1000, overlap=200)
+                                    ↓
+OpenAI Embeddings (text-embedding-3-small, 1536-dim) → Postgres (catalog_chunks)
+                                    ↓
+                  Conversational Retrieval QA Chain
+                          ↑                  ↑
+                  ChatAnthropic          Buffer Memory
+                  (Claude Haiku 4.5,
+                   temp=0)
+```
+
+**Результат:** 4 чистых чанка (один длинный item разрезан на 2 chunk'а с overlap), retrieval запросом `"какой смеситель есть для кухни"` → возвращает все 3 товара ранжированных по cosine similarity. Cost ~$0.0001 на query (Haiku passthrough).
+
+#### Json File loader — каверзы которые выяснили
+
+- **`Pointers Extraction` СКРЫТ когда `Separate by JSON Object: ON`** — если изначально toggle был ON, поле hidden, любые введённые значения **не сохраняются**. После toggle OFF поле видно, но пустое — нужно перезаполнить. Источник `Json.ts:79`:
+  ```ts
+  hide: { separateByObject: true }
+  ```
+- **Pointers Extraction = пусто → loader extract'ит ВСЕ strings** из объекта (UUID, имена, полевые значения) — каждое строковое поле становится отдельным document'ом. С нашим JSON `[{externalId, externalType, name, contentForEmbedding}]` без pointers получили 13 docs вместо 3-6 (всё кроме contentForEmbedding — мусор для embedding).
+- **`Additional Metadata` требует leading slash** — `/externalId` (jsonpointer RFC 6901), не `{externalId}`. Без слэша значение **молча игнорируется** (`Json.ts:181`):
+  ```ts
+  const values = Object.values(this.metadataMapping).filter(
+      (value) => typeof value === 'string' && value.startsWith('/')
+  )
+  ```
+- **JSON-редактор UI добавляет случайные пробелы в ключи** — встретили `" externalId"` (с пробелом в начале) при первом добавлении. В выходных метаданных получим тот же ключ с пробелом. Удалить → ввести заново внимательно.
+- **Файл хранится как `FILE-STORAGE::["filename"]` reference**, не inline base64. В `Export Chatflow` поле `jsonFile` показывается пустым, но физически файл лежит в `/root/.flowise/storage/<orgId>/<chatflowId>/`. Не паника — `node -e 'console.log(...)' < export.json` покажет `false`, а на самом деле всё на месте.
+
+#### Production-flow в slovo не использует UI loader
+
+slovo `apps/worker` будет POST'ить документы через `/api/v1/vector/upsert/<id>` с `overrideConfig` — никаких UI loader'ов не нужно. Json File нода на канвасе chatflow остаётся только для ручного debug в UI.
+
+### ✅ E. Open question #2 (retriever-only без LLM) — ОТВЕТ ЕСТЬ через Document Store API (2026-04-29)
+
+**Изначальный вопрос:** возможно ли в Flowise 3.1.2 получить retriever output БЕЗ LLM passthrough?
+
+#### Через `/api/v1/prediction/<chatflowId>` — НЕТ
+
+В `flowise/dist/utils/index.js:283` есть строгая валидация ending node:
+
+```js
+if (endingNodeData.category !== 'Chains' &&
+    endingNodeData.category !== 'Agents' &&
+    endingNodeData.category !== 'Engine' &&
+    endingNodeData.category !== 'Multi Agents' &&
+    endingNodeData.category !== 'Sequential Agents') {
+    throw new InternalFlowiseError(500, 'Ending node must be either a Chain or Agent or Engine')
+}
+```
+
+Vector Store не входит в allowlist. **Issue [#3610](https://github.com/FlowiseAI/Flowise/issues/3610)** запрашивает фичу «Return source document without LLM» — **закрыт как `not planned`**.
+
+#### Через Document Store API — ДА, нативный endpoint без LLM
+
+```
+POST /api/v1/document-store/vectorstore/query
+Authorization: Bearer <FLOWISE_API_KEY>
+Content-Type: application/json
+{ "storeId": "<uuid>", "query": "какой смеситель есть" }
+
+Response:
+{
+  "timeTaken": 145,
+  "docs": [
+    { "pageContent": "Название: ...", "metadata": { "externalId": "..." }, "id": "..." }
+  ]
+}
+```
+
+Реализация в `services/documentstore/index.js:1170` (`queryVectorStore`) — **ровно retriever.invoke без LLM**:
+
+```js
+const retriever = await vectorStoreObj.init(...)        // тот же Postgres node
+const results = await retriever.invoke(data.query)       // pgvector cosine search
+return { timeTaken, docs: results.map(r => ({ pageContent, metadata, id })) }
+```
+
+Flowise использует тот же `nodesPool.componentNodes` и для Chatflow и для Document Store, поэтому **Document Store поддерживает все те же** vector stores и embedders что Chatflow (включая Postgres + наш `catalog_chunks` table).
+
+#### Сравнение для search
+
+| Метрика | Через Chatflow + Haiku | Через Document Store |
+|---|---|---|
+| Cost / search | ~$0.0001 | ~$0.0000004 (только query embedding) |
+| Latency | ~1.5s (Haiku completion) | ~150ms (одна embedding + SQL) |
+| Hallucination в text | возможна | НЕТ — text не возвращается |
+| LLM calls | 1 | 0 |
+| Месячный cost при 100/день | $0.30 | ~$0 |
+
+#### Решение для slovo
+
+Каталог переезжает на Document Store. В PR7 `slovo /catalog/search/text`:
+- slovo вызывает `POST /document-store/vectorstore/query` напрямую
+- парсит `docs[]`, делает hybrid re-rank (rang_for_app + category boost) + enrichment через Prisma
+- **никакого Haiku passthrough, никакого Chain'а на пути search**
+
+Chatflow остаётся для:
+- `vision-catalog-describer-v1` (image → JSON description) — нужен Chain ending для prediction API
+- ручного UI-debug каталога при необходимости
+
+### ✅ F. Open question #1 (langchain_pg_embedding table name) — ЗАКРЫТ (2026-04-29)
+
+В **knowledge-base** Flowise создаёт таблицу с именем `langchain_pg_embedding` (langchain дефолт). В **catalog-search** при тесте — создаётся таблица **с именем из `Table Name` поля Postgres-ноды**, у нас задано `catalog_chunks`.
+
+Schema автоматически:
+
+```sql
+CREATE TABLE catalog_chunks (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "pageContent" text,
+    metadata    jsonb,
+    embedding   vector
+);
+```
+
+Без HNSW-индекса — добавить отдельной Prisma миграцией через `--create-only` после первого upsert (по тому же паттерну что для knowledge_chunks в ADR-006).
+
+**Связь с Prisma-managed таблицами** — app-level через `metadata.externalId`, никаких database-level FK (так же как в ADR-006 для knowledge_chunks ↔ knowledge_sources).
+
 ---
 
 ## Архитектурная картина для slovo
