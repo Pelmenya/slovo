@@ -1,0 +1,8 @@
+{
+    "name": "@slovo/flowise-flowdata",
+    "version": "0.0.1",
+    "private": true,
+    "main": "src/index.ts",
+    "types": "src/index.ts",
+    "description": "Типизированный builder для Flowise chatflow flowData JSON. Работает в паре с @slovo/mcp-flowise (chatflow_create + nodes_get runtime introspection)."
+}
