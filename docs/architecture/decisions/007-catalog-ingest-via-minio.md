@@ -177,11 +177,28 @@ crm → INSERT INTO catalog_inbox → slovo cron SELECT/DELETE
 - **Versioning bucket'а** — нужно явно включить (`mc anonymous version`, либо в `infra:up` скрипте). Иначе history даёт audit, но atomicity между HEAD и GET — нет.
 - **VisionCache (slovo Prisma модель)** — переиспользование описаний картинок keyed по sha256 binary, который и так в имени S3-файла. Cache живёт **глобально**, переиспользуется между cron-синками. Без TTL по умолчанию (см. open question ниже).
 
+## Дополнение от 2026-04-30 — внутренний путь bucket → Flowise Document Store
+
+ADR описывает контракт **feeder → bucket** (это решение остаётся в силе). Phase 0 эксперимента vision-catalog (см. `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md`, день 2) поднял вопрос о следующем шаге **bucket → Flowise Document Store** и закрыл его так:
+
+**Решение:** slovo `apps/worker/catalog-refresh` orchestrate'ит ingest через `POST /api/v1/document-store/upsert/<storeId>` (или эквивалентный путь — `/loader/save` + `/loader/process` + `/vectorstore/insert`) с inline `documents[]` payload, где `pageContent = item.contentForEmbedding`, `metadata = item целиком`. Flowise S3 File Loader **не используется** для прямого пуллинга `latest.json` из bucket'а.
+
+**Почему не Flowise S3 File Loader (UI-only ingest):**
+
+1. Для `application/json` Flowise S3 File Loader обрабатывает файл как **plain text** — не запускает JSONLoader. Additional Metadata jsonpointer'ы (`/externalId`, `/name` и пр.) записываются в `metadata` как литеральные строки `"/externalId"`, а не извлечённые значения. Это **design limitation** Flowise S3 File для JSON, не баг конфигурации.
+2. Forka Flowise или monkey-patch S3 File Loader для JSON-ветки — добавляет maintenance load и риск разойтись с upstream.
+3. slovo всё равно должен быть active-actor в ingest pipeline для split-arch (152-ФЗ, см. ADR будущий 008): орchestrate ingest на стороне slovo упрощает добавление vision_cache lookup, dedup по `contentHash` (Phase 2) и любых будущих pre-processing шагов до отправки в Flowise.
+
+**Что это меняет в ADR-007:** ничего в контракте feeder → bucket (это всё ещё file-based pull через MinIO). Меняется только то, что **Document Store наполняется через REST API из slovo**, а не через UI-конфиг с Flowise S3 File Loader. PR6 (`apps/worker/catalog-refresh` + `apps/api/catalog/search/*`) реализует этот путь.
+
+**Reproducible recipe** — все используемые endpoint'ы и payload'ы зафиксированы в lab journal в секциях «11:50 — loader/save → 200 OK», «12:35 — vectorstore/save + vectorstore/insert», «12:45 — query API smoke» (день 2).
+
 ## Open questions
 
 1. **VisionCache GC.** За год накопится 10-100k записей при ребрендах/удалениях товаров. Нужен ли cron-vacuum по `lastUsedAt`, или достаточно «никогда не чистим» (cache небольшой, JSON-описания по 200-500 байт)? Решить после первого года в проде.
 2. **Bucket per environment.** В prod хочется отдельный bucket `slovo-datasets-prod`, `slovo-datasets-staging`. На каком уровне разделять — bucket name или путь префиксом? Path-style проще для MinIO, разные bucket'ы — для managed S3. Решить когда дойдём до prod-deploy.
 3. **Multi-tenant readiness.** Когда появятся пользователи, каталог станет per-tenant (`catalogs/<tenant>/<feeder>/`). Контракт совместим — расширяется добавлением одного уровня в путь. ADR не пересматривается.
+4. **Flowise upsert endpoint — точная форма.** В Phase 0 проверены `loader/save → loader/process → vectorstore/save → vectorstore/insert` (4 запроса). Есть ещё один путь — `/api/v1/document-store/upsert/<id>` с inline documents (1 запрос). Какая форма надёжнее для slovo `apps/worker` — выбрать в PR6 (определяется payload-shape, поведение idempotency и dedup семантикой).
 
 ## Связанные ADR
 

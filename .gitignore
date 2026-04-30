@@ -47,3 +47,8 @@ prisma/migrations/dev.db*
 /image*.webp
 /image*.png
 /image*.jpg
+
+# Артефакты экспериментов — sample data, base64-картинки, готовые JSON-payload'ы
+# для curl, дампы ответов API. Reproducible recipe лежит в docs/experiments/<name>/
+# lab journal'е, сами артефакты локальные и в git не идут.
+/experiments/
