@@ -1,6 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { tools } from './tools';
+import type { TToolDefinition } from './tools/t-tool';
+
+// Каждое значение в registry имеет свой узкий TIn для compile-time проверки в satisfies,
+// но при итерации TS пересекает все TIn в never. Сужаем tool к базовому контракту через
+// промежуточную переменную — это безопасно потому что schema.parse выше валидирует input.
+type TAnyTool = TToolDefinition<unknown, unknown>;
 
 export function createServer(): McpServer {
     const server = new McpServer({
@@ -8,7 +14,7 @@ export function createServer(): McpServer {
         version: '0.0.1',
     });
 
-    for (const [name, tool] of Object.entries(tools)) {
+    for (const [name, tool] of Object.entries(tools) as Array<[string, TAnyTool]>) {
         server.registerTool(
             name,
             {
