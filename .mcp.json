@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "flowise-slovo": {
+            "command": "node",
+            "args": [
+                "--env-file=.env",
+                "node_modules/tsx/dist/cli.mjs",
+                "libs/mcp-flowise/src/index.ts"
+            ]
+        }
+    }
+}
