@@ -8,6 +8,10 @@ import type { TBuilderEdgeSpec, TFlowEdge, TFlowNode } from './t-flowdata';
 // Где anchorType — конкатенация baseClasses через "|".
 // =============================================================================
 
+// Тип edge'ов в Flowise — на момент 3.x всегда "buttonedge". В ранних версиях
+// был "default". Если Flowise schema меняется — правим тут одно место.
+export const FLOWISE_EDGE_TYPE = 'buttonedge' as const;
+
 function findAnchor(
     anchors: TFlowNode['data']['inputAnchors'] | TFlowNode['data']['outputAnchors'],
     name?: string,
@@ -28,6 +32,11 @@ export function makeSourceHandle(node: TFlowNode, anchorName?: string): string {
             `Node ${node.id} has no output anchor${anchorName ? ` named "${anchorName}"` : ''}`,
         );
     }
+    if (!anchor.type) {
+        throw new Error(
+            `Node ${node.id} output anchor "${anchor.name}" has empty type — likely empty baseClasses in spec`,
+        );
+    }
     return `${node.id}-output-${anchor.name}-${anchor.type}`;
 }
 
@@ -35,6 +44,11 @@ export function makeTargetHandle(node: TFlowNode, anchorName: string): string {
     const anchor = findAnchor(node.data.inputAnchors, anchorName);
     if (!anchor) {
         throw new Error(`Node ${node.id} has no input anchor named "${anchorName}"`);
+    }
+    if (!anchor.type) {
+        throw new Error(
+            `Node ${node.id} input anchor "${anchor.name}" has empty type`,
+        );
     }
     return `${node.id}-input-${anchor.name}-${anchor.type}`;
 }
@@ -59,6 +73,6 @@ export function buildEdge(
         target: targetNode.id,
         sourceHandle,
         targetHandle,
-        type: 'buttonedge',
+        type: FLOWISE_EDGE_TYPE,
     };
 }

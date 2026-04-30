@@ -33,12 +33,17 @@ export type TIntrospectData = {
 
 export async function introspectHandler(_input: TIntrospectInput): Promise<TToolResult<TIntrospectData>> {
     const failures: string[] = [];
-    const ping = await pingHandler({});
-    const cf = await chatflowListHandler({ type: 'CHATFLOW' });
-    const af = await chatflowListHandler({ type: 'AGENTFLOW' });
-    const ds = await docstoreListHandler({});
-    const creds = await credentialsListHandler({});
-    const nodes = await nodesListHandler({});
+    // Параллелим — все handler'ы возвращают TToolResult через withErrorHandling,
+    // никогда не throw. Без этого 6 sequential вызовов на удалённом Flowise дают
+    // 300-1200мс вместо ~200мс.
+    const [ping, cf, af, ds, creds, nodes] = await Promise.all([
+        pingHandler({}),
+        chatflowListHandler({ type: 'CHATFLOW' }),
+        chatflowListHandler({ type: 'AGENTFLOW' }),
+        docstoreListHandler({}),
+        credentialsListHandler({}),
+        nodesListHandler({}),
+    ]);
 
     if (!ping.success) failures.push(`ping: ${ping.error}`);
     if (!cf.success) failures.push(`chatflows: ${cf.error}`);
@@ -100,6 +105,9 @@ async function runStep(
 }
 
 export async function smokeHandler(_input: TSmokeInput): Promise<TToolResult<TSmokeData>> {
+    // Намеренно sequential — для measuring per-step latency и обнаружения
+    // последовательной деградации (медленный auth/middleware всплывёт через
+    // первые шаги). Если нужна общая latency без deg-detection — Promise.all.
     const steps: TSmokeStep[] = [
         await runStep('ping', () => pingHandler({})),
         await runStep('chatflows', () => chatflowListHandler({})),

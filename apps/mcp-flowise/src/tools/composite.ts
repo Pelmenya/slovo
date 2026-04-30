@@ -45,11 +45,21 @@ export async function chatflowCloneHandler(
         flowData: input.transformFlowData ?? (source.flowData ?? '{"nodes":[],"edges":[]}'),
         deployed: input.deployed ?? false,
         isPublic: input.isPublic ?? false,
-        type: source.type as 'CHATFLOW' | 'AGENTFLOW' | 'MULTIAGENT' | 'ASSISTANT' | undefined,
+        type: narrowChatflowType(source.type),
         category: source.category ?? undefined,
         chatbotConfig: source.chatbotConfig ?? undefined,
         apiConfig: source.apiConfig ?? undefined,
     });
+}
+
+const KNOWN_CHATFLOW_TYPES = ['CHATFLOW', 'AGENTFLOW', 'MULTIAGENT', 'ASSISTANT'] as const;
+type TKnownChatflowType = (typeof KNOWN_CHATFLOW_TYPES)[number];
+
+function narrowChatflowType(value: string | undefined): TKnownChatflowType | undefined {
+    if (value && (KNOWN_CHATFLOW_TYPES as readonly string[]).includes(value)) {
+        return value as TKnownChatflowType;
+    }
+    return undefined;
 }
 
 // =============================================================================
@@ -76,12 +86,21 @@ export type TDocstoreCloneInput = z.infer<typeof docstoreCloneSchema>;
 
 export type TDocstoreCloneData = TFlowiseDocumentStore;
 
-function parseConfigField(raw: string | null): { name?: string; config?: Record<string, unknown> } | null {
-    if (!raw) return null;
+function parseConfigField(
+    raw: string | null,
+    fieldName: string,
+): { name?: string; config?: Record<string, unknown> } | null {
+    if (!raw) {
+        return null;
+    }
     try {
-        const parsed = JSON.parse(raw) as { name?: string; config?: Record<string, unknown> };
-        return parsed;
-    } catch {
+        return JSON.parse(raw) as { name?: string; config?: Record<string, unknown> };
+    } catch (error) {
+        // stdout зарезервирован под MCP JSON-RPC protocol — пишем в stderr
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(
+            `[mcp-flowise] docstore_clone: corrupted ${fieldName} JSON in source store, skipping config copy: ${message}\n`,
+        );
         return null;
     }
 }
@@ -103,23 +122,19 @@ export async function docstoreCloneHandler(
     }
     const newStore = createResult.data;
 
-    const sourceEmbedding = parseConfigField(source.embeddingConfig);
-    const sourceVectorStore = parseConfigField(source.vectorStoreConfig);
+    const sourceEmbedding = parseConfigField(source.embeddingConfig, 'embeddingConfig');
+    const sourceVectorStore = parseConfigField(source.vectorStoreConfig, 'vectorStoreConfig');
     if (!sourceEmbedding?.name && !sourceVectorStore?.name) {
         return { success: true, data: newStore };
     }
 
-    const saveResult = await docstoreVectorstoreSaveHandler({
+    return docstoreVectorstoreSaveHandler({
         storeId: newStore.id,
         embeddingName: sourceEmbedding?.name,
         embeddingConfig: input.overrideEmbeddingConfig ?? sourceEmbedding?.config,
         vectorStoreName: sourceVectorStore?.name,
         vectorStoreConfig: input.overrideVectorStoreConfig ?? sourceVectorStore?.config,
     });
-    if (!saveResult.success) {
-        return saveResult;
-    }
-    return { success: true, data: saveResult.data };
 }
 
 // =============================================================================

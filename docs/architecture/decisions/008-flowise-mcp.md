@@ -120,14 +120,21 @@
 - 54 tools в стиле `mcp-moysklad`: zod schema + handler + унифицированный `TToolResult<T>`. Все типы `T<Resource><Action>{Input,Data}` экспортируются — consumers могут импортировать строго.
 - TypeScript clean (`npx tsc --noEmit` + `npm run build` в `apps/mcp-flowise/`), ESLint clean. Live smoke через MCP подтвердил все 54 tools на slovo Flowise dev-инстансе.
 
-**План extract в `Pelmenya/mcp-flowise`** (когда потребуется):
+**План extract в `Pelmenya/mcp-flowise` + `Pelmenya/flowise-flowdata`** (два пакета — transport и domain):
 
-1. `git filter-repo --path apps/mcp-flowise/ --path-rename apps/mcp-flowise/:` сохраняет историю.
-2. Переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise` в `package.json`.
-3. Заменить путь `../../node_modules/tsx` в `scripts.dev` на локальный `tsx` (devDep).
-4. Перенести deps `@modelcontextprotocol/sdk`, `zod` из root slovo `package.json` в локальный.
-5. Добавить `.github/workflows/{test,publish}.yml` — CI test+lint, publish on tag.
-6. `npm publish --access public` (scoped public) или Smithery submit.
+1. `git filter-repo --path apps/mcp-flowise/ --path-rename apps/mcp-flowise/:` для transport-пакета и `--path libs/flowise-flowdata/ --path-rename libs/flowise-flowdata/:` для domain-либы. История сохраняется отдельно для каждого.
+2. **`flowise-flowdata` (domain)** переезжает первым — это foundation:
+   - Переименовать `@slovo/flowise-flowdata` → `@pelmenya/flowise-flowdata`.
+   - Добавить **build-step**: `tsup` или `tsc --project tsconfig.build.json` → `dist/`. Сейчас `package.json:main` указывает на `src/index.ts` (in-monorepo via TS path-aliases) — для npm-publish нужен скомпилированный JS + `.d.ts`, иначе потребители без TS-компилятора на Node не смогут require.
+   - `package.json`: `main: dist/index.js`, `types: dist/index.d.ts`, `files: [dist, README, LICENSE]`, `prepublishOnly: tsc + tests`.
+   - Перенести `zod` в локальный deps.
+3. **`mcp-flowise` (transport)** — после публикации flowise-flowdata:
+   - Переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise`.
+   - Заменить путь `../../node_modules/tsx` в `scripts.dev` на локальный `tsx` (devDep).
+   - Перенести deps `@modelcontextprotocol/sdk`, `zod` из root slovo `package.json` в локальный.
+   - **`peerDependencies`** на `@pelmenya/flowise-flowdata` (transport → domain однонаправленно, аналогично паре `@nestjs/microservices` → `@nestjs/common`).
+4. Для каждого пакета — `.github/workflows/{test,publish}.yml` (CI test+lint, publish on tag).
+5. `npm publish --access public` (scoped public) или Smithery submit.
 
 **Триггер extract** — любой из:
 - Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).

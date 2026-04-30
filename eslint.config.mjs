@@ -6,7 +6,8 @@ import prettier from 'eslint-config-prettier';
 // Flat config (ESLint 9+). tseslint.config() deprecated в typescript-eslint 8.x —
 // используем плоский массив. Типы parserOptions.project: true и rules-keys
 // валидируются через JSDoc @ts-check выше.
-export default [
+/** @type {import('eslint').Linter.Config[]} */
+const config = [
     {
         ignores: [
             'dist/**',
@@ -81,3 +82,5 @@ export default [
         },
     },
 ];
+
+export default config;
