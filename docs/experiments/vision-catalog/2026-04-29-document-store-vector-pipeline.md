@@ -360,4 +360,382 @@ Slovo НЕ нужна Prisma `CatalogItem` таблица — все enrichment-
 - `C:\Users\Diamond\Desktop\slovo\c125-b64.txt` — base64 картинки C125 (185 KB), для повтора vision-теста
 - `C:\Users\Diamond\Desktop\slovo\vision-req.json` — payload для prediction API (185 KB)
 
-### _ToDo:_ запись по мере прогресса
+---
+
+## День 2 — 2026-04-30: закрытие Phase 0
+
+### 11:00 — Шаг 1: Upsert sample-3items в catalog-embed-search
+
+User в Flowise UI нажал **Upsert Vector Database** на Chatflow `catalog-embed-search`. Json File loader там настроен с `sample-3items.json`. Через ~3 секунды зелёный тост `Added: 4`.
+
+```bash
+docker exec slovo-postgres psql -U slovo -d slovo -c "SELECT count(*) FROM catalog_chunks;"
+# count = 4
+```
+
+### 11:05 — Шаг 1: vision-describer на C125 image
+
+Тот же payload что в 13:00 (день 1). Результат повторяемый — `description_ru: "Кран смеситель для питьевой воды с двумя рычагами и высоким изогнутым изливом, хромированный, используется в системах водоочистки обратного осмоса для подачи фильтрованной воды."`
+
+### 11:10 — Шаг 1: image-search end-to-end через Chatflow
+
+Сформировали `query-c125.json`:
+```json
+{ "question": "Кран смеситель для питьевой воды с двумя рычагами и высоким изогнутым изливом, хромированный, используется в системах водоочистки обратного осмоса для подачи фильтрованной воды." }
+```
+
+POST `/api/v1/prediction/2e016504-1e83-498f-b3b5-4baba11db5dd` (catalog-embed-search). **timeTaken: 4865 ms**.
+
+**Retrieval ✅:**
+
+| Rank | externalId | Item |
+|---|---|---|
+| 1 | `7194736b-19d6-11e7-7a31-d0fd00056ba7` | **C125** (тот самый) |
+| 2 | `a2325cf6-3bb6-11ec-0a80-051b0008a602` | 82138С |
+| 3 | `9d8c1dc4-19d6-11e7-7a31-d0fd0005747a` | C126 |
+| 4 | `7194736b-...` (chunk-2) | C125 — Монтажные услуги |
+
+Vector search по `description_ru` точно нашёл C125 — фотография определилась корректно.
+
+**Generation ⚠️:** Conversational Retrieval QA Chain (Haiku) ответил *«Хмм, я не уверен. В предоставленной информации нет описания крана-смесителя с двумя рычагами и высоким изогнутым изливом...»*. Промпт строгий — отвечает только из контекста, а в чанках нет визуальных характеристик («хромированный», «изогнутый излив») — они только в нашем query от vision'а.
+
+**Вывод:** retrieval работает идеально, но LLM-overlay в QA Chain убивает UX потому что текст товаров не содержит визуальных терминов из vision-описания. **Прямое доказательство необходимости Document Store query API без LLM** — нам нужны `docs[]` напрямую, без интерпретации.
+
+### 11:30 — Шаг 2: попытка через UI зашла в тупик
+
+User создал AWS Credential `minio-slovo-datasets` в Flowise UI, добавил S3 File Loader в Document Store `catalog-aquaphor` со всеми 10 metadata pointers и Recursive Splitter (1000/200). На **Process** упало:
+
+```
+Please fill in the following mandatory fields: Unstructured API URL
+```
+
+Поле скрыто через `show: { fileProcessingMethod: 'unstructured' }` (см. `S3File.ts:175`), но required-чек в UI игнорирует `show`. Default `optional` зависит от env (`optional: !!process.env.UNSTRUCTURED_API_URL`).
+
+**Workaround:** добавили `UNSTRUCTURED_API_URL=http://localhost:8000/general/v0/general` в `docker-compose.infra.yml` → флаг `optional` стал `true` → required снимается. Сам URL никогда не используется при Built In Loaders. Закоммичено в `docker-compose.infra.yml`.
+
+После рестарта Flowise — состояние формы потерялось (Document Store loader конфиг сохраняется в sqlite **только после первого успешного Process**, до этого state живёт в браузере). User заполнил повторно — но теперь вылез **второй блокер**: F5 / refresh снова сбрасывает форму. UI цикл оказался непродуктивным.
+
+### 11:45 — Шаг 2: переключаемся на REST API
+
+User создал API key через UI Credentials → API Keys (`+ Create Key`), скопировал значение. Все Document Store endpoint'ы под `checkPermission()` принимают `Authorization: Bearer <apiKey>`.
+
+**Reproducible recipe** (последующие refresh-сценарии и slovo `apps/worker` смогут использовать тот же путь):
+
+```bash
+KEY="<flowise-api-key>"
+STORE_ID="aec6b741-8610-4f98-9f5c-bc829dc41a96"   # GET /document-store/store
+```
+
+Полученные id:
+
+| Сущность | id |
+|---|---|
+| Document Store `catalog-aquaphor` | `aec6b741-8610-4f98-9f5c-bc829dc41a96` |
+| Credential `minio-slovo-datasets` (awsApi) | `56f648d8-36bc-4885-a3cf-f79f796e7674` |
+| Credential `OpenAI API` (openAIApi) | `50796497-27d1-4d45-8e59-fd2420e9c76e` |
+| Credential `postgres-slovo-dev` (PostgresApi) | `65d7f839-141d-4333-a3dd-65c8d08d3b51` |
+
+### 11:50 — Шаг 2: loader/save → 200 OK
+
+POST `/api/v1/document-store/loader/save` с payload (`loader-save.json`):
+
+```json
+{
+  "storeId": "aec6b741-...",
+  "loaderId": "S3",
+  "loaderName": "S3",
+  "credential": "56f648d8-...",
+  "loaderConfig": {
+    "credential": "56f648d8-...",
+    "bucketName": "slovo-datasets",
+    "keyName": "catalogs/aquaphor/latest.json",
+    "region": "us-east-1",
+    "fileProcessingMethod": "builtIn",
+    "metadata": "{\"externalId\":\"/externalId\",...10 pairs...}",
+    "omitMetadataKeys": ""
+  },
+  "splitterId": "recursiveCharacterTextSplitter",
+  "splitterName": "Recursive Character Text Splitter",
+  "splitterConfig": { "chunkSize": 1000, "chunkOverlap": 200 }
+}
+```
+
+Loader id: `c8fbef8f-0709-46bb-ad4c-72ef67281d3f`, status `SYNCING`.
+
+### 12:00 — processLoader: каскад блокеров MinIO virtual-hosted style
+
+POST `/api/v1/document-store/loader/process/<loaderId>` упал три раза подряд:
+
+**Блокер 1 — DNS:** `getaddrinfo ENOTFOUND slovo-datasets.slovo-minio`. AWS SDK v3 по умолчанию строит **virtual-hosted-style** URL (`<bucket>.<host>`), Flowise S3File не передаёт `forcePathStyle: true`. Env `AWS_S3_FORCE_PATH_STYLE` оказался **не стандартный AWS SDK** — SDK его не читает (это была моя ошибка из ADR-007, исправляю в lab journal).
+
+**Workaround 1:** добавить network alias `slovo-datasets.slovo-minio` к MinIO в `docker-compose.infra.yml`:
+```yaml
+minio:
+  networks:
+    slovo-network:
+      aliases:
+        - slovo-datasets.slovo-minio
+```
+
+**Блокер 2 — undici ProxyAgent:** preload-скрипт `flowise-proxy-bootstrap.cjs` ставит ProxyAgent **глобально** без NO_PROXY-фильтрации. Запросы на новый alias шли через прокси `host.docker.internal:10810` → `UnknownError`.
+
+**Workaround 2:** добавить `slovo-datasets.slovo-minio` и wildcard `.slovo-minio` в `NO_PROXY`. Но AWS SDK v3 на самом деле использует `node:https` (не undici), так что это lossless fix.
+
+**Блокер 3 — MinIO virtual-hosted off:** SDK теперь добрался до MinIO, но MinIO ответил `NoSuchBucket`. По умолчанию MinIO работает в path-style и не извлекает bucket из subdomain — нужен `MINIO_DOMAIN=slovo-minio` чтобы он распознавал `<bucket>.slovo-minio` host header.
+
+**Workaround 3:** добавить `MINIO_DOMAIN: slovo-minio` в env MinIO-контейнера + перезапустить.
+
+После трёх workaround'ов ручной S3 GET через `node -e` из Flowise-контейнера вернул `OK len=917553`. MinIO связь работает.
+
+### 12:15 — `Unsupported file type application/json; charset=utf-8`
+
+processLoader вернул HTTP 200, но `chunks: 0`. В `docker logs slovo-flowise`:
+```
+Unsupported file type application/json; charset=utf-8 for file latest.json
+```
+
+Лезу в `S3File.ts:889`:
+
+```typescript
+private isTextBasedFile(mimeType: string): boolean {
+  const textBasedMimeTypes = [..., 'application/json', ...]
+  return textBasedMimeTypes.includes(mimeType)  // ← exact match!
+}
+```
+
+`includes()` точно сравнивает строки, а MinIO возвращает `application/json; charset=utf-8` (с charset). Mismatch → файл считается unsupported → 0 чанков. **Баг Flowise S3File** — не учитывает RFC 7231 параметры в Content-Type.
+
+**Workaround:** переписать `latest.json` в MinIO с явным content-type:
+```bash
+docker exec slovo-minio sh -c 'mc cp --attr "content-type=application/json" \
+  local/slovo-datasets/catalogs/aquaphor/latest.json \
+  local/slovo-datasets/catalogs/aquaphor/latest.json'
+```
+
+После этого Process зашёл в `isTextBased = true` ветку и обработал файл.
+
+**Что важно для CRM-feeder (long-term):** при каждом `exportSnapshotToS3()` нужно явно ставить `ContentType: 'application/json'` в `PutObjectCommand` (без charset), иначе MinIO добавит `; charset=utf-8` сам. Это правка в `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/catalog-sync.service.ts`.
+
+### 12:30 — processLoader → 912 chunks
+
+После content-type fix:
+```
+elapsed_ms=931
+totalChunks: 912
+totalChars: 772232
+status: SYNC
+```
+
+155 items × ~6 чанков/item (rich content на каждый: contentForEmbedding + categoryPath + characteristics + relatedServices + relatedComponents). 912 — много, но в пределах нормы.
+
+### 12:35 — vectorstore/save + vectorstore/insert → 912 в catalog_chunks
+
+POST `/api/v1/document-store/vectorstore/save` (`vectorstore-save.json`):
+
+```json
+{
+  "storeId": "aec6b741-...",
+  "embeddingName": "openAIEmbeddings",
+  "embeddingConfig": {
+    "credential": "50796497-...",
+    "modelName": "text-embedding-3-small",
+    "dimensions": 1536
+  },
+  "vectorStoreName": "postgres",
+  "vectorStoreConfig": {
+    "credential": "65d7f839-...",
+    "host": "slovo-postgres",
+    "database": "slovo",
+    "port": 5432,
+    "tableName": "catalog_chunks"
+  }
+}
+```
+
+→ HTTP 200, configs персистированы в DocumentStore entity.
+
+POST `/api/v1/document-store/vectorstore/insert` тем же payload — **embedding (912 OpenAI calls) + INSERT в Postgres**:
+```
+elapsed_ms=4713
+HTTP 200
+```
+
+Verify:
+```bash
+docker exec slovo-postgres psql -U slovo -d slovo -c "SELECT count(*) FROM catalog_chunks;"
+# count = 912
+```
+
+### 12:40 — Критическое открытие: S3 File Loader игнорирует JSONLoader для application/json
+
+При проверке metadata из БД:
+
+```sql
+SELECT "pageContent", metadata->'externalId', metadata->'name', metadata->'fileName'
+FROM catalog_chunks LIMIT 1;
+```
+
+Результат:
+- `pageContent` — **сырой JSON-текст** (фрагмент массива, разрезанный по 1000 chars)
+- `metadata.externalId` = `"/externalId"` (литерально pointer как строка)
+- `metadata.name` = `"/name"` (литерально)
+- `metadata.fileName` = `"latest.json"`
+
+То есть Flowise S3 File Loader для `application/json` идёт в **`isTextBasedFile`** ветку, обрабатывает как **plain text**, и **не запускает JSONLoader**. Additional Metadata jsonpointer'ы не применяются — они сохраняются как metadata-значения буквально.
+
+**Это design limitation Flowise S3 File**, не баг. JSONLoader используется только в Json File Loader (Plain Text loader через UI upload), который не пуллит из S3.
+
+### 12:45 — query API smoke → 525ms, retrieval работает
+
+POST `/api/v1/document-store/vectorstore/query`:
+
+```json
+{ "storeId": "aec6b741-...", "query": "какой смеситель есть для кухни" }
+```
+
+```
+elapsed_ms=665
+timeTaken=525  ← Flowise-side, без сетевых накладных
+HTTP 200
+```
+
+**Top-1 doc:**
+```json
+{
+  "pageContent": "...contentForEmbedding: \"Название: Смеситель кухонный модель 82320-1С\\nОписание: Кухонный смеситель для водопроводной и очищенной питьевой воды\\nКатегория: Очистка воды/Аквафор/...\"",
+  "metadata": {
+    "fileId": "catalogs/aquaphor/latest.json",
+    "fileName": "latest.json",
+    "externalId": "/externalId",   ← broken (литерал)
+    "name": "/name",                ← broken (литерал)
+    "salePriceKopecks": "/salePriceKopecks",
+    ...
+  },
+  "id": "f00e92b9-874e-4faf-8b34-47f006d41139",
+  "chunkNo": 11
+}
+```
+
+Retrieval работает: смеситель «82320-1С» — релевантный для запроса «какой смеситель для кухни». pgvector cosine similarity по сырому JSON-тексту в pageContent даёт правильный top-K несмотря на сломанную metadata.
+
+### Сравнение Chatflow vs Document Store query API
+
+| Метрика | Chatflow + Haiku | Document Store query | Δ |
+|---|---|---|---|
+| timeTaken | 4865 ms | 525 ms | **9× быстрее** |
+| LLM calls | 1 (Haiku completion) | 0 | $0 на инференс |
+| Embedding calls | 1 | 1 | равно |
+| Hallucination risk | да (refused valid match) | нет | structured docs[] |
+| UI rendering data | через `sourceDocuments[]` (так же) | прямой `docs[]` | равно |
+
+**Document Store query API однозначно подходящий target для slovo `apps/api/catalog/search`** — быстрее, дешевле, без hallucination, и retrieval-quality не отличается от Chatflow.
+
+---
+
+## Phase 0 — итог
+
+✅ **Image-search smoke (Шаг 1)** — vision-describer + Chatflow retrieval работают end-to-end. Top-1 result — точное попадание (C125).
+
+✅ **Document Store smoke (Шаг 2)** — 912 chunks загружены через REST API без UI. Query API возвращает релевантные docs за 525 ms.
+
+⚠️ **Архитектурное открытие:** Flowise S3 File Loader для JSON работает только как plain text — Additional Metadata jsonpointer'ы не извлекаются. Для Phase 0 smoke это **не блокер** (search работает), но для production UI rendering metadata нужна нормализованная.
+
+### Решение по Phase 1 (PR6)
+
+Для production UI rendering без нормализованной metadata — два пути:
+
+1. **Slovo orchestrate** (вариант C из секции «Развилка по ingest» выше): `apps/worker` читает `latest.json` из MinIO, парсит, для каждого item POST'ит в `/api/v1/document-store/upsert/<storeId>` с inline `documents` payload, в котором pageContent = `contentForEmbedding`, metadata = весь item целиком. Это полный контроль, чёткая schema, легко dedup'ить.
+
+2. **Patch Flowise S3 File** (форк или monkey-patch): добавить ветку для `application/json` → запуск JSONLoader с jsonpointer'ами. Сохраняет «UI-only» подход, но требует поддержки форка.
+
+**Рекомендация:** **C — slovo orchestrate**. Reasoning:
+- 152-ФЗ split, slovo всё равно должен быть active в ingest pipeline
+- Контроль schema + версионирование payload между slovo и Flowise через `t-bulk-ingest-payload.ts`
+- Vision_cache lookup на стороне slovo (Phase 2.5 backlog) проще когда slovo уже orchestrate ingest
+- Patch Flowise — добавляет maintenance load, форк рискует разойтись с upstream
+
+Это нужно зафиксировать обновлением **ADR-007** (вариант A с UI-only Flowise S3 — отвергнут в пользу C по итогам эксперимента).
+
+### Архитектурный инсайт — Flowise полностью управляется через REST API
+
+В ходе эксперимента вылезла важная находка, изменяющая модель работы со slovo:
+
+**Всё что делается через UI Flowise — делается и через REST API.** Каждый UI-action в Document Store / Chatflow / Credentials / API Keys отображается на endpoint в `routes/`:
+
+| UI-действие | REST endpoint |
+|---|---|
+| Create Document Store | `POST /document-store/store` |
+| Add Document Loader | `POST /document-store/loader/save` |
+| Process (chunking) | `POST /document-store/loader/process/:loaderId` |
+| Configure Embedding+VectorStore | `POST /document-store/vectorstore/save` |
+| Upsert All Chunks | `POST /document-store/vectorstore/insert` |
+| Retrieval Query (без LLM) | `POST /document-store/vectorstore/query` |
+| Refresh from source | `POST /document-store/refresh/:id` |
+| Create Credential | `POST /credentials` |
+| Create API key | `POST /apikey` (через UI) |
+
+Auth: `Authorization: Bearer <flowise-apikey>`. Все enterprise-only endpoint'ы под `checkPermission()` принимают bearer token, если у key есть permissions.
+
+**Что это значит для slovo:**
+
+1. **`apps/worker/catalog-refresh`** не зависит от UI. По cron / RMQ message:
+   ```ts
+   await axios.post(`${flowiseUrl}/api/v1/document-store/refresh/${storeId}`, {}, { headers: { Authorization: `Bearer ${apiKey}` } });
+   ```
+   Re-embed всего каталога — один POST. Ровно то что описано в `vision-catalog-search.md` Phase 1 PR6.
+
+2. **`apps/api/catalog/search/text`** и **`apps/api/catalog/search/image`** — тонкие proxy endpoint'ы:
+   ```ts
+   // text search
+   const docs = await flowise.post(`/document-store/vectorstore/query`, { storeId, query });
+   // image search
+   const desc = await flowise.post(`/prediction/${visionDescriberId}`, { question, uploads });
+   const docs = await flowise.post(`/document-store/vectorstore/query`, { storeId, query: desc.description_ru });
+   ```
+   ~30 LOC на endpoint, без бизнес-логики LLM/embed/vector — всё в Flowise.
+
+3. **CI / провижининг:** Document Store + Chatflow конфиги можно держать в git как JSON (`/docs/flowise-configs/`) и применять на чистый Flowise командой:
+   ```bash
+   curl -X POST .../document-store/store    -d @configs/catalog-aquaphor.json
+   curl -X POST .../document-store/loader/save -d @configs/loader-s3-aquaphor.json
+   ```
+   Воспроизводимость setup'а из коробки. Закрывает «manual UI clicks» как antipattern.
+
+4. **Документация Flowise REST API:**
+   - **Source-of-truth**: `/usr/local/lib/node_modules/flowise/dist/routes/` (все routes), `dist/services/<feature>/` (схемы payload), `dist/controllers/<feature>/` (валидация и обработка)
+   - **Cloud Swagger**: `https://docs.flowiseai.com/api-reference/swagger.yml` (purport coverage частичный, не все endpoint'ы документированы)
+   - **OpenAPI**: Flowise сам не отдаёт `/api/v1/openapi.json`, есть открытое issue (не пинаем)
+
+### Возможный MCP-сервер для Flowise
+
+Если Flowise полностью покрыт REST API — логично иметь **MCP-сервер**, превращающий эти endpoint'ы в tools для Claude. То есть мы (или другие агенты) могли бы вместо ручных curl'ов / docs-only flow:
+
+```
+User: «обнови каталог в Document Store catalog-aquaphor»
+Claude → MCP tool `flowise.refresh_document_store(storeId)` → POST /document-store/refresh/<id>
+```
+
+**Поиск готового решения** — пока не сделан. Вероятные варианты на 2026-04-30:
+1. Готовый `flowise-mcp` от сообщества — нужно проверить https://github.com/modelcontextprotocol/servers и hub.docker.com
+2. Свой MCP-сервер на основе Anthropic MCP TypeScript SDK — обёртка вокруг Flowise REST API. Маленький проект, ~200 LOC.
+
+Это ложится в общую тему slovo «AI-платформа для прототипирования LLM-фичей» — MCP-серверы поверх внутренних API (Flowise, Prisma, MinIO) — естественное расширение.
+
+**Backlog (не для текущего PR):**
+- ADR на тему Flowise-MCP — нужен ли свой или использовать готовый
+- Если готового нет — `apps/mcp-flowise` в monorepo как сервер
+- Документировать REST API в slovo-side (`docs/integrations/flowise-api.md`) до тех пор, пока MCP не готов
+
+### Reproducible recipe
+
+Все артефакты для повтора в slovo `apps/worker` (Phase 1):
+- `loader-save.json` — payload для loader/save
+- `vectorstore-save.json` — payload для vectorstore/save
+- env `UNSTRUCTURED_API_URL`, `MINIO_DOMAIN`, network alias, `NO_PROXY` — в `docker-compose.infra.yml`
+- API key bearer auth — на Flowise UI Credentials → API Keys
+
+### Сохранённые артефакты (день 2)
+
+- `loader-save.json` — Document Store loader payload
+- `vectorstore-save.json` — embedding + vectorstore config payload
+- `query-c125.json` — search query payload

@@ -93,6 +93,12 @@ services:
         environment:
             MINIO_ROOT_USER: ${MINIO_ROOT_USER}
             MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+            # Включает virtual-hosted-style support: MinIO извлекает bucket из
+            # subdomain hostname (`<bucket>.slovo-minio`). Нужно потому что
+            # AWS SDK v3 по умолчанию строит URL в virtual-hosted, а Flowise
+            # S3File loader не передаёт `forcePathStyle: true` в S3ClientConfig.
+            # Парный alias <bucket>.slovo-minio регистрируем в network aliases ниже.
+            MINIO_DOMAIN: slovo-minio
         command: server /data --console-address ":9001"
         volumes:
             - minio_data:/data
@@ -103,7 +109,16 @@ services:
             timeout: 5s
             retries: 5
         networks:
-            - slovo-network
+            slovo-network:
+                # AWS SDK v3 не читает env AWS_S3_FORCE_PATH_STYLE (это нестандартное
+                # имя), а Flowise S3File loader не передаёт `forcePathStyle: true`
+                # в S3ClientConfig (см. flowise-components/.../S3File.ts). Поэтому
+                # SDK строит virtual-hosted URL `<bucket>.<host>` и падает на DNS.
+                # Регистрируем alias `<bucket>.slovo-minio` во внутреннем DNS
+                # docker-сети — bucket резолвится в IP MinIO без forcePathStyle.
+                # На каждый новый bucket нужно добавлять alias; пока bucket один.
+                aliases:
+                    - slovo-datasets.slovo-minio
 
     flowise:
         image: flowiseai/flowise:3.1.2
@@ -117,7 +132,7 @@ services:
             # Docker на Windows/Mac резолвит host.docker.internal в IP хоста.
             HTTP_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
             HTTPS_PROXY: ${HOST_HTTP_PROXY:-http://host.docker.internal:10810}
-            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,slovo-langfuse,slovo-langfuse-postgres,slovo-minio,postgres,valkey,rabbitmq,langfuse,langfuse-postgres,flowise,minio
+            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,slovo-langfuse,slovo-langfuse-postgres,slovo-minio,slovo-datasets.slovo-minio,postgres,valkey,rabbitmq,langfuse,langfuse-postgres,flowise,minio,.slovo-minio
             # Node.js fetch (undici) не читает HTTP_PROXY автоматически —
             # preload-скрипт monkey-patch'ит глобальный dispatcher на ProxyAgent.
             NODE_OPTIONS: --require /scripts/flowise-proxy-bootstrap.cjs
@@ -133,6 +148,13 @@ services:
             AWS_ENDPOINT_URL_S3: http://slovo-minio:9000
             AWS_S3_FORCE_PATH_STYLE: "true"
             AWS_DEFAULT_REGION: us-east-1
+            # Flowise 3.1.2 баг: S3 File Loader валидирует Unstructured-поля как required
+            # даже при File Processing Method = Built In Loaders (поле скрыто через
+            # show: { fileProcessingMethod: 'unstructured' }, но required-чек игнорирует
+            # show). Установка env переводит поле в optional (см. S3File.ts:
+            # `optional: !!process.env.UNSTRUCTURED_API_URL`). Сам URL не используется
+            # пока выбран Built In, нам важно только пройти валидацию.
+            UNSTRUCTURED_API_URL: http://localhost:8000/general/v0/general
         extra_hosts:
             # Для Linux host.docker.internal не работает из коробки;
             # на Windows/Mac Docker Desktop резолвит сам, эта строка игнорируется.
