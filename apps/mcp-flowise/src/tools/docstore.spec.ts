@@ -3,6 +3,7 @@ import {
     docstoreChunkDeleteHandler,
     docstoreChunksListHandler,
     docstoreChunkUpdateHandler,
+    docstoreGenerateToolDescHandler,
     docstoreComponentsEmbeddingsHandler,
     docstoreComponentsLoadersHandler,
     docstoreComponentsRecordManagerHandler,
@@ -314,6 +315,34 @@ describe('docstore tools', () => {
             const [url, init] = helpers.fetchMock.mock.calls[0] as [string, RequestInit];
             expect(url).toContain('/vectorstore/aec');
             expect(init.method).toBe('DELETE');
+        });
+    });
+
+    describe('docstore_generate_tool_desc', () => {
+        it('POST на /generate-tool-desc/:storeId с опциональным selectedChatModel', async () => {
+            helpers.fetchMock.mockResolvedValueOnce(
+                helpers.mockOk({ description: 'Auto-generated tool description' }),
+            );
+            const result = await docstoreGenerateToolDescHandler({
+                storeId: 'aec',
+                selectedChatModel: { name: 'chatAnthropic' },
+            });
+            expect(result.success).toBe(true);
+            if (result.success) {
+                expect(result.data.description).toBe('Auto-generated tool description');
+            }
+            const [url, init] = helpers.fetchMock.mock.calls[0] as [string, RequestInit];
+            expect(url).toContain('/generate-tool-desc/aec');
+            expect(init.method).toBe('POST');
+            const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+            expect(body.storeId).toBeUndefined();
+            expect(body.selectedChatModel).toEqual({ name: 'chatAnthropic' });
+        });
+
+        it('500 → fail', async () => {
+            helpers.fetchMock.mockResolvedValueOnce(helpers.mockErr(500, { message: 'LLM error' }));
+            const result = await docstoreGenerateToolDescHandler({ storeId: 'aec' });
+            expect(result.success).toBe(false);
         });
     });
 

@@ -1,5 +1,8 @@
 import { setupFetchMock } from '../__test-helpers__/setup-fetch';
-import { upsertHistoryListHandler } from './upsert-history';
+import {
+    upsertHistoryListHandler,
+    upsertHistoryPatchDeleteHandler,
+} from './upsert-history';
 
 const SAMPLE_HISTORY = {
     id: 'h1',
@@ -34,5 +37,26 @@ describe('upsert_history_list handler', () => {
         helpers.fetchMock.mockResolvedValueOnce(helpers.mockErr(500, 'oops'));
         const result = await upsertHistoryListHandler({ chatflowId: 'cf-1' });
         expect(result.success).toBe(false);
+    });
+
+    describe('upsert_history_patch_delete', () => {
+        it('PATCH /upsert-history с body { ids: [...] }', async () => {
+            helpers.fetchMock.mockResolvedValueOnce(helpers.mockOk({}));
+            const result = await upsertHistoryPatchDeleteHandler({
+                ids: ['h1', 'h2', 'h3'],
+            });
+            expect(result.success).toBe(true);
+            const [url, init] = helpers.fetchMock.mock.calls[0] as [string, RequestInit];
+            expect(url).toContain('/upsert-history');
+            expect(init.method).toBe('PATCH');
+            const body = JSON.parse(String(init.body)) as { ids: string[] };
+            expect(body.ids).toEqual(['h1', 'h2', 'h3']);
+        });
+
+        it('500 → fail', async () => {
+            helpers.fetchMock.mockResolvedValueOnce(helpers.mockErr(500, 'oops'));
+            const result = await upsertHistoryPatchDeleteHandler({ ids: ['h1'] });
+            expect(result.success).toBe(false);
+        });
     });
 });

@@ -2,7 +2,7 @@ import { getConfig, type TFlowiseConfig } from '../config';
 import { FlowiseError } from '../utils/errors';
 
 type TRequestOptions = {
-    method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     body?: unknown;
     query?: Record<string, string | number | boolean | undefined>;
 };

@@ -1,4 +1,44 @@
 import {
+    attachmentsCreateHandler,
+    attachmentsCreateSchema,
+    type TAttachmentsCreateData,
+    type TAttachmentsCreateInput,
+} from './attachments';
+import {
+    chatflowCloneHandler,
+    chatflowCloneSchema,
+    docstoreCloneHandler,
+    docstoreCloneSchema,
+    docstoreFullSetupHandler,
+    docstoreFullSetupSchema,
+    type TChatflowCloneData,
+    type TChatflowCloneInput,
+    type TDocstoreCloneData,
+    type TDocstoreCloneInput,
+    type TDocstoreFullSetupData,
+    type TDocstoreFullSetupInput,
+} from './composite';
+import {
+    docstoreSearchByNameHandler,
+    docstoreSearchByNameSchema,
+    introspectHandler,
+    introspectSchema,
+    smokeHandler,
+    smokeSchema,
+    type TDocstoreSearchByNameData,
+    type TDocstoreSearchByNameInput,
+    type TIntrospectData,
+    type TIntrospectInput,
+    type TSmokeData,
+    type TSmokeInput,
+} from './introspect';
+import {
+    vectorUpsertHandler,
+    vectorUpsertSchema,
+    type TVectorUpsertData,
+    type TVectorUpsertInput,
+} from './vector';
+import {
     assistantsCreateHandler,
     assistantsCreateSchema,
     assistantsDeleteHandler,
@@ -47,8 +87,16 @@ import {
     type TChatflowUpdateInput,
 } from './chatflow';
 import {
+    chatmessageAbortHandler,
+    chatmessageAbortSchema,
+    chatmessageDeleteAllHandler,
+    chatmessageDeleteAllSchema,
     chatmessageListHandler,
     chatmessageListSchema,
+    type TChatmessageAbortData,
+    type TChatmessageAbortInput,
+    type TChatmessageDeleteAllData,
+    type TChatmessageDeleteAllInput,
     type TChatmessageListData,
     type TChatmessageListInput,
 } from './chatmessage';
@@ -135,6 +183,8 @@ import {
     docstoreVectorstoreDeleteHandler,
     docstoreVectorstoreDeleteSchema,
     docstoreVectorstoreInsertHandler,
+    docstoreGenerateToolDescHandler,
+    docstoreGenerateToolDescSchema,
     docstoreVectorstoreInsertSchema,
     docstoreVectorstoreSaveHandler,
     docstoreVectorstoreSaveSchema,
@@ -152,6 +202,8 @@ import {
     type TDocstoreCreateInput,
     type TDocstoreDeleteData,
     type TDocstoreDeleteInput,
+    type TDocstoreGenerateToolDescData,
+    type TDocstoreGenerateToolDescInput,
     type TDocstoreGetData,
     type TDocstoreGetInput,
     type TDocstoreListData,
@@ -202,8 +254,12 @@ import type { TToolDefinition } from './t-tool';
 import {
     upsertHistoryListHandler,
     upsertHistoryListSchema,
+    upsertHistoryPatchDeleteHandler,
+    upsertHistoryPatchDeleteSchema,
     type TUpsertHistoryListData,
     type TUpsertHistoryListInput,
+    type TUpsertHistoryPatchDeleteData,
+    type TUpsertHistoryPatchDeleteInput,
 } from './upsert-history';
 import {
     variablesCreateHandler,
@@ -395,6 +451,14 @@ export const tools = {
         handler: docstoreComponentsRecordManagerHandler,
     } satisfies TToolDefinition<TDocstoreComponentsInput, TDocstoreComponentsData>,
 
+    // Document Store — Auto-generation
+    flowise_docstore_generate_tool_desc: {
+        description:
+            'Авто-генерация description для DocStore через LLM (Flowise сам пишет описание чтобы DocStore можно было использовать как tool для агента).',
+        schema: docstoreGenerateToolDescSchema,
+        handler: docstoreGenerateToolDescHandler,
+    } satisfies TToolDefinition<TDocstoreGenerateToolDescInput, TDocstoreGenerateToolDescData>,
+
     // Chatflow
     flowise_chatflow_list: {
         description:
@@ -451,6 +515,22 @@ export const tools = {
         schema: predictionRunSchema,
         handler: predictionRunHandler,
     } satisfies TToolDefinition<TPredictionRunInput, TPredictionRunData>,
+
+    // Vector Store (legacy chatflow upsert — для chatflows со встроенным vector store)
+    flowise_vector_upsert: {
+        description:
+            'Запустить upsert на Chatflow со встроенным vector store узлом (не Document Store). Эквивалент кнопки "Upsert Vector Database" в UI на самом chatflow.',
+        schema: vectorUpsertSchema,
+        handler: vectorUpsertHandler,
+    } satisfies TToolDefinition<TVectorUpsertInput, TVectorUpsertData>,
+
+    // Attachments (file upload отдельно от prediction)
+    flowise_attachments_create: {
+        description:
+            'Загрузить attachment отдельно от prediction (для повторного использования или подготовки больших файлов). Эквивалент uploads[] в predictionRun, но отдельным шагом.',
+        schema: attachmentsCreateSchema,
+        handler: attachmentsCreateHandler,
+    } satisfies TToolDefinition<TAttachmentsCreateInput, TAttachmentsCreateData>,
 
     // Variables
     flowise_variables_list: {
@@ -534,9 +614,65 @@ export const tools = {
         schema: chatmessageListSchema,
         handler: chatmessageListHandler,
     } satisfies TToolDefinition<TChatmessageListInput, TChatmessageListData>,
+    flowise_chatmessage_abort: {
+        description: 'Прервать streaming chatflow по ходу (для предсказаний с включённым streaming, отменить генерацию).',
+        schema: chatmessageAbortSchema,
+        handler: chatmessageAbortHandler,
+    } satisfies TToolDefinition<TChatmessageAbortInput, TChatmessageAbortData>,
+    flowise_chatmessage_delete_all: {
+        description:
+            'Снести историю чатов конкретного Chatflow (опционально по chatId/chatType). Для cleanup при тестировании chatflow.',
+        schema: chatmessageDeleteAllSchema,
+        handler: chatmessageDeleteAllHandler,
+    } satisfies TToolDefinition<TChatmessageDeleteAllInput, TChatmessageDeleteAllData>,
     flowise_upsert_history_list: {
         description: 'История upsert операций для Chatflow (когда и как embed обновлялся).',
         schema: upsertHistoryListSchema,
         handler: upsertHistoryListHandler,
     } satisfies TToolDefinition<TUpsertHistoryListInput, TUpsertHistoryListData>,
+    flowise_upsert_history_patch_delete: {
+        description: 'Soft-delete upsert history records по списку ids.',
+        schema: upsertHistoryPatchDeleteSchema,
+        handler: upsertHistoryPatchDeleteHandler,
+    } satisfies TToolDefinition<TUpsertHistoryPatchDeleteInput, TUpsertHistoryPatchDeleteData>,
+
+    // Composite utilities (комбинации существующих handler'ов для частых workflow'ов)
+    flowise_chatflow_clone: {
+        description:
+            'Клонировать Chatflow одним вызовом: get(включая flowData) → modify name → create. Опциональный transformFlowData для модификации флоу при копировании.',
+        schema: chatflowCloneSchema,
+        handler: chatflowCloneHandler,
+    } satisfies TToolDefinition<TChatflowCloneInput, TChatflowCloneData>,
+    flowise_docstore_clone: {
+        description:
+            'Клонировать Document Store: create нового store + перенос embedding/vectorstore configs. Loaders НЕ копируются. Useful для A/B testing на разных embed-моделях через override*Config.',
+        schema: docstoreCloneSchema,
+        handler: docstoreCloneHandler,
+    } satisfies TToolDefinition<TDocstoreCloneInput, TDocstoreCloneData>,
+    flowise_docstore_full_setup: {
+        description:
+            'Атомарный onboarding нового каталога: create_store → loader_save → loader_process → vectorstore_save → vectorstore_insert одним вызовом. Заменяет 5-step ручной flow.',
+        schema: docstoreFullSetupSchema,
+        handler: docstoreFullSetupHandler,
+    } satisfies TToolDefinition<TDocstoreFullSetupInput, TDocstoreFullSetupData>,
+
+    // DX helpers (overview / smoke / search)
+    flowise_introspect: {
+        description:
+            'Overview всего Flowise instance (health + счётчики chatflows/agentflows/docstores/credentials/nodes + failures). Quick orientation для нового агента/разработчика — заменяет последовательные list-вызовы.',
+        schema: introspectSchema,
+        handler: introspectHandler,
+    } satisfies TToolDefinition<TIntrospectInput, TIntrospectData>,
+    flowise_smoke: {
+        description:
+            'Прогон по основным list-endpoints с per-step latency. Возвращает overallSuccess + steps[] — для smoke-проверки connection и permissions.',
+        schema: smokeSchema,
+        handler: smokeHandler,
+    } satisfies TToolDefinition<TSmokeInput, TSmokeData>,
+    flowise_docstore_search_by_name: {
+        description:
+            'Найти Document Store по имени (substring search или exactMatch=true). Заменяет последовательность list + ручной filter в Claude.',
+        schema: docstoreSearchByNameSchema,
+        handler: docstoreSearchByNameHandler,
+    } satisfies TToolDefinition<TDocstoreSearchByNameInput, TDocstoreSearchByNameData>,
 } as const;

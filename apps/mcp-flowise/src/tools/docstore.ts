@@ -559,6 +559,38 @@ export async function docstoreVectorstoreDeleteHandler(
 }
 
 // =============================================================================
+// docstore_generate_tool_desc — авто-генерация description для DocStore как tool
+// для агента (Flowise сам через LLM генерирует описание)
+// =============================================================================
+
+export const docstoreGenerateToolDescSchema = z.object({
+    storeId: z.string().min(1),
+    selectedChatModel: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe('Опциональный chat model node для генерации (если не задан — Flowise default)'),
+});
+export type TDocstoreGenerateToolDescInput = z.infer<typeof docstoreGenerateToolDescSchema>;
+
+export type TDocstoreGenerateToolDescData = {
+    description?: string;
+    [key: string]: unknown;
+};
+
+export async function docstoreGenerateToolDescHandler(
+    input: TDocstoreGenerateToolDescInput,
+): Promise<TToolResult<TDocstoreGenerateToolDescData>> {
+    return withErrorHandling(async () => {
+        const client = getFlowiseClient();
+        const { storeId, ...body } = input;
+        return client.request<TDocstoreGenerateToolDescData>(
+            ENDPOINTS.docstoreGenerateToolDesc(storeId),
+            { method: 'POST', body },
+        );
+    });
+}
+
+// =============================================================================
 // docstore_components_* (GET /document-store/components/{loaders,embeddings,vectorstore,recordmanager})
 // =============================================================================
 

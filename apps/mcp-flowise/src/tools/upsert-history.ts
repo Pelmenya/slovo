@@ -5,6 +5,10 @@ import type { TFlowiseUpsertHistory } from '../api/t-flowise';
 import { buildQuery, withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
+// =============================================================================
+// upsert_history_list
+// =============================================================================
+
 export const upsertHistoryListSchema = z.object({
     chatflowId: z.string().min(1),
     sortOrder: z.enum(['ASC', 'DESC']).optional(),
@@ -28,5 +32,31 @@ export async function upsertHistoryListHandler(
             { query },
         );
         return { count: list.length, history: list };
+    });
+}
+
+// =============================================================================
+// upsert_history_patch_delete — soft-delete records
+//
+// PATCH /upsert-history с body { ids: [<historyId>, ...] } — soft-delete.
+// =============================================================================
+
+export const upsertHistoryPatchDeleteSchema = z.object({
+    ids: z.array(z.string().min(1)).min(1).describe('Список historyId для soft-delete'),
+});
+export type TUpsertHistoryPatchDeleteInput = z.infer<typeof upsertHistoryPatchDeleteSchema>;
+
+export type TUpsertHistoryPatchDeleteData = { ok: true };
+
+export async function upsertHistoryPatchDeleteHandler(
+    input: TUpsertHistoryPatchDeleteInput,
+): Promise<TToolResult<TUpsertHistoryPatchDeleteData>> {
+    return withErrorHandling(async () => {
+        const client = getFlowiseClient();
+        await client.request<unknown>(ENDPOINTS.upsertHistoryRoot, {
+            method: 'PATCH',
+            body: { ids: input.ids },
+        });
+        return { ok: true as const };
     });
 }

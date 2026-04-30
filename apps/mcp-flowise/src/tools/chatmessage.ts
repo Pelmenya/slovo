@@ -58,3 +58,64 @@ export async function chatmessageListHandler(
         };
     });
 }
+
+// =============================================================================
+// chatmessage_abort — прерывает streaming chatflow по ходу
+// =============================================================================
+
+export const chatmessageAbortSchema = z.object({
+    chatflowId: z.string().min(1),
+    chatId: z.string().min(1),
+});
+export type TChatmessageAbortInput = z.infer<typeof chatmessageAbortSchema>;
+
+export type TChatmessageAbortData = { ok: true };
+
+export async function chatmessageAbortHandler(
+    input: TChatmessageAbortInput,
+): Promise<TToolResult<TChatmessageAbortData>> {
+    return withErrorHandling(async () => {
+        const client = getFlowiseClient();
+        await client.request<unknown>(
+            ENDPOINTS.chatMessagesAbort(input.chatflowId, input.chatId),
+            { method: 'PUT', body: {} },
+        );
+        return { ok: true as const };
+    });
+}
+
+// =============================================================================
+// chatmessage_delete_all — снос всей истории чатов конкретного chatflow
+// (для cleanup при тестах). Опционально с фильтрами.
+// =============================================================================
+
+export const chatmessageDeleteAllSchema = z.object({
+    chatflowId: z.string().min(1),
+    chatId: z.string().optional().describe('Удалить только конкретную сессию'),
+    chatType: z.enum(['EXTERNAL', 'INTERNAL']).optional(),
+    isClearFromViewMessageDialog: z
+        .boolean()
+        .optional()
+        .describe('Включить cleanup из UI dialog (Flowise-internal)'),
+});
+export type TChatmessageDeleteAllInput = z.infer<typeof chatmessageDeleteAllSchema>;
+
+export type TChatmessageDeleteAllData = { ok: true };
+
+export async function chatmessageDeleteAllHandler(
+    input: TChatmessageDeleteAllInput,
+): Promise<TToolResult<TChatmessageDeleteAllData>> {
+    return withErrorHandling(async () => {
+        const client = getFlowiseClient();
+        const query = buildQuery({
+            chatId: input.chatId,
+            chatType: input.chatType,
+            isClearFromViewMessageDialog: input.isClearFromViewMessageDialog,
+        });
+        await client.request<unknown>(ENDPOINTS.chatMessages(input.chatflowId), {
+            method: 'DELETE',
+            query,
+        });
+        return { ok: true as const };
+    });
+}

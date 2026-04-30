@@ -54,6 +54,15 @@ export const ENDPOINTS = {
     // Predictions
     prediction: (chatflowId: string): string => `/api/v1/prediction/${chatflowId}`,
 
+    // Vector store upsert (для legacy chatflows со встроенным vector store)
+    vectorUpsert: (chatflowId: string): string => `/api/v1/vector/upsert/${chatflowId}`,
+
+    // Attachments (file upload отдельно от prediction)
+    attachments: (chatflowId: string): string => `/api/v1/attachments/${chatflowId}`,
+
+    // Document store — generate tool description через LLM
+    docstoreGenerateToolDesc: (id: string): string => `/api/v1/document-store/generate-tool-desc/${id}`,
+
     // Variables
     variables: '/api/v1/variables',
     variableById: (id: string): string => `/api/v1/variables/${id}`,
@@ -68,7 +77,10 @@ export const ENDPOINTS = {
 
     // Chat messages
     chatMessages: (chatflowId: string): string => `/api/v1/chatmessage/${chatflowId}`,
+    chatMessagesAbort: (chatflowId: string, chatId: string): string =>
+        `/api/v1/chatmessage/abort/${chatflowId}/${chatId}`,
 
     // Upsert history
     upsertHistory: (chatflowId: string): string => `/api/v1/upsert-history/${chatflowId}`,
+    upsertHistoryRoot: '/api/v1/upsert-history',
 } as const;
