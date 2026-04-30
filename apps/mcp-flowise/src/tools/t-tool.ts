@@ -4,10 +4,8 @@ export type TToolResult<T = unknown> =
     | { success: true; data: T }
     | { success: false; error: string };
 
-export type TToolHandler = (input: unknown) => Promise<TToolResult>;
-
-export type TToolDefinition = {
+export type TToolDefinition<TIn = unknown, TOut = unknown> = {
     description: string;
     schema: z.ZodObject<z.ZodRawShape>;
-    handler: TToolHandler;
+    handler: (input: TIn) => Promise<TToolResult<TOut>>;
 };

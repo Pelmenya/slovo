@@ -34,8 +34,15 @@ export class FlowiseClient {
                     const delayMs = retryAfter
                         ? Number.parseInt(retryAfter, 10) * 1000
                         : RETRY_BASE_DELAY_MS * (attempt + 1);
-                    await sleep(delayMs);
-                    continue;
+                    lastError = new FlowiseError(
+                        `Rate limited (HTTP 429), retry-after=${retryAfter ?? 'n/a'}`,
+                        429,
+                    );
+                    if (attempt < this.config.FLOWISE_MAX_RETRIES) {
+                        await sleep(delayMs);
+                        continue;
+                    }
+                    throw lastError;
                 }
 
                 const text = await response.text();

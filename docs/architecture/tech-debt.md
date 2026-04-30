@@ -189,7 +189,25 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
 Решить на стадии: первая UI-фича, или когда появится отдельный фронт-репо.
 
-### B. Авто-генерация DTO через декораторы / zod-first
+### C. MCP-сервер Flowise — расширение покрытия и production-publish
+
+См. ADR-008. MVP в `apps/mcp-flowise/` (4 tools) закрыт коммитом `dfd14bf`. Roadmap по факту использования:
+
+1. **`flowise_prediction_run` с image uploads** — для PR6 vision-describer (image-search через `apps/api/catalog/search/image`). Требует поддержку multipart/base64 → `/api/v1/prediction/<chatflowId>` body с `uploads: [{ data, type, name, mime }]`. Сейчас не реализовано.
+
+2. **`flowise_docstore_upsert` + `flowise_docstore_refresh`** — для `apps/worker/catalog-refresh` (PR6). Заменит сегодняшний 4-step flow (loader/save → process → vectorstore/save → vectorstore/insert) одним вызовом. `refresh` для cron 4ч из ADR-007.
+
+3. **`flowise_chatflow_list/get/create/update`** + **`flowise_node_list/get`** — для программной генерации vision-флоу из Claude (например, vision-describer-v2 с улучшенным промптом). `node_list` нужен для discovery какие ноды доступны и какие у них inputs/outputs.
+
+4. **CI smoke-тесты против реального Flowise dev-инстанса** — `apps/mcp-flowise/test/integration/*.test.ts` дёргают через MCP server live Flowise на 127.0.0.1:3130. Сейчас только unit-тесты с mock fetch.
+
+5. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
+
+6. **Production-publish** — extract `apps/mcp-flowise` в отдельный репо `Pelmenya/mcp-flowise`, публикация в npm + Smithery. Решить на стадии когда scope вырастет до 30+ tools и стабилизируется.
+
+Решить: пункты 1-2 — в PR6, пункт 3 — когда появится потребность автогенерации флоу из Claude, пункты 4-5 — после первой prod-выкатки slovo-runtime который ходит в Flowise.
+
+### D. Авто-генерация DTO через декораторы / zod-first
 
 Цель: убрать boilerplate с двойных декораторов `@IsString() @ApiProperty(...)` на полях DTO.
 

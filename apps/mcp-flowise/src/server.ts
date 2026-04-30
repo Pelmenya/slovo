@@ -1,6 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { z } from 'zod';
 import { tools } from './tools';
 
 export function createServer(): McpServer {
@@ -14,10 +13,11 @@ export function createServer(): McpServer {
             name,
             {
                 description: tool.description,
-                inputSchema: tool.schema as z.ZodObject<z.ZodRawShape>,
+                inputSchema: tool.schema,
             },
             async (args: unknown) => {
-                const result = await tool.handler(args);
+                const parsed: unknown = tool.schema.parse(args);
+                const result = await tool.handler(parsed);
                 if (!result.success) {
                     return {
                         content: [{ type: 'text' as const, text: result.error }],

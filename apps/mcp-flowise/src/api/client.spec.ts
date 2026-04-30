@@ -90,4 +90,19 @@ describe('FlowiseClient', () => {
         await expect(client.request('/x')).rejects.toBeInstanceOf(FlowiseError);
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+
+    it('persistent 429 — кидает FlowiseError(429) вместо generic после исчерпания', async () => {
+        // baseConfig.FLOWISE_MAX_RETRIES = 2 → всего 3 попытки (0, 1, 2)
+        const persistentConfig = { ...baseConfig, FLOWISE_MAX_RETRIES: 1 };
+        fetchMock
+            .mockResolvedValueOnce(mockResponse(429, '', { 'retry-after': '0' }))
+            .mockResolvedValueOnce(mockResponse(429, '', { 'retry-after': '0' }));
+        const client = new FlowiseClient(persistentConfig);
+        await expect(client.request('/x')).rejects.toMatchObject({
+            name: 'FlowiseError',
+            statusCode: 429,
+            message: expect.stringContaining('Rate limited'),
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
 });

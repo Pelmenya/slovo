@@ -28,9 +28,7 @@
             "@slovo/llm": ["./libs/llm/src"],
             "@slovo/llm/*": ["./libs/llm/src/*"],
             "@slovo/storage": ["./libs/storage/src"],
-            "@slovo/storage/*": ["./libs/storage/src/*"],
-            "@slovo/mcp-flowise": ["./libs/mcp-flowise/src"],
-            "@slovo/mcp-flowise/*": ["./libs/mcp-flowise/src/*"]
+            "@slovo/storage/*": ["./libs/storage/src/*"]
         }
     }
 }
