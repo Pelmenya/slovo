@@ -359,7 +359,7 @@ enum ArtifactStatus     { pending generating ready failed }
 |---|---|
 | Создание Document Store под новый knowledge-set | `flowise_docstore_create` + `flowise_docstore_full_setup` (атомарный 5-step) |
 | Refresh embeddings (новые источники добавлены через `apps/api/sources/upload`) | `flowise_docstore_refresh` |
-| Q&A endpoint slovo `apps/api/notes-rag/query` | `flowise_docstore_query` (без LLM, ~300ms) ИЛИ `flowise_prediction_run` (через QA Chain если нужен генерируемый ответ) |
+| Q&A endpoint slovo `apps/api/notes-rag/query` | **Гибрид (см. ADR-004 prompt caching)**: retrieval через `flowise_docstore_query` (без LLM, ~300ms) → генерация через `libs/llm/` с Anthropic SDK + `cache_control` для системного промпта. **Не через** `flowise_prediction_run` для production Q&A когда системный промпт >1024 токенов (Flowise UI не поддерживает `cache_control`, теряем 5-10× на стоимости). `flowise_prediction_run` подходит для экспериментов / one-shot вызовов / маленьких промптов |
 | Программно создать новый специализированный chatflow (например, Q&A с другим Splitter под медицинские источники) | `libs/flowise-flowdata/` builder + `flowise_chatflow_create` |
 | Vision + transcription pipelines (audio → Whisper → text → embed) | `apps/worker` нативно делает Whisper → текст в `s3-source`, далее `flowise_docstore_upsert` или native S3 File Loader |
 
@@ -372,7 +372,7 @@ enum ArtifactStatus     { pending generating ready failed }
 **Что НЕ делаем:**
 
 - ❌ Не дублируем embedding/retrieval на slovo-стороне через `$queryRaw` к pgvector — `flowise_docstore_query` делает это лучше и быстрее (vector store config + indexing управляется Flowise).
-- ❌ Не используем `libs/llm/` напрямую для Q&A когда есть Conversational Retrieval QA Chain в Flowise.
+- ❌ Не используем `flowise_prediction_run` (Conversational Retrieval QA Chain) для production Q&A с большими системными промптами — теряем `cache_control` (см. ADR-004). **Гибрид**: retrieval через MCP, генерация через `libs/llm/` с caching.
 - ❌ Не пишем curl-обёртки к Flowise REST в slovo коде — все вызовы через `apps/mcp-flowise/` либо напрямую (в slovo TS-коде через `import` если понадобится) или через MCP transport (Claude → MCP → Flowise).
 
 ### pgvector индексы

@@ -1,9 +1,18 @@
 # Flowise 3.1.2 в slovo — что умеет, чего нет, как компенсировать
 
 > **Дата:** 2026-04-22 (вечер)
+> **Статус (2026-04-30):** ⚠️ **частично историческая reference**. Содержит общий обзор Flowise 3.x фич (LLM/embeddings/chunking/retrieval/memory) — это актуально. Конкретные операционные вопросы (S3 endpoint gotchas, prompt caching status, `promptValues` workaround, как создать chatflow программно) **переехали** в:
+>   - **ADR-008** (`docs/architecture/decisions/008-flowise-mcp.md`) — обоснование MCP-арсенала + extract план.
+>   - **CLAUDE.md** секция «MCP-арсенал для работы с Flowise» — главное правило «через MCP, не curl».
+>   - **`apps/mcp-flowise/README.md`** — примеры по каждой группе из 66 tools.
+>   - **`docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md`** — lab journal с reproducible recipe всех ритуалов.
+>   - **Memory entries** `feedback_flowise_full_api_coverage`, `project_flowise_minio_s3_endpoint`, `feedback_read_flowise_source`, `project_mcp_flowise_arsenal`.
+>
+> Этот документ держим как **источник «концептуального landscape»** Flowise (что вообще можно и нельзя делать), но за конкретикой — в источники выше.
+>
 > **Основано на:** research официальной доки Flowise 3.x + обсуждение с разработчиком.
-> **Замечание:** старая версия этого документа была по тьюториалу Flowise 2.x (`test-marpla/docs/tutorial/`). В 3.x многое изменилось — используйте только этот документ как актуальный reference.
-> **Связанные:** `docs/architecture/decisions/006-knowledge-base-as-first-feature.md`, `docs/features/knowledge-base.md`.
+> **Замечание:** старая версия этого документа была по тьюториалу Flowise 2.x (`test-marpla/docs/tutorial/`). В 3.x многое изменилось.
+> **Связанные:** `docs/architecture/decisions/006-knowledge-base-as-first-feature.md`, `docs/architecture/decisions/008-flowise-mcp.md`, `docs/features/knowledge-base.md`.
 
 ---
 

@@ -174,14 +174,25 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 
 **Используй `mcp__flowise-slovo__*` tools, не curl/bash.** Любой ручной curl-ритуал к Flowise REST (`--noproxy '*' -X POST -H "Authorization: Bearer..."`) — **антипаттерн**. Все операции есть готовыми типизированными tools.
 
-**Чего нет в арсенале — дописываем в `apps/mcp-flowise/`, не обходим через curl.** Это правило-рефлекс:
+**Чего нет в арсенале — дописываем в `apps/mcp-flowise/`, не обходим через curl** — но с **gate** против scope-creep.
+
+**Когда добавлять tool оправдано:**
+- Endpoint будет использоваться в slovo runtime (`apps/api`/`apps/worker`).
+- Закрывает повторяющийся manual-curl ритуал в lab journal'ах / dev-сессиях.
+- Закрывает категорию операций (например, обнаружили что `marketplaces/*` нужен — добавляем 2-3 tools одной категорией).
+
+**Когда НЕ добавлять (одноразовая разведка):**
+- Один раз посмотреть какие fields в response — `flowise_introspect` / прямой `fetch` в эксперимент-скрипте `experiments/`. Не плодит баггедж в публичном пакете при extract в `Pelmenya/mcp-flowise`.
+- Тестирование незакрытого endpoint'а Flowise (новые beta-фичи) — через `experiments/`, после стабилизации — добавляем tool.
+
+**Если решено добавлять — рутинный путь:**
 
 1. Не нашёл нужный tool среди 66 — **проверь** через `flowise_introspect` / разведку Flowise REST в исходнике (`docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"`).
-2. Endpoint реален → **добавь tool**: новый файл `apps/mcp-flowise/src/tools/<resource>.ts` (или расширь существующий) + endpoints.ts + регистрация в `tools/index.ts` + spec-файл с happy + error case через `setupFetchMock` helper. ~50 LOC + ~30 LOC теста.
+2. Endpoint реален + проходит gate → **добавь tool**: новый файл `apps/mcp-flowise/src/tools/<resource>.ts` (или расширь существующий) + endpoints.ts + регистрация в `tools/index.ts` + spec-файл с happy + error case через `setupFetchMock` helper. ~50 LOC + ~30 LOC теста.
 3. Smoke через `tools/list` (должен вернуть N+1 tools), commit, push.
 4. После рестарта Claude Code новый tool готов к использованию.
 
-Это ровно тот же путь что прошли с уже существующими 66 — никаких исключений «один раз через curl». Стоимость добавления tool'а кратно меньше чем maintaince curl-ритуалов в lab journal'ах и dev-сессиях.
+Стоимость добавления tool'а кратно меньше чем maintenance curl-ритуалов в lab journal'ах при оправданности по gate.
 
 **`apps/mcp-flowise/`** (`@slovo/mcp-flowise`) — **66 tools**, полное зеркало Flowise REST API:
 

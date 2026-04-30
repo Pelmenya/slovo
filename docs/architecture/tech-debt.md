@@ -205,7 +205,7 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
   - Composite 3 (chatflow_clone, docstore_clone, docstore_full_setup)
   - DX helpers 3 (introspect, smoke, docstore_search_by_name)
   - Misc 4 (ping, attachments_create, chatmessage abort/delete_all, upsert_history patch_delete)
-- ✅ 100% unit-test coverage — **345 tests passed** (32 suites)
+- ✅ 100% unit-test coverage всех 66 tools (32 test suites, mock fetch + happy + error cases)
 - ✅ `package.json` publish-ready (description, keywords, bin, main: dist/index.js, repository, MIT, prepublishOnly), `tsconfig.build.json` (declarations + source maps), `LICENSE`, build → `dist/`
 - ✅ README с категориями + примеры для каждой группы tools
 - ✅ **`libs/flowise-flowdata/`** — типизированный builder для chatflow flowData (10 typed factories + generic.ts с реальным `fromIntrospection` для покрытия 200+ нод через MCP `nodes_get`). Closed `chatflow_create` flowData utility пункт.
@@ -227,7 +227,7 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
    ```
    Поймает breaking changes при апгрейде Flowise (3.1 → 3.2 → 4.x).
 
-2. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
+2. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** ⚠️ **PRE-PR6 PREREQUISITE** (раньше было «решить в PR6» — поднято в priority после architect-review 2026-04-30). Сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. PR6 (`apps/worker/catalog-refresh`) будет ходить в Flowise REST через `mcp-flowise` client — без env-валидации словим 401 при первом запуске. Сделать **до** мержа PR6: добавить `FLOWISE_API_KEY: z.string().min(1)` в `envSchema` (рядом с `FLOWISE_API_URL` который уже есть).
 
 3. **MCP scope filter** (`MCP_FLOWISE_SCOPE=full|minimal`) — отложить пока. Триггер пересмотра — когда подключится 2-й параллельный MCP-сервер и суммарный `tools/list` контекст превысит ~20 KB.
 
@@ -240,7 +240,7 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
    Шаги: `git filter-repo` для каждого пакета → переименование namespace → flowise-flowdata публикуется первым (с build-step через tsup/tsc, нужен `dist/` для npm) → mcp-flowise публикуется вторым с peerDeps → `.github/workflows/{test,publish}.yml` → `npm publish --access public` или Smithery submit.
 
-Решить: пункт 1 — после первой prod-выкатки slovo-runtime; пункт 2 — в PR6; пункты 3-4 — реактивно; пункт 5 — по триггерам.
+Решить: пункт 1 — после первой prod-выкатки slovo-runtime; **пункт 2 — pre-PR6 prerequisite**; пункты 3-4 — реактивно; пункт 5 — по триггерам.
 
 ### D. Авто-генерация DTO через декораторы / zod-first
 
