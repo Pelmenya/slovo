@@ -1,9 +1,35 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type { TFlowiseChatflow } from '../api/t-flowise';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
+
+// =============================================================================
+// Shared mappers
+// =============================================================================
+
+export type TChatflowListItem = {
+    id: string;
+    name: string;
+    type: string;
+    deployed: boolean;
+    isPublic: boolean;
+    category: string | null;
+    updatedDate?: string;
+};
+
+function toListItem(c: TFlowiseChatflow): TChatflowListItem {
+    return {
+        id: c.id,
+        name: c.name,
+        type: c.type ?? 'CHATFLOW',
+        deployed: Boolean(c.deployed),
+        isPublic: Boolean(c.isPublic),
+        category: c.category ?? null,
+        updatedDate: c.updatedDate,
+    };
+}
 
 // =============================================================================
 // chatflow_list
@@ -17,16 +43,6 @@ export const chatflowListSchema = z.object({
 });
 export type TChatflowListInput = z.infer<typeof chatflowListSchema>;
 
-export type TChatflowListItem = {
-    id: string;
-    name: string;
-    type: string;
-    deployed: boolean;
-    isPublic: boolean;
-    category: string | null;
-    updatedDate?: string;
-};
-
 export type TChatflowListData = {
     count: number;
     chatflows: TChatflowListItem[];
@@ -35,28 +51,12 @@ export type TChatflowListData = {
 export async function chatflowListHandler(
     input: TChatflowListInput,
 ): Promise<TToolResult<TChatflowListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const list = await client.request<TFlowiseChatflow[]>(ENDPOINTS.chatflows);
         const filtered = input.type ? list.filter((c) => c.type === input.type) : list;
-        return {
-            success: true,
-            data: {
-                count: filtered.length,
-                chatflows: filtered.map((c) => ({
-                    id: c.id,
-                    name: c.name,
-                    type: c.type ?? 'CHATFLOW',
-                    deployed: Boolean(c.deployed),
-                    isPublic: Boolean(c.isPublic),
-                    category: c.category ?? null,
-                    updatedDate: c.updatedDate,
-                })),
-            },
-        };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { count: filtered.length, chatflows: filtered.map(toListItem) };
+    });
 }
 
 // =============================================================================
@@ -68,7 +68,6 @@ export const chatflowGetSchema = z.object({
     includeFlowData: z
         .boolean()
         .optional()
-        .default(false)
         .describe('Включить flowData JSON (большой) — по умолчанию false для краткости'),
 });
 export type TChatflowGetInput = z.infer<typeof chatflowGetSchema>;
@@ -93,7 +92,7 @@ export type TChatflowGetData = {
 export async function chatflowGetHandler(
     input: TChatflowGetInput,
 ): Promise<TToolResult<TChatflowGetData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const cf = await client.request<TFlowiseChatflow>(ENDPOINTS.chatflowById(input.chatflowId));
         const data: TChatflowGetData = {
@@ -114,10 +113,8 @@ export async function chatflowGetHandler(
         if (input.includeFlowData) {
             data.flowData = cf.flowData;
         }
-        return { success: true, data };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return data;
+    });
 }
 
 // =============================================================================
@@ -137,29 +134,13 @@ export type TChatflowGetByApiKeyData = {
 export async function chatflowGetByApiKeyHandler(
     input: TChatflowGetByApiKeyInput,
 ): Promise<TToolResult<TChatflowGetByApiKeyData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const list = await client.request<TFlowiseChatflow[]>(
             ENDPOINTS.chatflowByApiKey(input.apikey),
         );
-        return {
-            success: true,
-            data: {
-                count: list.length,
-                chatflows: list.map((c) => ({
-                    id: c.id,
-                    name: c.name,
-                    type: c.type ?? 'CHATFLOW',
-                    deployed: Boolean(c.deployed),
-                    isPublic: Boolean(c.isPublic),
-                    category: c.category ?? null,
-                    updatedDate: c.updatedDate,
-                })),
-            },
-        };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { count: list.length, chatflows: list.map(toListItem) };
+    });
 }
 
 // =============================================================================
@@ -183,16 +164,13 @@ export type TChatflowCreateData = TFlowiseChatflow;
 export async function chatflowCreateHandler(
     input: TChatflowCreateInput,
 ): Promise<TToolResult<TChatflowCreateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseChatflow>(ENDPOINTS.chatflows, {
+        return client.request<TFlowiseChatflow>(ENDPOINTS.chatflows, {
             method: 'POST',
             body: input,
         });
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -216,17 +194,14 @@ export type TChatflowUpdateData = TFlowiseChatflow;
 export async function chatflowUpdateHandler(
     input: TChatflowUpdateInput,
 ): Promise<TToolResult<TChatflowUpdateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const { chatflowId, ...rest } = input;
-        const result = await client.request<TFlowiseChatflow>(ENDPOINTS.chatflowById(chatflowId), {
+        return client.request<TFlowiseChatflow>(ENDPOINTS.chatflowById(chatflowId), {
             method: 'PUT',
             body: rest,
         });
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -243,13 +218,11 @@ export type TChatflowDeleteData = { ok: true };
 export async function chatflowDeleteHandler(
     input: TChatflowDeleteInput,
 ): Promise<TToolResult<TChatflowDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(ENDPOINTS.chatflowById(input.chatflowId), {
             method: 'DELETE',
         });
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }

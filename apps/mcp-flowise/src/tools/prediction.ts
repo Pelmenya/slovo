@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type { TFlowisePredictionResponse } from '../api/t-flowise';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================
@@ -41,8 +41,9 @@ export const predictionRunSchema = z.object({
         .optional()
         .describe('Изображения / аудио / файлы для vision/audio chatflows (base64-кодированные)'),
     chatId: z.string().optional().describe('ID сессии (для conversation memory)'),
-    streaming: z.boolean().optional().describe('Включить SSE streaming (для MCP не используется — false)'),
     leadEmail: z.string().email().optional().describe('Email для lead capture'),
+    // streaming не выставляется — SSE невозможен через MCP stdio. Для streaming
+    // дёргать Flowise REST напрямую через fetch без MCP-обёртки.
 });
 export type TPredictionRunInput = z.infer<typeof predictionRunSchema>;
 
@@ -53,19 +54,14 @@ export type TPredictionRunData = TFlowisePredictionResponse & {
 export async function predictionRunHandler(
     input: TPredictionRunInput,
 ): Promise<TToolResult<TPredictionRunData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const { chatflowId, ...body } = input;
         const start = Date.now();
         const response = await client.request<TFlowisePredictionResponse>(
             ENDPOINTS.prediction(chatflowId),
-            { method: 'POST', body },
+            { method: 'POST', body: { ...body, streaming: false } },
         );
-        return {
-            success: true,
-            data: { ...response, elapsedMs: Date.now() - start },
-        };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ...response, elapsedMs: Date.now() - start };
+    });
 }

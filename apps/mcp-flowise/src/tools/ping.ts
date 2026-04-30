@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 export const pingSchema = z.object({});
@@ -15,19 +15,10 @@ export type TPingData = {
 };
 
 export async function pingHandler(_input: TPingInput): Promise<TToolResult<TPingData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const start = Date.now();
         const response = await client.request<unknown>(ENDPOINTS.ping);
-        return {
-            success: true,
-            data: {
-                ok: true,
-                response,
-                elapsedMs: Date.now() - start,
-            },
-        };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const, response, elapsedMs: Date.now() - start };
+    });
 }

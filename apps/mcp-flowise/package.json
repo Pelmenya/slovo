@@ -1,5 +1,54 @@
 {
     "name": "@slovo/mcp-flowise",
-    "version": "0.0.1",
-    "private": true
+    "version": "0.1.0",
+    "description": "MCP-сервер для управления Flowise REST API из Claude Code и любого другого MCP-клиента. 54 tools: Document Stores, Chatflows, Nodes, Predictions, Credentials, Variables, Custom Tools, Assistants.",
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "flowise",
+        "flowise-ai",
+        "claude",
+        "anthropic",
+        "ai",
+        "llm",
+        "rag",
+        "vector-store",
+        "document-store",
+        "chatflow",
+        "agentflow"
+    ],
+    "author": "Pelmenya <lyapindm@yandex.ru>",
+    "license": "MIT",
+    "private": true,
+    "type": "commonjs",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "bin": {
+        "mcp-flowise": "dist/index.js"
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "engines": {
+        "node": ">=20.6.0"
+    },
+    "scripts": {
+        "build": "tsc --project tsconfig.build.json",
+        "dev": "node --env-file=../../.env ../../node_modules/tsx/dist/cli.mjs src/index.ts",
+        "start": "node --env-file=../../.env dist/index.js",
+        "test": "jest --rootDir=../.. --testPathPattern=apps/mcp-flowise",
+        "lint": "eslint 'src/**/*.ts' --fix",
+        "prepublishOnly": "npm run lint && npm run test && npm run build"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Pelmenya/slovo.git",
+        "directory": "apps/mcp-flowise"
+    },
+    "bugs": {
+        "url": "https://github.com/Pelmenya/slovo/issues"
+    },
+    "homepage": "https://github.com/Pelmenya/slovo/tree/main/apps/mcp-flowise#readme"
 }

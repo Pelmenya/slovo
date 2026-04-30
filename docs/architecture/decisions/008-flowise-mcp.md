@@ -103,15 +103,44 @@
 
 ### Отрицательные
 
-- **Maintenance load.** При апгрейде Flowise (3.1 → 3.2) нужно проверять REST-совместимость (~1 час раз в месяц). Mitigated CI smoke-тестами против реального dev-инстанса (TODO).
-- **Не покрывает 100% Flowise REST сразу.** MVP — 4 tools (ping, credentials_list, docstore_list, docstore_query). Расширение по факту использования (Phase 1 PR6 + автогенерация флоу).
-- **Не публикуется в npm/Smithery в MVP.** Польза для community отложена до устойчивой версии.
+- **Maintenance load.** При апгрейде Flowise (3.1 → 3.2) нужно проверять REST-совместимость (~1 час раз в месяц). Mitigated CI smoke-тестами против реального dev-инстанса (см. tech-debt).
+- **На старте не покрывал 100% Flowise REST.** В MVP-коммите (`dfd14bf`) было 4 tools. Расширили до 54 в коммите `ba3b555` (см. amendment ниже).
+
+## 2026-04-30 — амендмент: scope расширен до 54 tools, цель — npm/Smithery publish
+
+В коммите `ba3b555` пересмотрен scope: **полное зеркало Flowise REST API** (54 tools — Document Stores 22, Chatflows 6, Nodes 2, Predictions 1, Credentials 5, Variables 4, Custom Tools 5, Assistants 5, chatmessage_list, upsert_history_list, ping, и т.д.). Решение мотивировано:
+
+1. **REST-обёртка — копипаст по schema, не "speculative architecture".** Все 54 endpoint'а реальны, payload-формы взяты из исходника Flowise (`dist/services/<feature>/`). Стоимость удаления неиспользуемого позже = `git rm`. Стоимость написать на месте = +30 LOC × N контекст-переключений.
+2. **Phase 1 (PR6) и Phase 2 (chatflow autogen) используют разные subsets.** PR6: `prediction_run` (uploads), `docstore_upsert`, `docstore_refresh`. Phase 2: `chatflow_create`, `chatflow_update`, `nodes_list`, `nodes_get`. Делать по требованию = три захода по 1-2 вечера каждый, против один заход.
+3. **Готовность к extract в `Pelmenya/mcp-flowise` + публикацию в npm/Smithery** — теперь это реальная цель, не «когда-нибудь».
+
+**Текущее состояние (после `ba3b555` + follow-up):**
+
+- `apps/mcp-flowise/` — изолированный package: own `package.json` (publish-ready: `description`, `keywords`, `bin`, `main: dist/index.js`, `repository`, `homepage`, `license: MIT`, `prepublishOnly`), `tsconfig.build.json` (declarations + source maps + outDir `dist/`), `LICENSE` (MIT, Copyright 2026 Dmitry Lyapin).
+- 54 tools в стиле `mcp-moysklad`: zod schema + handler + унифицированный `TToolResult<T>`. Все типы `T<Resource><Action>{Input,Data}` экспортируются — consumers могут импортировать строго.
+- TypeScript clean (`npx tsc --noEmit` + `npm run build` в `apps/mcp-flowise/`), ESLint clean. Live smoke через MCP подтвердил все 54 tools на slovo Flowise dev-инстансе.
+
+**План extract в `Pelmenya/mcp-flowise`** (когда потребуется):
+
+1. `git filter-repo --path apps/mcp-flowise/ --path-rename apps/mcp-flowise/:` сохраняет историю.
+2. Переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise` в `package.json`.
+3. Заменить путь `../../node_modules/tsx` в `scripts.dev` на локальный `tsx` (devDep).
+4. Перенести deps `@modelcontextprotocol/sdk`, `zod` из root slovo `package.json` в локальный.
+5. Добавить `.github/workflows/{test,publish}.yml` — CI test+lint, publish on tag.
+6. `npm publish --access public` (scoped public) или Smithery submit.
+
+**Триггер extract** — любой из:
+- Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).
+- Stabilization period (2 месяца без breaking changes в API tools).
+- Smithery официально откроется для submission и появится экосистема.
+
+До тех пор живёт в slovo monorepo — один Husky/ESLint, синхронные обновления вместе с `apps/api` и `apps/worker` (которые тоже могут импортировать через `@slovo/mcp-flowise/api/client`).
 
 ## Когда пересмотреть
 
 - **Если Flowise выпустит официальный MCP-сервер** — заменить наш на него, оставив только slovo-specific обёртки.
-- **Если scope вырастет до 30+ tools и стабилизируется** — extract в отдельный репо `Pelmenya/mcp-flowise`, опубликовать в npm + Smithery (см. tech-debt).
 - **Если появится проблема перфоманса** — переход на native Rust/Go MCP server (вряд ли нужно, stdio-overhead нулевой).
+- **Когда сработает один из триггеров extract выше** — провести extract по плану, опубликовать в npm и Smithery.
 
 ## Связанные ADR
 

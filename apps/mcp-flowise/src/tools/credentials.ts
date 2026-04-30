@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type { TFlowiseCredential, TFlowiseCredentialDetail } from '../api/t-flowise';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================
@@ -25,26 +25,21 @@ export type TCredentialsListData = {
 export async function credentialsListHandler(
     input: TCredentialsListInput,
 ): Promise<TToolResult<TCredentialsListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const list = await client.request<TFlowiseCredential[]>(ENDPOINTS.credentials);
         const filtered = input.credentialName
             ? list.filter((c) => c.credentialName === input.credentialName)
             : list;
         return {
-            success: true,
-            data: {
-                count: filtered.length,
-                credentials: filtered.map((c) => ({
-                    id: c.id,
-                    name: c.name,
-                    credentialName: c.credentialName,
-                })),
-            },
+            count: filtered.length,
+            credentials: filtered.map((c) => ({
+                id: c.id,
+                name: c.name,
+                credentialName: c.credentialName,
+            })),
         };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -61,15 +56,10 @@ export type TCredentialsGetData = TFlowiseCredentialDetail;
 export async function credentialsGetHandler(
     input: TCredentialsGetInput,
 ): Promise<TToolResult<TCredentialsGetData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const cred = await client.request<TFlowiseCredentialDetail>(
-            ENDPOINTS.credentialById(input.credentialId),
-        );
-        return { success: true, data: cred };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseCredentialDetail>(ENDPOINTS.credentialById(input.credentialId));
+    });
 }
 
 // =============================================================================
@@ -93,16 +83,13 @@ export type TCredentialsCreateData = TFlowiseCredential;
 export async function credentialsCreateHandler(
     input: TCredentialsCreateInput,
 ): Promise<TToolResult<TCredentialsCreateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseCredential>(ENDPOINTS.credentials, {
+        return client.request<TFlowiseCredential>(ENDPOINTS.credentials, {
             method: 'POST',
             body: input,
         });
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -121,17 +108,14 @@ export type TCredentialsUpdateData = TFlowiseCredential;
 export async function credentialsUpdateHandler(
     input: TCredentialsUpdateInput,
 ): Promise<TToolResult<TCredentialsUpdateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const { credentialId, ...rest } = input;
-        const result = await client.request<TFlowiseCredential>(
-            ENDPOINTS.credentialById(credentialId),
-            { method: 'PUT', body: rest },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseCredential>(ENDPOINTS.credentialById(credentialId), {
+            method: 'PUT',
+            body: rest,
+        });
+    });
 }
 
 // =============================================================================
@@ -148,13 +132,11 @@ export type TCredentialsDeleteData = { ok: true };
 export async function credentialsDeleteHandler(
     input: TCredentialsDeleteInput,
 ): Promise<TToolResult<TCredentialsDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(ENDPOINTS.credentialById(input.credentialId), {
             method: 'DELETE',
         });
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }

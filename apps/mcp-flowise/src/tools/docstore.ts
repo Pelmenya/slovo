@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type {
     TFlowiseComponentNode,
     TFlowiseDocumentStore,
@@ -11,6 +10,7 @@ import type {
     TFlowiseLoaderPreviewResponse,
     TFlowiseQueryResponse,
 } from '../api/t-flowise';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================
@@ -40,29 +40,24 @@ export type TDocstoreListData = {
 export async function docstoreListHandler(
     _input: TDocstoreListInput,
 ): Promise<TToolResult<TDocstoreListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const list = await client.request<TFlowiseDocumentStore[]>(ENDPOINTS.documentStores);
         return {
-            success: true,
-            data: {
-                count: list.length,
-                stores: list.map((s) => ({
-                    id: s.id,
-                    name: s.name,
-                    description: s.description ?? null,
-                    status: s.status,
-                    totalChunks: s.totalChunks,
-                    totalChars: s.totalChars,
-                    loadersCount: Array.isArray(s.loaders) ? s.loaders.length : 0,
-                    hasEmbedding: Boolean(s.embeddingConfig),
-                    hasVectorStore: Boolean(s.vectorStoreConfig),
-                })),
-            },
+            count: list.length,
+            stores: list.map((s) => ({
+                id: s.id,
+                name: s.name,
+                description: s.description ?? null,
+                status: s.status,
+                totalChunks: s.totalChunks,
+                totalChars: s.totalChars,
+                loadersCount: Array.isArray(s.loaders) ? s.loaders.length : 0,
+                hasEmbedding: Boolean(s.embeddingConfig),
+                hasVectorStore: Boolean(s.vectorStoreConfig),
+            })),
         };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -79,15 +74,10 @@ export type TDocstoreGetData = TFlowiseDocumentStore;
 export async function docstoreGetHandler(
     input: TDocstoreGetInput,
 ): Promise<TToolResult<TDocstoreGetData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const store = await client.request<TFlowiseDocumentStore>(
-            ENDPOINTS.documentStoreById(input.storeId),
-        );
-        return { success: true, data: store };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseDocumentStore>(ENDPOINTS.documentStoreById(input.storeId));
+    });
 }
 
 // =============================================================================
@@ -105,16 +95,13 @@ export type TDocstoreCreateData = TFlowiseDocumentStore;
 export async function docstoreCreateHandler(
     input: TDocstoreCreateInput,
 ): Promise<TToolResult<TDocstoreCreateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const store = await client.request<TFlowiseDocumentStore>(ENDPOINTS.documentStores, {
+        return client.request<TFlowiseDocumentStore>(ENDPOINTS.documentStores, {
             method: 'POST',
             body: { name: input.name, description: input.description ?? '' },
         });
-        return { success: true, data: store };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -133,19 +120,14 @@ export type TDocstoreUpdateData = TFlowiseDocumentStore;
 export async function docstoreUpdateHandler(
     input: TDocstoreUpdateInput,
 ): Promise<TToolResult<TDocstoreUpdateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const body: Record<string, unknown> = {};
-        if (input.name !== undefined) body.name = input.name;
-        if (input.description !== undefined) body.description = input.description;
-        const store = await client.request<TFlowiseDocumentStore>(
-            ENDPOINTS.documentStoreById(input.storeId),
-            { method: 'PUT', body },
-        );
-        return { success: true, data: store };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        const { storeId, ...rest } = input;
+        return client.request<TFlowiseDocumentStore>(ENDPOINTS.documentStoreById(storeId), {
+            method: 'PUT',
+            body: rest,
+        });
+    });
 }
 
 // =============================================================================
@@ -162,15 +144,13 @@ export type TDocstoreDeleteData = { ok: true };
 export async function docstoreDeleteHandler(
     input: TDocstoreDeleteInput,
 ): Promise<TToolResult<TDocstoreDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(ENDPOINTS.documentStoreById(input.storeId), {
             method: 'DELETE',
         });
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }
 
 // =============================================================================
@@ -201,19 +181,14 @@ export type TDocstoreUpsertData = {
 export async function docstoreUpsertHandler(
     input: TDocstoreUpsertInput,
 ): Promise<TToolResult<TDocstoreUpsertData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const body: Record<string, unknown> = {};
-        if (input.docId !== undefined) body.docId = input.docId;
-        if (input.overrideConfig !== undefined) body.overrideConfig = input.overrideConfig;
-        const result = await client.request<TDocstoreUpsertData>(
-            ENDPOINTS.documentStoreUpsert(input.storeId),
-            { method: 'POST', body },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        const { storeId, ...rest } = input;
+        return client.request<TDocstoreUpsertData>(ENDPOINTS.documentStoreUpsert(storeId), {
+            method: 'POST',
+            body: rest,
+        });
+    });
 }
 
 // =============================================================================
@@ -225,21 +200,24 @@ export const docstoreRefreshSchema = z.object({
 });
 export type TDocstoreRefreshInput = z.infer<typeof docstoreRefreshSchema>;
 
-export type TDocstoreRefreshData = Record<string, unknown>;
+// Flowise refresh response shape варьируется в зависимости от loader-типов и vectorstore.
+// Минимально гарантированы { status, processed }, остальное — provider-specific.
+export type TDocstoreRefreshData = {
+    status?: string;
+    processed?: number;
+    [key: string]: unknown;
+};
 
 export async function docstoreRefreshHandler(
     input: TDocstoreRefreshInput,
 ): Promise<TToolResult<TDocstoreRefreshData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TDocstoreRefreshData>(
-            ENDPOINTS.documentStoreRefresh(input.storeId),
-            { method: 'POST', body: {} },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TDocstoreRefreshData>(ENDPOINTS.documentStoreRefresh(input.storeId), {
+            method: 'POST',
+            body: {},
+        });
+    });
 }
 
 // =============================================================================
@@ -267,16 +245,13 @@ export type TDocstoreLoaderSaveData = TFlowiseDocumentStoreLoader;
 export async function docstoreLoaderSaveHandler(
     input: TDocstoreLoaderSaveInput,
 ): Promise<TToolResult<TDocstoreLoaderSaveData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseDocumentStoreLoader>(
-            ENDPOINTS.docstoreLoaderSave,
-            { method: 'POST', body: input },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseDocumentStoreLoader>(ENDPOINTS.docstoreLoaderSave, {
+            method: 'POST',
+            body: input,
+        });
+    });
 }
 
 // =============================================================================
@@ -302,17 +277,14 @@ export type TDocstoreLoaderProcessData = {
 export async function docstoreLoaderProcessHandler(
     input: TDocstoreLoaderProcessInput,
 ): Promise<TToolResult<TDocstoreLoaderProcessData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const { loaderId, storeId, ...rest } = input;
-        const result = await client.request<TDocstoreLoaderProcessData>(
+        return client.request<TDocstoreLoaderProcessData>(
             ENDPOINTS.docstoreLoaderProcess(loaderId),
             { method: 'POST', body: { storeId, id: loaderId, ...rest } },
         );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -335,16 +307,13 @@ export type TDocstoreLoaderPreviewData = TFlowiseLoaderPreviewResponse;
 export async function docstoreLoaderPreviewHandler(
     input: TDocstoreLoaderPreviewInput,
 ): Promise<TToolResult<TDocstoreLoaderPreviewData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseLoaderPreviewResponse>(
-            ENDPOINTS.docstoreLoaderPreview,
-            { method: 'POST', body: input },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseLoaderPreviewResponse>(ENDPOINTS.docstoreLoaderPreview, {
+            method: 'POST',
+            body: input,
+        });
+    });
 }
 
 // =============================================================================
@@ -362,15 +331,13 @@ export type TDocstoreLoaderDeleteData = { ok: true };
 export async function docstoreLoaderDeleteHandler(
     input: TDocstoreLoaderDeleteInput,
 ): Promise<TToolResult<TDocstoreLoaderDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(ENDPOINTS.docstoreLoaderDelete(input.storeId, input.loaderId), {
             method: 'DELETE',
         });
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }
 
 // =============================================================================
@@ -389,15 +356,12 @@ export type TDocstoreChunksListData = TFlowiseDocumentStoreChunksResponse;
 export async function docstoreChunksListHandler(
     input: TDocstoreChunksListInput,
 ): Promise<TToolResult<TDocstoreChunksListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseDocumentStoreChunksResponse>(
+        return client.request<TFlowiseDocumentStoreChunksResponse>(
             ENDPOINTS.docstoreChunksList(input.storeId, input.fileId, input.pageNo),
         );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -418,17 +382,14 @@ export type TDocstoreChunkUpdateData = TFlowiseDocumentStoreChunksResponse;
 export async function docstoreChunkUpdateHandler(
     input: TDocstoreChunkUpdateInput,
 ): Promise<TToolResult<TDocstoreChunkUpdateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const body = { pageContent: input.pageContent, metadata: input.metadata ?? {} };
-        const result = await client.request<TFlowiseDocumentStoreChunksResponse>(
+        return client.request<TFlowiseDocumentStoreChunksResponse>(
             ENDPOINTS.docstoreChunkUpdate(input.storeId, input.loaderId, input.chunkId),
             { method: 'PUT', body },
         );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -447,16 +408,14 @@ export type TDocstoreChunkDeleteData = { ok: true };
 export async function docstoreChunkDeleteHandler(
     input: TDocstoreChunkDeleteInput,
 ): Promise<TToolResult<TDocstoreChunkDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(
             ENDPOINTS.docstoreChunkDelete(input.storeId, input.loaderId, input.chunkId),
             { method: 'DELETE' },
         );
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }
 
 // =============================================================================
@@ -490,12 +449,9 @@ export type TDocstoreQueryData = {
 export async function docstoreQueryHandler(
     input: TDocstoreQueryInput,
 ): Promise<TToolResult<TDocstoreQueryData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const body: Record<string, unknown> = {
-            storeId: input.storeId,
-            query: input.query,
-        };
+        const body: Record<string, unknown> = { storeId: input.storeId, query: input.query };
         if (input.topK !== undefined) {
             body.topK = input.topK;
         }
@@ -504,28 +460,24 @@ export async function docstoreQueryHandler(
             body,
         });
         return {
-            success: true,
-            data: {
-                timeTaken: response.timeTaken,
-                count: response.docs.length,
-                docs: response.docs.map((d) => ({
-                    id: d.id,
-                    chunkNo: d.chunkNo,
-                    pageContent: d.pageContent,
-                    metadata: d.metadata,
-                })),
-            },
+            timeTaken: response.timeTaken,
+            count: response.docs.length,
+            docs: response.docs.map((d) => ({
+                id: d.id,
+                chunkNo: d.chunkNo,
+                pageContent: d.pageContent,
+                metadata: d.metadata,
+            })),
         };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
-// docstore_vectorstore_save (POST /document-store/vectorstore/save)
+// docstore_vectorstore_save / insert / update — общая schema (все принимают
+// storeId + embeddingConfig + vectorStoreConfig + recordManagerConfig)
 // =============================================================================
 
-export const docstoreVectorstoreSaveSchema = z.object({
+const vectorstoreConfigSchema = z.object({
     storeId: z.string().min(1),
     embeddingName: z.string().optional(),
     embeddingConfig: z.record(z.string(), z.unknown()).optional(),
@@ -534,87 +486,53 @@ export const docstoreVectorstoreSaveSchema = z.object({
     recordManagerName: z.string().optional(),
     recordManagerConfig: z.record(z.string(), z.unknown()).optional(),
 });
-export type TDocstoreVectorstoreSaveInput = z.infer<typeof docstoreVectorstoreSaveSchema>;
 
+export const docstoreVectorstoreSaveSchema = vectorstoreConfigSchema;
+export type TDocstoreVectorstoreSaveInput = z.infer<typeof docstoreVectorstoreSaveSchema>;
 export type TDocstoreVectorstoreSaveData = TFlowiseDocumentStore;
 
 export async function docstoreVectorstoreSaveHandler(
     input: TDocstoreVectorstoreSaveInput,
 ): Promise<TToolResult<TDocstoreVectorstoreSaveData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseDocumentStore>(ENDPOINTS.vectorstoreSave, {
+        return client.request<TFlowiseDocumentStore>(ENDPOINTS.vectorstoreSave, {
             method: 'POST',
             body: input,
         });
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
-// =============================================================================
-// docstore_vectorstore_insert (POST /document-store/vectorstore/insert)
-// =============================================================================
-
-export const docstoreVectorstoreInsertSchema = z.object({
-    storeId: z.string().min(1),
-    embeddingName: z.string().optional(),
-    embeddingConfig: z.record(z.string(), z.unknown()).optional(),
-    vectorStoreName: z.string().optional(),
-    vectorStoreConfig: z.record(z.string(), z.unknown()).optional(),
-    recordManagerName: z.string().optional(),
-    recordManagerConfig: z.record(z.string(), z.unknown()).optional(),
-});
+export const docstoreVectorstoreInsertSchema = vectorstoreConfigSchema;
 export type TDocstoreVectorstoreInsertInput = z.infer<typeof docstoreVectorstoreInsertSchema>;
-
 export type TDocstoreVectorstoreInsertData = Record<string, unknown>;
 
 export async function docstoreVectorstoreInsertHandler(
     input: TDocstoreVectorstoreInsertInput,
 ): Promise<TToolResult<TDocstoreVectorstoreInsertData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TDocstoreVectorstoreInsertData>(
-            ENDPOINTS.vectorstoreInsert,
-            { method: 'POST', body: input },
-        );
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TDocstoreVectorstoreInsertData>(ENDPOINTS.vectorstoreInsert, {
+            method: 'POST',
+            body: input,
+        });
+    });
 }
 
-// =============================================================================
-// docstore_vectorstore_update (POST /document-store/vectorstore/update)
-// =============================================================================
-
-export const docstoreVectorstoreUpdateSchema = z.object({
-    storeId: z.string().min(1),
-    embeddingName: z.string().optional(),
-    embeddingConfig: z.record(z.string(), z.unknown()).optional(),
-    vectorStoreName: z.string().optional(),
-    vectorStoreConfig: z.record(z.string(), z.unknown()).optional(),
-    recordManagerName: z.string().optional(),
-    recordManagerConfig: z.record(z.string(), z.unknown()).optional(),
-});
+export const docstoreVectorstoreUpdateSchema = vectorstoreConfigSchema;
 export type TDocstoreVectorstoreUpdateInput = z.infer<typeof docstoreVectorstoreUpdateSchema>;
-
 export type TDocstoreVectorstoreUpdateData = TFlowiseDocumentStore;
 
 export async function docstoreVectorstoreUpdateHandler(
     input: TDocstoreVectorstoreUpdateInput,
 ): Promise<TToolResult<TDocstoreVectorstoreUpdateData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const result = await client.request<TFlowiseDocumentStore>(ENDPOINTS.vectorstoreUpdate, {
+        return client.request<TFlowiseDocumentStore>(ENDPOINTS.vectorstoreUpdate, {
             method: 'POST',
             body: input,
         });
-        return { success: true, data: result };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -631,15 +549,13 @@ export type TDocstoreVectorstoreDeleteData = { ok: true };
 export async function docstoreVectorstoreDeleteHandler(
     input: TDocstoreVectorstoreDeleteInput,
 ): Promise<TToolResult<TDocstoreVectorstoreDeleteData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         await client.request<unknown>(ENDPOINTS.vectorstoreDelete(input.storeId), {
             method: 'DELETE',
         });
-        return { success: true, data: { ok: true } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { ok: true as const };
+    });
 }
 
 // =============================================================================
@@ -680,19 +596,11 @@ function mapComponent(node: TFlowiseComponentNode): TDocstoreComponentsItem {
 }
 
 async function fetchComponents(endpoint: string): Promise<TToolResult<TDocstoreComponentsData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const list = await client.request<TFlowiseComponentNode[]>(endpoint);
-        return {
-            success: true,
-            data: {
-                count: list.length,
-                components: list.map(mapComponent),
-            },
-        };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return { count: list.length, components: list.map(mapComponent) };
+    });
 }
 
 export async function docstoreComponentsLoadersHandler(

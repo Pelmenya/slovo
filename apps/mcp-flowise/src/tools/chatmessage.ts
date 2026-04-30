@@ -1,45 +1,60 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type { TFlowiseChatMessage } from '../api/t-flowise';
+import { buildQuery, withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================
-// chatmessage_list  (GET /api/v1/chatmessage/:chatflowId)
+// chatmessage_list — Pick без огромных sourceDocuments/fileUploads/usedTools/fileAnnotations
 // =============================================================================
 
 export const chatmessageListSchema = z.object({
     chatflowId: z.string().min(1),
     chatId: z.string().optional().describe('Фильтр по конкретной сессии'),
     chatType: z.enum(['EXTERNAL', 'INTERNAL']).optional(),
-    sortOrder: z.enum(['ASC', 'DESC']).optional().default('DESC'),
+    sortOrder: z.enum(['ASC', 'DESC']).optional(),
     limit: z.number().int().min(1).max(500).optional(),
 });
 export type TChatmessageListInput = z.infer<typeof chatmessageListSchema>;
 
+export type TChatmessageListItem = Pick<
+    TFlowiseChatMessage,
+    'id' | 'role' | 'chatId' | 'content' | 'chatType' | 'sessionId' | 'memoryType' | 'createdDate'
+>;
+
 export type TChatmessageListData = {
     count: number;
-    messages: TFlowiseChatMessage[];
+    messages: TChatmessageListItem[];
 };
 
 export async function chatmessageListHandler(
     input: TChatmessageListInput,
 ): Promise<TToolResult<TChatmessageListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const query: Record<string, string | number | boolean | undefined> = {
+        const query = buildQuery({
             chatId: input.chatId,
             chatType: input.chatType,
             sortOrder: input.sortOrder,
             limit: input.limit,
-        };
+        });
         const list = await client.request<TFlowiseChatMessage[]>(
             ENDPOINTS.chatMessages(input.chatflowId),
             { query },
         );
-        return { success: true, data: { count: list.length, messages: list } };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return {
+            count: list.length,
+            messages: list.map((m) => ({
+                id: m.id,
+                role: m.role,
+                chatId: m.chatId,
+                content: m.content,
+                chatType: m.chatType,
+                sessionId: m.sessionId,
+                memoryType: m.memoryType,
+                createdDate: m.createdDate,
+            })),
+        };
+    });
 }

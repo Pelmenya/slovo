@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { getFlowiseClient } from '../api/client';
 import { ENDPOINTS } from '../api/endpoints';
-import { formatErrorForMcp } from '../utils/errors';
 import type { TFlowiseComponentNode } from '../api/t-flowise';
+import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================
@@ -34,29 +34,24 @@ export type TNodesListData = {
 export async function nodesListHandler(
     input: TNodesListInput,
 ): Promise<TToolResult<TNodesListData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
         const endpoint = input.category
             ? ENDPOINTS.nodesByCategory(input.category)
             : ENDPOINTS.nodes;
         const list = await client.request<TFlowiseComponentNode[]>(endpoint);
         return {
-            success: true,
-            data: {
-                count: list.length,
-                nodes: list.map((n) => ({
-                    name: n.name,
-                    label: n.label,
-                    category: n.category,
-                    description: n.description,
-                    version: n.version,
-                    type: n.type,
-                })),
-            },
+            count: list.length,
+            nodes: list.map((n) => ({
+                name: n.name,
+                label: n.label,
+                category: n.category,
+                description: n.description,
+                version: n.version,
+                type: n.type,
+            })),
         };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+    });
 }
 
 // =============================================================================
@@ -76,11 +71,8 @@ export type TNodesGetData = TFlowiseComponentNode;
 export async function nodesGetHandler(
     input: TNodesGetInput,
 ): Promise<TToolResult<TNodesGetData>> {
-    try {
+    return withErrorHandling(async () => {
         const client = getFlowiseClient();
-        const node = await client.request<TFlowiseComponentNode>(ENDPOINTS.nodeByName(input.name));
-        return { success: true, data: node };
-    } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
-    }
+        return client.request<TFlowiseComponentNode>(ENDPOINTS.nodeByName(input.name));
+    });
 }

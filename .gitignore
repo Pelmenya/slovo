@@ -1,5 +1,6 @@
 node_modules/
 dist/
+apps/*/dist/
 coverage/
 .env
 .env.*

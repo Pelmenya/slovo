@@ -189,23 +189,55 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
 Решить на стадии: первая UI-фича, или когда появится отдельный фронт-репо.
 
-### C. MCP-сервер Flowise — расширение покрытия и production-publish
+### C. MCP-сервер Flowise — путь к extract и publish
 
-См. ADR-008. MVP в `apps/mcp-flowise/` (4 tools) закрыт коммитом `dfd14bf`. Roadmap по факту использования:
+См. ADR-008 + amendment 2026-04-30. После follow-up к `ba3b555`:
 
-1. **`flowise_prediction_run` с image uploads** — для PR6 vision-describer (image-search через `apps/api/catalog/search/image`). Требует поддержку multipart/base64 → `/api/v1/prediction/<chatflowId>` body с `uploads: [{ data, type, name, mime }]`. Сейчас не реализовано.
+- ✅ Полное покрытие — 54 tools (Document Stores 22 / Chatflows 6 / Nodes 2 / Predictions 1 / Credentials 5 / Variables 4 / Custom Tools 5 / Assistants 5 / Chat history 2 / Misc 2)
+- ✅ 100% unit-test coverage всех 54 tools (mock fetch + happy + error cases)
+- ✅ `package.json` publish-ready (`description`, `keywords`, `bin`, `main: dist/index.js`, `repository`, `license: MIT`, `prepublishOnly`)
+- ✅ `tsconfig.build.json` (declarations + source maps), `LICENSE`, изолированный build → `dist/`
+- ✅ README с примерами для каждой группы tools
 
-2. **`flowise_docstore_upsert` + `flowise_docstore_refresh`** — для `apps/worker/catalog-refresh` (PR6). Заменит сегодняшний 4-step flow (loader/save → process → vectorstore/save → vectorstore/insert) одним вызовом. `refresh` для cron 4ч из ADR-007.
+**Открытые задачи для production-grade pipeline:**
 
-3. **`flowise_chatflow_list/get/create/update`** + **`flowise_node_list/get`** — для программной генерации vision-флоу из Claude (например, vision-describer-v2 с улучшенным промптом). `node_list` нужен для discovery какие ноды доступны и какие у них inputs/outputs.
+1. **CI smoke против реального Flowise dev-инстанса** — отдельный workflow в GitHub Actions:
+   ```yaml
+   name: mcp-flowise-smoke
+   on: { schedule: [{ cron: '0 6 * * 1' }], workflow_dispatch: }  # weekly
+   jobs:
+     smoke:
+       services: { flowise: { image: flowiseai/flowise:3.1.2, ports: [3130:3000] } }
+       steps:
+         - run: npm test -- apps/mcp-flowise
+         - run: npm run smoke -- ping chatflow_list nodes_list
+   ```
+   Поймает breaking changes при апгрейде Flowise (3.1 → 3.2 → 4.x).
 
-4. **CI smoke-тесты против реального Flowise dev-инстанса** — `apps/mcp-flowise/test/integration/*.test.ts` дёргают через MCP server live Flowise на 127.0.0.1:3130. Сейчас только unit-тесты с mock fetch.
+2. **`chatflow_create` flowData builder utility** — `libs/flowise-flowdata/` с типизированными node/edge factories:
+   ```ts
+   buildChatflow({
+     llm: chatAnthropic({ model: 'claude-sonnet-4-6' }),
+     prompt: promptTemplate({ template: '...' }),
+     output: structuredOutputParser({ schema: ... }),
+   }) → flowData JSON
+   ```
+   Без него Phase 2 (chatflow autogen из Claude) — болезненный handcraft 200+ строк JSON. Высокий приоритет на старте Phase 2.
 
-5. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
+3. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
 
-6. **Production-publish** — extract `apps/mcp-flowise` в отдельный репо `Pelmenya/mcp-flowise`, публикация в npm + Smithery. Решить на стадии когда scope вырастет до 30+ tools и стабилизируется.
+4. **MCP scope filter** (`MCP_FLOWISE_SCOPE=full|minimal`) — отложить пока. Триггер пересмотра — когда подключится 2-й параллельный MCP-сервер и суммарный `tools/list` контекст превысит ~20 KB.
 
-Решить: пункты 1-2 — в PR6, пункт 3 — когда появится потребность автогенерации флоу из Claude, пункты 4-5 — после первой prod-выкатки slovo-runtime который ходит в Flowise.
+5. **Streaming prediction** — skip. SSE не работает через MCP stdio — для streaming использовать прямой HTTP к Flowise. Зафиксировано в README (`prediction.ts:streaming` — `z.literal(false)`).
+
+6. **Extract в `Pelmenya/mcp-flowise` + npm/Smithery publish** — план готов в ADR-008 amendment. Триггеры:
+   - Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).
+   - Stabilization period (2 месяца без breaking changes в API tools).
+   - Smithery официально откроется для submission и появится экосистема.
+
+   Шаги после триггера: `git filter-repo` сохраняет историю → переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise` → перенести deps в локальный package.json → `.github/workflows/{test,publish}.yml` → `npm publish --access public` или Smithery submit.
+
+Решить: пункт 1 — после первой prod-выкатки slovo-runtime; пункт 2 — на старте Phase 2; пункт 3 — в PR6; пункты 4-5 — реактивно (по факту).
 
 ### D. Авто-генерация DTO через декораторы / zod-first
 

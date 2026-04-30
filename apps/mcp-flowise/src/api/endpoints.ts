@@ -8,8 +8,6 @@ export const ENDPOINTS = {
     // Document Store — Stores
     documentStores: '/api/v1/document-store/store',
     documentStoreById: (id: string): string => `/api/v1/document-store/store/${id}`,
-    documentStoreConfigs: (id: string, loaderId: string): string =>
-        `/api/v1/document-store/store-configs/${id}/${loaderId}`,
 
     // Document Store — Operations
     documentStoreUpsert: (id: string): string => `/api/v1/document-store/upsert/${id}`,
@@ -67,9 +65,6 @@ export const ENDPOINTS = {
     // Assistants
     assistants: '/api/v1/assistants',
     assistantById: (id: string): string => `/api/v1/assistants/${id}`,
-    assistantsChatModels: '/api/v1/assistants/components/chatmodels',
-    assistantsDocStores: '/api/v1/assistants/components/docstores',
-    assistantsTools: '/api/v1/assistants/components/tools',
 
     // Chat messages
     chatMessages: (chatflowId: string): string => `/api/v1/chatmessage/${chatflowId}`,
