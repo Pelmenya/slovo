@@ -3,7 +3,10 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
 
-export default tseslint.config(
+// Flat config (ESLint 9+). tseslint.config() deprecated в typescript-eslint 8.x —
+// используем плоский массив. Типы parserOptions.project: true и rules-keys
+// валидируются через JSDoc @ts-check выше.
+export default [
     {
         ignores: [
             'dist/**',
@@ -77,4 +80,4 @@ export default tseslint.config(
             '@typescript-eslint/no-unsafe-argument': 'off',
         },
     },
-);
+];
