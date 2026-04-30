@@ -191,13 +191,24 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
 ### C. MCP-сервер Flowise — путь к extract и publish
 
-См. ADR-008 + amendment 2026-04-30. После follow-up к `ba3b555`:
+См. ADR-008 + amendment 2026-04-30.
 
-- ✅ Полное покрытие — 54 tools (Document Stores 22 / Chatflows 6 / Nodes 2 / Predictions 1 / Credentials 5 / Variables 4 / Custom Tools 5 / Assistants 5 / Chat history 2 / Misc 2)
-- ✅ 100% unit-test coverage всех 54 tools (mock fetch + happy + error cases)
-- ✅ `package.json` publish-ready (`description`, `keywords`, `bin`, `main: dist/index.js`, `repository`, `license: MIT`, `prepublishOnly`)
-- ✅ `tsconfig.build.json` (declarations + source maps), `LICENSE`, изолированный build → `dist/`
-- ✅ README с примерами для каждой группы tools
+**Закрыто:**
+
+- ✅ Полное покрытие — **66 tools** в `apps/mcp-flowise/` (commit `e0cd3e6`):
+  - Document Stores 22 (CRUD + chunks + loader + vectorstore + components + generate_tool_desc)
+  - Chatflows 6 (CRUD + by_apikey)
+  - Nodes 2 (list/get для discovery 301 ноды)
+  - Predictions 1 (с uploads/history/form)
+  - Vector 1 (legacy chatflow upsert)
+  - Credentials 5 / Variables 4 / Custom Tools 5 / Assistants 5
+  - Composite 3 (chatflow_clone, docstore_clone, docstore_full_setup)
+  - DX helpers 3 (introspect, smoke, docstore_search_by_name)
+  - Misc 4 (ping, attachments_create, chatmessage abort/delete_all, upsert_history patch_delete)
+- ✅ 100% unit-test coverage — **345 tests passed** (32 suites)
+- ✅ `package.json` publish-ready (description, keywords, bin, main: dist/index.js, repository, MIT, prepublishOnly), `tsconfig.build.json` (declarations + source maps), `LICENSE`, build → `dist/`
+- ✅ README с категориями + примеры для каждой группы tools
+- ✅ **`libs/flowise-flowdata/`** — типизированный builder для chatflow flowData (10 typed factories + generic.ts с реальным `fromIntrospection` для покрытия 200+ нод через MCP `nodes_get`). Closed `chatflow_create` flowData utility пункт.
 
 **Открытые задачи для production-grade pipeline:**
 
@@ -210,34 +221,26 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
        services: { flowise: { image: flowiseai/flowise:3.1.2, ports: [3130:3000] } }
        steps:
          - run: npm test -- apps/mcp-flowise
-         - run: npm run smoke -- ping chatflow_list nodes_list
+         - run: |
+             # Прогон через MCP stdin/stdout: initialize + tools/list + flowise_smoke
+             node --env-file=.env apps/mcp-flowise/dist/index.js < smoke-mcp-payload.json
    ```
    Поймает breaking changes при апгрейде Flowise (3.1 → 3.2 → 4.x).
 
-2. **`chatflow_create` flowData builder utility** — `libs/flowise-flowdata/` с типизированными node/edge factories:
-   ```ts
-   buildChatflow({
-     llm: chatAnthropic({ model: 'claude-sonnet-4-6' }),
-     prompt: promptTemplate({ template: '...' }),
-     output: structuredOutputParser({ schema: ... }),
-   }) → flowData JSON
-   ```
-   Без него Phase 2 (chatflow autogen из Claude) — болезненный handcraft 200+ строк JSON. Высокий приоритет на старте Phase 2.
+2. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
 
-3. **`FLOWISE_API_KEY` валидация в `libs/common/src/config/env.schema.ts`** — сейчас валидируется только в `apps/mcp-flowise/src/config.ts`. Когда slovo `apps/api`/`apps/worker` начнёт ходить в Flowise REST (PR6) — добавить в общую schema, чтобы 401-сюрпризы не вылетали в проде.
+3. **MCP scope filter** (`MCP_FLOWISE_SCOPE=full|minimal`) — отложить пока. Триггер пересмотра — когда подключится 2-й параллельный MCP-сервер и суммарный `tools/list` контекст превысит ~20 KB.
 
-4. **MCP scope filter** (`MCP_FLOWISE_SCOPE=full|minimal`) — отложить пока. Триггер пересмотра — когда подключится 2-й параллельный MCP-сервер и суммарный `tools/list` контекст превысит ~20 KB.
+4. **Streaming prediction** — skip. SSE не работает через MCP stdio — для streaming использовать прямой HTTP к Flowise. Зафиксировано в README (`prediction.ts:streaming` исключён из schema, всегда `false` в body).
 
-5. **Streaming prediction** — skip. SSE не работает через MCP stdio — для streaming использовать прямой HTTP к Flowise. Зафиксировано в README (`prediction.ts:streaming` — `z.literal(false)`).
-
-6. **Extract в `Pelmenya/mcp-flowise` + npm/Smithery publish** — план готов в ADR-008 amendment. Триггеры:
+5. **Extract в `Pelmenya/mcp-flowise` + `Pelmenya/flowise-flowdata` + npm/Smithery publish** — план готов в ADR-008 amendment. Два пакета (transport + domain), peerDeps как у `@nestjs/microservices` → `@nestjs/common`. Триггеры:
    - Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).
    - Stabilization period (2 месяца без breaking changes в API tools).
    - Smithery официально откроется для submission и появится экосистема.
 
-   Шаги после триггера: `git filter-repo` сохраняет историю → переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise` → перенести deps в локальный package.json → `.github/workflows/{test,publish}.yml` → `npm publish --access public` или Smithery submit.
+   Шаги: `git filter-repo` для каждого пакета → переименование namespace → flowise-flowdata публикуется первым (с build-step через tsup/tsc, нужен `dist/` для npm) → mcp-flowise публикуется вторым с peerDeps → `.github/workflows/{test,publish}.yml` → `npm publish --access public` или Smithery submit.
 
-Решить: пункт 1 — после первой prod-выкатки slovo-runtime; пункт 2 — на старте Phase 2; пункт 3 — в PR6; пункты 4-5 — реактивно (по факту).
+Решить: пункт 1 — после первой prod-выкатки slovo-runtime; пункт 2 — в PR6; пункты 3-4 — реактивно; пункт 5 — по триггерам.
 
 ### D. Авто-генерация DTO через декораторы / zod-first
 

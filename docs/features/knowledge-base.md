@@ -343,26 +343,37 @@ enum ArtifactStatus     { pending generating ready failed }
 - **MVP:** sentence-based с token limit (500) и overlap (50). Библиотека: `llamaindex-js` chunker или самописный (5 часов работы).
 - **Phase 2:** semantic chunking (embed соседние chunks и мержить похожие). Возможно позже.
 
-### Роль Flowise
+### Роль Flowise (актуализировано 2026-04-30)
 
-У разработчика есть Flowise на сервере (`docker-compose.infra.yml`) + пройденный тьюториал 5 уровней в `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\`. Возникает вопрос — использовать ли его готовые блоки (Document Loaders, embedders, Conversational Retrieval QA chain).
+**Решение:** Flowise = LLM runtime + RAG-orchestration. NestJS = ingestion + business logic. Управление Flowise — через `apps/mcp-flowise/` (66 typed tools, см. ADR-008).
 
-**Анализ (2026-04-22):** Flowise покрывает ~50% нашего RAG, но в нём **нет** трёх критичных для slovo вещей:
+**История пересмотров:**
 
-1. **Whisper / транскрибации** — наш ключевой ingestion use case, в Flowise-нодах не описан
-2. **Claude как first-class LLM** с prompt caching — в тьюториалах только XML Agent, OpenAI-centric
-3. **Long-running async workers** — для видео > 5 мин нужен RMQ-worker, Flowise это не даёт
+- **2026-04-22 (первая версия):** "Flowise = prompt playground, NestJS = runtime". Аргумент — отсутствие Claude/Whisper/long-running в Flowise, плюс ограничения `overrideConfig.promptValues` в 2.x.
+- **2026-04-22 вечер (пересмотр):** Flowise 3.x умеет ChatAnthropic + Claude credentials + AgentFlow V2 + Custom MCP. Перешли на "Flowise = LLM runtime, NestJS = бизнес-слой". Транскрибация остаётся в `apps/worker` через Groq Whisper (Flowise не умеет аудио из коробки).
+- **2026-04-30 (Phase 0.5 закрыта):** добавлен `apps/mcp-flowise/` с 66 tools — программное управление Flowise через MCP вместо UI. `libs/flowise-flowdata/` — типизированный builder для chatflow programmatic creation. ADR-008 фиксирует выбор и план extract в Pelmenya/* + npm/Smithery publish.
 
-Плюс runtime-специфика: `overrideConfig.promptValues` не работает с LLM Chain в 2.x, нельзя вызвать отдельную ноду без full chatflow, версионирование chatflow не документировано.
+**Что используем для knowledge-base из MCP-арсенала:**
 
-**Решение: Flowise = prompt playground, NestJS = runtime.**
+| Use case | Tool / lib |
+|---|---|
+| Создание Document Store под новый knowledge-set | `flowise_docstore_create` + `flowise_docstore_full_setup` (атомарный 5-step) |
+| Refresh embeddings (новые источники добавлены через `apps/api/sources/upload`) | `flowise_docstore_refresh` |
+| Q&A endpoint slovo `apps/api/notes-rag/query` | `flowise_docstore_query` (без LLM, ~300ms) ИЛИ `flowise_prediction_run` (через QA Chain если нужен генерируемый ответ) |
+| Программно создать новый специализированный chatflow (например, Q&A с другим Splitter под медицинские источники) | `libs/flowise-flowdata/` builder + `flowise_chatflow_create` |
+| Vision + transcription pipelines (audio → Whisper → text → embed) | `apps/worker` нативно делает Whisper → текст в `s3-source`, далее `flowise_docstore_upsert` или native S3 File Loader |
 
-- **Flowise используется** для быстрых экспериментов с промптами и retrieval-стратегиями: собрать chatflow, прогнать на реальных данных, поймать поведение, отладить промпт Q&A.
-- **Итоговые промпты** экспортируются в TypeScript-файлы `libs/knowledge/prompts/*.ts` (или JSON + template engine) — git-версионирование, typed, тестируемость.
-- **Runtime knowledge-base** — чистый NestJS: ingestion/embedding/retrieval через наш код с `$queryRaw` к pgvector, LLM через `libs/llm/` (Claude + prompt caching), worker через RMQ.
-- **Не делаем** runtime-прокси к Flowise. Это ADR-004 нарушение (Claude первичен, а Flowise его недоинтегрирует) и ограничение на git/типы/тесты.
+**Что остаётся в slovo runtime (не Flowise):**
 
-Исключение: **быстрый showcase-чат** для демо разработчиком самому себе — можно временно собрать chatflow в Flowise и подёргать из Postman. Это **не** замена production-API, это пример использования данных из knowledge-base.
+- **Ingestion адаптеры** (`apps/worker`) — Groq Whisper для аудио/видео, Puppeteer для web, PDF parsing — всё что Flowise не умеет нативно или умеет неудобно.
+- **Auth, JWT, multi-tenant, billing** — slovo бизнес-слой, к Flowise не имеет отношения.
+- **Pre-processing** — нормализация текста, удаление PII перед embedding'ом, EXIF strip — на стороне slovo до отправки в Flowise.
+
+**Что НЕ делаем:**
+
+- ❌ Не дублируем embedding/retrieval на slovo-стороне через `$queryRaw` к pgvector — `flowise_docstore_query` делает это лучше и быстрее (vector store config + indexing управляется Flowise).
+- ❌ Не используем `libs/llm/` напрямую для Q&A когда есть Conversational Retrieval QA Chain в Flowise.
+- ❌ Не пишем curl-обёртки к Flowise REST в slovo коде — все вызовы через `apps/mcp-flowise/` либо напрямую (в slovo TS-коде через `import` если понадобится) или через MCP transport (Claude → MCP → Flowise).
 
 ### pgvector индексы
 

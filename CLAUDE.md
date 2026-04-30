@@ -153,6 +153,8 @@ prisma/schema/
 4. **ADR-004** — Claude как primary LLM (абстракция под OpenAI/Ollama)
 5. **ADR-005** — Prisma + raw queries для pgvector
 6. **ADR-006** — Knowledge Base как первая фича и core capability (🟡 в обсуждении)
+7. **ADR-007** — Catalog ingest contract (file-based pull через MinIO bucket, амендмент 2026-04-30 про bucket→Flowise через slovo orchestrate)
+8. **ADR-008** — MCP-сервер для Flowise (self-built в monorepo, амендмент 2026-04-30 про scope 54→66 tools и план extract в Pelmenya/mcp-flowise + Pelmenya/flowise-flowdata)
 
 При любом пересмотре — создать новый ADR, старый пометить `Устарело` или `Заменено на ADR-XXX`.
 
@@ -162,13 +164,65 @@ prisma/schema/
 
 ### Flowise vs NestJS — что делаем где
 
-Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Роль: **prompt playground** (эксперименты с промптами и retrieval-стратегиями), **не runtime**. Финальные промпты экспортируются в `libs/knowledge/prompts/*.ts` или JSON + template, исполняются через NestJS + `libs/llm/` с Claude и prompt caching.
+Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Роль (после пересмотра 2026-04-22 + Phase 0 эксперимента): **LLM runtime + RAG-orchestration слой**. Управление и orchestration — через REST API, не UI вручную (см. ниже).
 
 Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал разработчика — `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` (5 уровней).
 
-**Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно нюансы механики chain-нод и API override. При непонятном поведении — **сразу лезь в исходник** на `https://github.com/FlowiseAI/Flowise`, конкретный файл ноды в `packages/components/nodes/chains/<ChainName>/<ChainName>.ts` или `packages/components/nodes/agents/<AgentName>/`. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут. Параллельно полезно смотреть GitHub Issues (maintainer HenryHengZJ часто даёт конкретные ответы), но приоритет — код.
+**Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно нюансы механики chain-нод и API override. При непонятном поведении — **сразу лезь в исходник** через `docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"` или `node_modules/flowise-components/nodes/<category>/<name>/`. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут.
 
-**Пример из реального теста (2026-04-23):** `overrideConfig.promptValues` в LLM Chain работает, но с нюансом — в `LLMChain.ts` видно `options = { ...promptValues, [lastValue]: input }`. Это значит **последняя переменная шаблона резервируется под `question` из API**, а все остальные переменные идут через `promptValues`. Без чтения кода можно целый час думать что "не работает", а на самом деле — partial vars в UI перекрывают API, плюс UTF-8 в curl Git Bash ломается без `--data-binary @file`. Три слагаемых проблемы, и только исходник даёт полную картину механики.
+### MCP-арсенал для работы с Flowise (главное правило)
+
+**Используй `mcp__flowise-slovo__*` tools, не curl/bash.** Любой ручной curl-ритуал к Flowise REST (`--noproxy '*' -X POST -H "Authorization: Bearer..."`) — **антипаттерн**. Все операции есть готовыми типизированными tools.
+
+**Чего нет в арсенале — дописываем в `apps/mcp-flowise/`, не обходим через curl.** Это правило-рефлекс:
+
+1. Не нашёл нужный tool среди 66 — **проверь** через `flowise_introspect` / разведку Flowise REST в исходнике (`docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"`).
+2. Endpoint реален → **добавь tool**: новый файл `apps/mcp-flowise/src/tools/<resource>.ts` (или расширь существующий) + endpoints.ts + регистрация в `tools/index.ts` + spec-файл с happy + error case через `setupFetchMock` helper. ~50 LOC + ~30 LOC теста.
+3. Smoke через `tools/list` (должен вернуть N+1 tools), commit, push.
+4. После рестарта Claude Code новый tool готов к использованию.
+
+Это ровно тот же путь что прошли с уже существующими 66 — никаких исключений «один раз через curl». Стоимость добавления tool'а кратно меньше чем maintaince curl-ритуалов в lab journal'ах и dev-сессиях.
+
+**`apps/mcp-flowise/`** (`@slovo/mcp-flowise`) — **66 tools**, полное зеркало Flowise REST API:
+
+| Категория | Что есть |
+|---|---|
+| **Document Stores (22)** | CRUD + chunks + loader (save/process/preview/delete) + vectorstore (query/save/insert/update/delete) + components discovery (loaders/embeddings/vectorstore/recordmanager) + generate_tool_desc |
+| **Chatflows (6)** | list/get/get_by_apikey/create/update/delete (с опц. `includeFlowData`) |
+| **Nodes discovery (2)** | list/get — детальная schema 301 ноды Flowise (для chatflow_create) |
+| **Predictions (1)** | run с uploads (base64 image/audio для vision-флоу), history, overrideConfig, form (AgentFlow V2) |
+| **Vector (1)** | upsert для legacy chatflows со встроенным vector store узлом |
+| **Credentials/Variables/Custom Tools/Assistants (5/4/5/5)** | Full CRUD каждого |
+| **Composite (3)** | `chatflow_clone` (get→modify→create), `docstore_clone` (config copy для A/B), `docstore_full_setup` (атомарный 5-step onboarding) |
+| **DX helpers (3)** | `introspect` (overview всего instance в одном вызове), `smoke` (per-step latency), `docstore_search_by_name` (find by name) |
+| **Misc (4)** | ping, attachments_create, chatmessage (list/abort/delete_all), upsert_history (list/patch_delete) |
+
+**`libs/flowise-flowdata/`** (`@slovo/flowise-flowdata`) — типизированный builder для chatflow flowData JSON. Используется когда нужно создать Chatflow программно через `flowise_chatflow_create`:
+
+```ts
+import { buildChatflow, serializeFlowData, chatAnthropic, openAIEmbeddings,
+         postgresVectorStore, bufferMemory, conversationalRetrievalQAChain
+       } from '@slovo/flowise-flowdata';
+
+const flowData = serializeFlowData(buildChatflow({
+    nodes: [
+        chatAnthropic({ id: 'llm', credential: 'cred-id', inputs: { modelName: 'claude-sonnet-4-6' }}),
+        // ... другие ноды
+    ],
+    edges: [
+        { source: 'emb', target: 'pg', targetAnchor: 'embeddings' },
+        // ... связи через typed handles
+    ],
+}));
+// flowData готов для flowise_chatflow_create
+```
+
+10 typed factories для частых нод (chatAnthropic, openAIEmbeddings, postgresVectorStore, conversationalRetrievalQAChain, bufferMemory, jsonFile, s3File, и др.) + `fromIntrospection(spec, inputs)` fallback для всех 200+ нод через MCP `nodes_get` runtime introspection.
+
+**Документация:**
+- ADR-008 — обоснование self-built MCP, сравнение с community-вариантами, план extract в Pelmenya/* + npm/Smithery publish.
+- `apps/mcp-flowise/README.md` — полные примеры по каждой группе tools.
+- Lab journal: `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md` — reproducible recipe всех ритуалов которые этот MCP заменяет.
 
 ---
 
@@ -206,13 +260,14 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 
 ## Ревью после каждого PR — правило рефлекса
 
-После каждого успешного `git push` Claude **без напоминания** спавнит 5 ревью-агентов параллельно (одним сообщением, `Agent` tool с `run_in_background: true`) на diff `origin/main..HEAD` (или диапазон последних коммитов этого PR):
+После каждого успешного `git push` Claude **без напоминания** спавнит ревью-агентов параллельно (одним сообщением, `Agent` tool с `run_in_background: true`) на diff `origin/main..HEAD` (или диапазон последних коммитов этого PR):
 
 1. **architect-reviewer** — ADR compliance, границы модулей, тех-выборы
 2. **nestjs-code-reviewer** — TS/NestJS стиль, DTO, валидация, тесты
 3. **prisma-pgvector-reviewer** — Prisma schema, миграции, индексы (**опускать если Prisma/БД не затронуты**)
 4. **llm-integration-reviewer** — Anthropic SDK, prompts, caching (**опускать если libs/llm не затронут**)
 5. **security-auditor** — секреты, PII, injection, IAM
+6. **testing-specialist** — для пишущих задач: написать недостающие spec'и, добить покрытие модуля. На review — флагает критичные пробелы покрытия. Запускать когда есть новый код без тестов или явный запрос «напиши тесты на X».
 
 По мере завершения агенты отдают находки — Claude сводит в сводный отчёт (🔴 / 🟡 / 🟢 / ✅ / следующие шаги) и предлагает порядок исправлений.
 

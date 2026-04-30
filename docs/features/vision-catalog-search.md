@@ -668,75 +668,78 @@ type CatalogSearchResponse = {
 
 ---
 
-## Фазы реализации
+## Фазы реализации (актуализировано 2026-04-30)
 
-| PR | Скоуп | Новая технология |
+> План сильно упростился относительно первой версии благодаря двум сделанным заранее вещам:
+> 1. **Phase 0 эксперимент** (`docs/experiments/vision-catalog/2026-04-29-...`) — закрыл pivot на Document Store + slovo-orchestrate (вариант C из ADR-007).
+> 2. **`apps/mcp-flowise/` (66 tools)** + **`libs/flowise-flowdata/`** — закрыли весь PR5 (тонкий клиент к Flowise) и убрали ручной curl-ритуал. См. ADR-008.
+
+| Phase | Скоуп | Состояние |
 |---|---|---|
-| **Phase 0 (✅ частично)** | В Flowise UI: (a) `vision-catalog-describer-v1` готов — валидирован на 6 тестах (PR1-3 сегодня); (b) **следующий шаг** — создать `catalog-embed-search` chatflow с OpenAI Embeddings + Postgres Vector Store + Retriever; (c) upsert + search на 3-5 тестовых товарах. | Flowise Postgres Vector Store, OpenAI Embeddings нода |
-| **PR5** | `libs/llm/` — **тонкий HTTP-клиент `FlowiseClient`** к локальному Flowise API. Методы: `predictVision(imageBase64)` (через Chatflow `/api/v1/prediction/<id>`), `upsertDocumentStore(items)` (через `/api/v1/document-store/upsert/<id>`), `queryDocumentStore(query, topK)` (через `/api/v1/document-store/vectorstore/query` — БЕЗ LLM, см. ADR-007 + `flowise-vs-nestjs.md` секция E). Внутри — httpClient с retry + logging. NO Anthropic SDK, NO OpenAI SDK в slovo! | Thin HTTP client pattern |
-| **PR6** | `CatalogItem` + `VisionCache` Prisma-модели (type discriminator product/service/cartridge/bundle, vision_cache keyed по image sha256) + миграции. **`CatalogSyncService` живёт в `apps/worker`, не в `apps/api`** — long-running task (≥minutes per snapshot) не должен жить в request-path; per ADR-001 modular monolith границы + ADR-003 RMQ для async-задач. Триггер: RMQ message `catalog.sync` каждые 4ч (через `apps/worker` scheduler — `@nestjs/schedule` или RMQ delayed-message). Логика: `s3.HeadObject(latest.json)` → metadata.contenthash совпал? skip. Иначе `GetObject` (с `If-Match` etag — TOCTOU), forEach item — сравнение contentHash, soft-delete через last_seen_at, vision-pipeline (`s3.GetObject(imageKey)` → base64 → `flowiseClient.predictVision()` → INSERT vision_cache → aggregate → `flowiseClient.upsertCatalog()`). При re-embed item'а — `flowiseClient.deleteVectorsByMetadata({ catalogItemId })` для cleanup stale chunks. | S3 SDK (уже есть `libs/storage`), RMQ scheduler в worker, vision_cache |
-| **PR7** | `/catalog/search/text` endpoint. slovo → `flowiseClient.queryDocumentStore(query, topK=20)` → Flowise делает только embedding query + pgvector cosine (БЕЗ LLM-вызова) → slovo JOIN с Prisma по `metadata.externalId` → hybrid re-rank (rang + category) → enrichment (related services/cartridges) → response. Cost: ~$0.0000004/query (только query embedding), 100% controllable ranking в slovo. | Thin orchestration |
-| **PR8** | `/catalog/search/image` — multipart image → `flowiseClient.predictVision(image)` (через Chatflow `vision-catalog-describer-v1` — нужен Chain ending) → description → `flowiseClient.queryDocumentStore(description)` → тот же flow что PR7. Handling `is_relevant=false` → 400 с vision_output. Swagger + e2e с реальными фото. | End-to-end composition |
-| **Вне slovo (✅ готово 2026-04-27)** | Feeder side — в `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/`: `CatalogSyncService.exportSnapshotToS3()` собирает 155 items, скачивает binary картинок из MoySklad в MinIO с sha256 в имени файла (idempotent через HeadObject), вычисляет per-item contentHash, кладёт `latest.json` + history-копию. Триггерится из `MoySkladService.resetCacheAndInitializeSettings()` — best-effort, fail-fast при недоступности S3 не валит cache-reset. | Commits 148194f, da99f92 в CRM |
+| **Phase 0** — Flowise prototyping | `vision-catalog-describer-v1` chatflow (image → JSON) валидирован на 6 тестах. Document Store `catalog-aquaphor` создан + 912 chunks из 155 items загружены через REST API (lab journal день 2). Smoke-tested image-search end-to-end. | ✅ закрыта |
+| **Phase 0.5** — MCP-арсенал + flowdata | `apps/mcp-flowise/` 66 tools (commit `e0cd3e6` финал) + `libs/flowise-flowdata/` typed builder для chatflow generation. ADR-008 (+amendment про extract-план). 345 unit-тестов. | ✅ закрыта |
+| **Вне slovo** — CRM feeder | `crm-aqua-kinetics-back` экспортит 155 items в `slovo-datasets/catalogs/aquaphor/latest.json` + binary в `images/`. Per-item contentHash + per-snapshot `X-Amz-Meta-Contenthash` для двухуровневого dedup. См. ADR-007 + commits 148194f / da99f92 / 66cec69 в CRM-репо. | ✅ готово 2026-04-27 |
+| **PR6** — `apps/worker/catalog-refresh` | RMQ-consumer + cron `@nestjs/schedule` (или RMQ delayed-message) запускает refresh каждые 4ч. Логика — **простая**: `flowise_docstore_search_by_name({ name: 'catalog-aquaphor' })` → `flowise_docstore_refresh({ storeId })`. Никакой ручной HEAD/GET MinIO в slovo — Flowise S3 File Loader сам тянет `latest.json` из bucket'а (env уже настроен в `docker-compose.infra.yml`, см. lab journal 12:00-12:30). slovo только триггерит refresh. **~80 LOC + spec'и.** | 🟡 следующий |
+| **PR7** — `/catalog/search/text` | `apps/api/modules/catalog/search/text.controller.ts` + service. Один вызов `flowise_docstore_query({ storeId, query, topK })`. Затем enrichment: presigned URLs из `imageUrls[]` через `libs/storage` + parsing metadata (когда CRM feeder перейдёт на `application/json` без charset — мы его починим, см. lab journal). **~120 LOC + spec'и + e2e.** | 🟡 после PR6 |
+| **PR8** — `/catalog/search/image` | Multipart upload → base64 → `flowise_prediction_run({ chatflowId: 'vision-describer-id', uploads: [base64] })` → достаём `description_ru` из ответа → `flowise_docstore_query({ query: description_ru })` → enrichment как в PR7. Handling `is_relevant=false` → 400 с vision_output как hint. Swagger + e2e с C125 фото. **~200 LOC + spec'и + e2e.** | 🟡 после PR7 |
+| **PR9 (опц.)** — Prisma `CatalogItem` для CRM-side фич | Если slovo нужно знать про items вне search (например, presigned URLs кэшировать или tracking last_seen_at для soft-delete) — добавляем Prisma модель. **Пока (Level 1 архитектура из lab journal 12:30) — НЕ делаем**. Document Store metadata + Prisma не нужны: vector store сам хранит чанки + metadata, slovo тонко проксирует. | ⏳ при появлении потребности |
+
+### Что радикально упростилось vs первой версии плана
+
+| Было в плане | Стало (после Phase 0.5) |
+|---|---|
+| PR5: `libs/llm/FlowiseClient` с retry/logging — handcraft HTTP-клиент | `apps/mcp-flowise/` 66 typed tools + `libs/flowise-flowdata/` builder. Используется через **MCP** — Claude дёргает напрямую, slovo runtime через `import { ... }` если понадобится |
+| PR6: `CatalogItem` + `VisionCache` Prisma-модели + миграции | Не нужно. Document Store держит chunks с metadata, vision-кэш живёт в Flowise (если понадобится — добавим Prisma layer в PR9) |
+| PR6: `CatalogSyncService` в `apps/worker` с S3 HeadObject + GetObject + per-item contentHash + soft-delete | Один вызов `flowise_docstore_refresh`. Flowise S3 File Loader сам делает HEAD/GET через нативный AWS SDK. ContentHash dedup отложен до Level 2 (когда 1000+ items) |
+| PR8: handling vision-describer JSON → description_ru → query | `flowise_prediction_run` с uploads + JSON.parse `data.text` + `flowise_docstore_query` — по 2 строки кода каждое |
 
 ---
 
-## Phase 0 — что делаем сейчас в Flowise
+## Phase 0 — закрыта (2026-04-29 — 2026-04-30)
 
-**Цель:** подобрать промпт для Vision который даёт стабильный structured JSON для поиска по каталогу.
+**Что было:** валидация промптов Vision + RAG-pipeline на каталоге Аквафор.
 
-### Chatflow "Vision Describer" в Flowise
+**Что сделано:**
 
-Ноды:
-- **ChatAnthropic** — `claude-sonnet-4-6`, поддержка image input через messages
-- **Prompt Template** — инструкция "опиши в JSON"
-- **Structured Output Parser** (или свой JSON prompt)
+1. **`vision-catalog-describer-v1`** chatflow готов (Phase 0 в первой версии плана). Промпт даёт стабильный structured JSON `{ is_relevant, category, brand, model_hint, features, condition, description_ru, confidence }`. Валидирован на 6 фото — `description_ru` для C125 точно match'ит каталог-item через retrieval. Известные ограничения: `category: "прочее"` для смесителей (closed enum промпта v1 не покрывает все категории — ограничение промпта, не движка).
 
-### Какой структуры JSON хотим
+2. **Document Store `catalog-aquaphor`** наполнен через REST API (а не UI): S3 File Loader тянет `latest.json` (155 items) из `slovo-datasets/catalogs/aquaphor/`, RecursiveCharacterTextSplitter (chunk 1000, overlap 200) → 912 chunks → OpenAI Embeddings (`text-embedding-3-small`, 1536-dim) → Postgres VectorStore (`catalog_chunks` table). storeId `aec6b741-8610-4f98-9f5c-bc829dc41a96`.
+
+3. **Smoke retrieval** через MCP `flowise_docstore_query`: query "смесители для кухни" → top-3 матчат C125/82138C/C126/82320-1С. timeTaken 525ms.
+
+4. **Архитектурные открытия** (зафиксированы в memory + ADR):
+   - Flowise S3 File Loader для `application/json` идёт в `isTextBased` ветку (не запускает JSONLoader). Решение: переход на slovo orchestrate с `flowise_docstore_upsert` или patch (см. ADR-007 amendment).
+   - AWS SDK v3 не читает `AWS_S3_FORCE_PATH_STYLE` — нужны `MINIO_DOMAIN` + network alias `<bucket>.slovo-minio` + `NO_PROXY` + content-type без charset (см. memory `project_flowise_minio_s3_endpoint`).
+   - Все 66 эндпоинтов Flowise покрыты через `apps/mcp-flowise/` — UI можно не использовать (memory `feedback_flowise_full_api_coverage`).
+
+**Reproducible recipe** — `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md` (2 дня lab journal). Любой шаг можно повторить из `flowise_*` MCP-tools без curl.
+
+---
+
+## Vision-промпт — что знаем после 6 тестовых фото
+
+JSON structure prompt v1 (используется в `vision-catalog-describer-v1` chatflow):
 
 ```json
 {
-  "category": "обратный осмос",
-  "model_hint": "Aquaphor DWM-101S",
-  "brand": "Аквафор",
-  "features": ["5-ступенчатая очистка", "обратный осмос", "минерализатор"],
-  "condition": "внешне исправен",
-  "description_ru": "Бытовой фильтр обратного осмоса Аквафор DWM-101S. Пять ступеней очистки с минерализатором. Под мойкой, накопительный бак."
+  "is_relevant": true,
+  "category": "прочее",
+  "brand": "неизвестно",
+  "model_hint": null,
+  "features": ["..."],
+  "condition": "новый в упаковке",
+  "description_ru": "Кран смеситель для питьевой воды с двумя рычагами и высоким изогнутым изливом, хромированный, используется в системах водоочистки обратного осмоса.",
+  "confidence": "high"
 }
 ```
 
-`description_ru` — это то, что пойдёт в embedding. Остальные поля — для фильтрации / отображения.
+`description_ru` — то что идёт в `flowise_docstore_query` как embedding query. На smoke-тесте C125 — top-1 матч. Остальные поля — для фильтрации/отображения в UI.
 
-### Что проверяем в Flowise (чек-лист)
+**Известные ограничения промпта v1 (для PR8 + future):**
+- `category` — closed enum который не покрывает смесители → пишет "прочее". Lab journal: open question #3.
+- `brand`/`model_hint` `null` на изолированных фото без логотипа/упаковки. Ожидаемо.
 
-- [ ] Claude Sonnet видит загруженное изображение
-- [ ] Возвращает **валидный JSON** без markdown-обёрток (` ```json `)
-- [ ] Русский язык в полях выдерживается
-- [ ] На мутных/плохих фото отвечает `{ "category": null, "confidence": "low" }` а не галлюцинирует
-- [ ] На не-фильтре (пёс, котёнок) честно говорит `null`
-- [ ] Стабильность — одну и ту же картинку прогнать 3 раза, сравнить output
-
-### Тестовый набор фото
-
-Собрать 10-15 фото:
-- Исправные фильтры Аквафор (разные модели)
-- Сломанные узлы (картридж, мембрана, трубка)
-- Коробки/упаковка
-- Бланк анализа воды (edge case — AI должен сказать "это не оборудование")
-- Случайные фото (кот, чашка кофе) — AI должен вернуть null
-
-Результаты сложить в `docs/experiments/vision-catalog-${date}/` с JSON outputs — чтобы было что сравнивать между итерациями промптов.
-
----
-
-## Что НЕ делаем в Phase 0
-
-- ❌ Не пишем NestJS endpoint (прототипируем промпт в UI, не коде)
-- ❌ Не импортируем каталог (прототипируем на 3-5 известных моделях вручную вписанных в промпт)
-- ❌ Не считаем embeddings (только формируем текст который пойдёт в embedding позже)
-- ❌ Не думаем про prod-деплой / cost optimization
-
-Финал Phase 0 — **один JSON-файл с промптом который работает** + репорт "на 15 фото работает N/15 корректно". Этот промпт идёт в PR5.
+**План улучшения** — `vision-catalog-describer-v2` через `flowise_chatflow_clone({ sourceChatflowId: v1, name: 'v2', transformFlowData: ... })` + расширенный промпт. Использовать `libs/flowise-flowdata/` builder для модификации `flowData`. Не блокирует PR6/7/8 — текущий v1 рабочий.
 
 ---
 
