@@ -417,6 +417,40 @@ describe('CatalogRefreshService', () => {
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('removeStaleLoader failed'));
             warnSpy.mockRestore();
         });
+
+        it('пустой docId в mapping → defensive continue (не дёргает Flowise DELETE)', async () => {
+            // Recovery scenario: если предыдущий refresh оставил corrupt
+            // mapping с пустой строкой как value (regression-safety guard
+            // `if (!docId) continue` в service:407). DELETE с пустым docId
+            // дал бы Flowise 404, а HDEL всё равно очистит запись.
+            redis.set.mockResolvedValueOnce('OK');
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+                'mu-999': '', // ← corrupt mapping entry
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-002' });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                // mu-999 НЕ дошёл до Flowise DELETE (continue), counter=0
+                expect(result.itemsRemoved).toBe(0);
+            }
+            // ровно 3 Flowise calls: list + 2 upsert. DELETE для mu-999 пропущен.
+            expect(flowise.request).toHaveBeenCalledTimes(3);
+            // HDEL всё же зачищает corrupt entry — не висеть же ему вечно
+            expect(redis.hdel).toHaveBeenCalledWith(CATALOG_LOADERS_REDIS_KEY, 'mu-999');
+        });
     });
 
     describe('lock-held', () => {
@@ -676,6 +710,49 @@ describe('CatalogRefreshService', () => {
                 expect(result.itemsFailed).toBe(2);
             }
         });
+
+        it('Flowise upsert response без docId + нет stored → outcome=failed, не попадает в HSET', async () => {
+            // Edge case (security follow-up): защита от Flowise regression /
+            // compromised, где сервер не вернёт docId. Без stored docId
+            // мы не можем зафиксировать item в mapping, RecordManager
+            // skip-if-unchanged не сработает на следующем cron'е.
+            setupHappyPathMocks(flowise, redis, storage);
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0 }) // ← без docId
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-002' });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsUpserted).toBe(1);
+                expect(result.itemsFailed).toBe(1);
+            }
+            // mu-001 (без docId) не попал в HSET, mu-002 — попал
+            expect(redis.hset).toHaveBeenCalledWith(
+                CATALOG_LOADERS_REDIS_KEY,
+                { 'mu-002': 'doc-mu-002' },
+            );
+        });
+
+        it('Flowise вернул докид с подозрительным symbol → zod schema reject', async () => {
+            // Defence-in-depth: docId regex `^[a-zA-Z0-9_-]+$`. Точка/слэш/
+            // newline — не валидно (key-injection vector при будущем
+            // переходе на per-store key типа slovo:catalog:loaders:${docId}).
+            setupHappyPathMocks(flowise, redis, storage);
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, docId: '../other-tenant' }) // ← path traversal
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                // mu-001 zod-rejected → failed, mu-002 ОК
+                expect(result.itemsFailed).toBe(1);
+                expect(result.itemsUpserted).toBe(1);
+            }
+        });
     });
 
     describe('persist mapping — partial state updates', () => {
@@ -827,6 +904,10 @@ describe('CatalogRefreshService', () => {
 
             const result = await service.refresh();
             expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsTotal).toBe(2);
+                expect(result.itemsUpserted).toBe(2);
+            }
         });
     });
 

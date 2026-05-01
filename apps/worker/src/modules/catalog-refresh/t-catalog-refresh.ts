@@ -44,7 +44,7 @@ export type TCatalogRefreshFailure = {
     storeName: string;
     elapsedMs: number;
     error: string;
-    // Etap на котором упало — для ловушек observability.
+    // Stage на котором упало — для ловушек observability.
     stage:
         | 'fetch-config'
         | 'load-loader-mapping'

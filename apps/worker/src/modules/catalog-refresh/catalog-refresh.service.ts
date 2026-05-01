@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
+import { z } from 'zod';
 import { sanitizeError } from '@slovo/common';
 import {
     ENDPOINTS,
@@ -72,14 +73,33 @@ type TUpsertOutcome =
     | { kind: 'skipped'; externalId: string; docId: string }
     | { kind: 'failed'; externalId: string; error: string };
 
-type TFlowiseUpsertResponse = {
-    numAdded?: number;
-    numUpdated?: number;
-    numSkipped?: number;
-    numDeleted?: number;
-    docId?: string;
-    [key: string]: unknown;
-};
+// =============================================================================
+// Zod-schema для Flowise /document-store/upsert response.
+//
+// Defence-in-depth: response уходит в Redis HSET (`docId` как value HASH'а).
+// Сейчас exploit ограничен self-DoS (искажение собственного mapping), но при
+// будущем переходе на per-store key типа `slovo:catalog:loaders:${docId}`
+// невалидированный `docId` станет key-injection vector.
+//
+// docId Flowise генерирует через uuid v4 — regex закрывает оба формата
+// (с/без дефисов) и ограничивает длину 64 chars, чтобы не пустить мусор в
+// Redis. Числовые counters — nonnegative int, иначе либо сломан Flowise,
+// либо подделка.
+// =============================================================================
+const flowiseUpsertResponseSchema = z.object({
+    numAdded: z.number().int().nonnegative().optional(),
+    numUpdated: z.number().int().nonnegative().optional(),
+    numSkipped: z.number().int().nonnegative().optional(),
+    numDeleted: z.number().int().nonnegative().optional(),
+    docId: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-zA-Z0-9_-]+$/)
+        .optional(),
+});
+
+type TFlowiseUpsertResponse = z.infer<typeof flowiseUpsertResponseSchema>;
 
 @Injectable()
 export class CatalogRefreshService implements OnModuleDestroy {
@@ -159,7 +179,7 @@ export class CatalogRefreshService implements OnModuleDestroy {
     ): Promise<TCatalogRefreshResult> {
         // Step 1 — find store + extract configs (vectorStore + embedding +
         // recordManager). RecordManager **обязателен** для PR9.5 idempotency
-        // — если его нет, refresh fails fast (ratheр чем silent re-embed all).
+        // — если его нет, refresh fails fast (rather чем silent re-embed all).
         const findResult = await this.findStoreByName(storeName);
         if (!findResult.found) {
             return {
@@ -381,10 +401,18 @@ export class CatalogRefreshService implements OnModuleDestroy {
         outcomes: TUpsertOutcome[],
         removedExternalIds: string[],
     ): Promise<void> {
-        // Updates: новые docId для items без stored mapping
+        // Updates: новые docId для items без stored mapping. Двойная защита:
+        // (1) `outcome.docId` строго проверен в `upsertItem` (zod schema +
+        //     refuse если undefined) — пустой не попадёт сюда.
+        // (2) Здесь дополнительная проверка `!== ''` — если кто-то в будущем
+        //     ослабит `upsertItem`, мусор не пройдёт в Redis.
         const updates: Record<string, string> = {};
         for (const outcome of outcomes) {
-            if (outcome.kind !== 'failed' && !existingMapping[outcome.externalId]) {
+            if (
+                outcome.kind !== 'failed' &&
+                outcome.docId !== '' &&
+                !existingMapping[outcome.externalId]
+            ) {
                 updates[outcome.externalId] = outcome.docId;
             }
         }
@@ -424,7 +452,20 @@ export class CatalogRefreshService implements OnModuleDestroy {
         const chunks: Buffer[] = [];
         let totalBytes = 0;
         for await (const chunk of stream.body) {
-            const buf = typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
+            // Node.js Readable iteration даёт `string | Buffer | Uint8Array`
+            // в зависимости от encoding. Явный type-guard для strict mode.
+            let buf: Buffer;
+            if (typeof chunk === 'string') {
+                buf = Buffer.from(chunk, 'utf-8');
+            } else if (Buffer.isBuffer(chunk)) {
+                buf = chunk;
+            } else if (chunk instanceof Uint8Array) {
+                buf = Buffer.from(chunk);
+            } else {
+                throw new Error(
+                    `Unexpected stream chunk type: ${typeof chunk}`,
+                );
+            }
             totalBytes += buf.length;
             if (totalBytes > CATALOG_MAX_PAYLOAD_BYTES) {
                 throw new Error(
@@ -442,6 +483,10 @@ export class CatalogRefreshService implements OnModuleDestroy {
         items: TBulkIngestItem[],
         loaderMapping: Record<string, string>,
     ): Promise<TUpsertOutcome[]> {
+        // CONCURRENCY=1 — Flowise saveProcessingLoader read-modify-write race
+        // (см. constants.ts:73). Promise.all на batch сохранён для будущего
+        // case'а если Flowise залатают upstream race; сейчас ровно эквивалентен
+        // sequential for/await, но не требует переписывания при увеличении.
         const outcomes: TUpsertOutcome[] = [];
         for (let i = 0; i < items.length; i += CATALOG_UPSERT_CONCURRENCY) {
             const batch = items.slice(i, i + CATALOG_UPSERT_CONCURRENCY);
@@ -490,12 +535,27 @@ export class CatalogRefreshService implements OnModuleDestroy {
                 body.docId = existingDocId;
             }
 
-            const response = await this.flowise.request<TFlowiseUpsertResponse>(
+            const rawResponse = await this.flowise.request<unknown>(
                 ENDPOINTS.documentStoreUpsert(storeId),
                 { method: 'POST', body },
             );
+            const response: TFlowiseUpsertResponse =
+                flowiseUpsertResponseSchema.parse(rawResponse);
 
-            const docId = response.docId ?? existingDocId ?? '';
+            const docId = response.docId ?? existingDocId;
+            // Edge case: Flowise не вернул docId И в mapping не было stored.
+            // Без docId outcome нельзя считать `upserted` — иначе попадёт в
+            // HSET с пустым value, на следующем refresh defensive `if (!docId)
+            // continue` в removeStaleLoaders спасёт от crash, но мы потеряем
+            // RecordManager skip для этого item навсегда. Лучше явный fail
+            // → next cron retry.
+            if (docId === undefined) {
+                return {
+                    kind: 'failed',
+                    externalId: item.externalId,
+                    error: 'Flowise upsert response без docId и нет stored docId — невозможно зафиксировать в mapping',
+                };
+            }
             const wasSkipped =
                 (response.numSkipped ?? 0) > 0 &&
                 (response.numAdded ?? 0) === 0 &&

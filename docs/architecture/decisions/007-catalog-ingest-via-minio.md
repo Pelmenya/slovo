@@ -193,12 +193,29 @@ ADR описывает контракт **feeder → bucket** (это решен
 
 **Reproducible recipe** — все используемые endpoint'ы и payload'ы зафиксированы в lab journal в секциях «11:50 — loader/save → 200 OK», «12:35 — vectorstore/save + vectorstore/insert», «12:45 — query API smoke» (день 2).
 
+## Дополнение от 2026-05-01 — RecordManager + Redis loader-mapping (PR9.5)
+
+Open question #4 (форма upsert endpoint'а) закрыт. Реализация в `apps/worker/catalog-refresh` (commit `4df3de5`) использует **`POST /api/v1/document-store/upsert/<id>`** — single-call form с inline loader/splitter/vectorStore/embedding/recordManager в body. Это надёжнее многошагового `loader/save → loader/process → vectorstore/insert`: атомарно с точки зрения slovo (один request → один response с `numAdded/numSkipped/docId`), нет промежуточного состояния при partial failure.
+
+**Дополнительные требования к Document Store** (фиксируются как часть ingest-контракта):
+
+1. **RecordManager обязателен** (`postgresRecordManager` с `cleanup=incremental` + `sourceIdKey=externalId`). Без него slovo `apps/worker` отказывается делать refresh (`failure stage=fetch-config`) — silent re-embed-all всех 155+ items на каждый cron tick стоил бы ~57 ₽/мес vs ~0.6 ₽/мес со skip. Fail-fast предотвращает регрессию.
+2. **Redis HASH `slovo:catalog:loaders` — часть state'а ingest pipeline.** Slovo хранит externalId → docId mapping для каждого upsert. На повторном refresh передаём stored docId → Flowise inject'ит `metadata.docId` стабильно → RecordManager hash совпадает → `numSkipped=1`, embedding не вычисляется.
+3. **REMOVED-sweep на стороне slovo.** Item в Redis mapping но отсутствует в payload → DELETE loader через Flowise REST + HDEL ключа. Это slovo-side эквивалент `cleanup=full` (incremental Flowise чистит chunks только в рамках per-source upsert; orphan loaders на удалённых товарах сносим явно).
+
+**Что это меняет в ADR-007:** ничего в контракте feeder → bucket. Дополняется внутренний contract slovo → Flowise Document Store: store должен иметь сконфигурированный RecordManager, и slovo владеет externalId → docId mapping в Redis (наряду с Postgres `catalog_chunks` от Flowise). Drift surface — три хранилища (`catalog_chunks` + `catalog_record_manager` + Redis HASH), recovery план записан в tech-debt.
+
+**Триггеры пересмотра:**
+
+- Multi-tenant (несколько Document Stores) — `slovo:catalog:loaders` станет per-store (`slovo:catalog:loaders:${storeId}`), externalId уникальный только в рамках одного feeder'а.
+- Если Flowise upgrade сломает single-call upsert form → откат на четырёхшаговый `loader/save → loader/process → vectorstore/insert` (Phase 0 валидирован, остаётся как fallback).
+
 ## Open questions
 
 1. **VisionCache GC.** За год накопится 10-100k записей при ребрендах/удалениях товаров. Нужен ли cron-vacuum по `lastUsedAt`, или достаточно «никогда не чистим» (cache небольшой, JSON-описания по 200-500 байт)? Решить после первого года в проде.
 2. **Bucket per environment.** В prod хочется отдельный bucket `slovo-datasets-prod`, `slovo-datasets-staging`. На каком уровне разделять — bucket name или путь префиксом? Path-style проще для MinIO, разные bucket'ы — для managed S3. Решить когда дойдём до prod-deploy.
 3. **Multi-tenant readiness.** Когда появятся пользователи, каталог станет per-tenant (`catalogs/<tenant>/<feeder>/`). Контракт совместим — расширяется добавлением одного уровня в путь. ADR не пересматривается.
-4. **Flowise upsert endpoint — точная форма.** В Phase 0 проверены `loader/save → loader/process → vectorstore/save → vectorstore/insert` (4 запроса). Есть ещё один путь — `/api/v1/document-store/upsert/<id>` с inline documents (1 запрос). Какая форма надёжнее для slovo `apps/worker` — выбрать в PR6 (определяется payload-shape, поведение idempotency и dedup семантикой).
+4. ~~**Flowise upsert endpoint — точная форма.**~~ ✅ **Закрыто** (см. дополнение 2026-05-01): single-call `/api/v1/document-store/upsert/<id>` с inline body. Подтверждено PR6.5/PR9.5 на 155 items.
 
 ## Связанные ADR
 

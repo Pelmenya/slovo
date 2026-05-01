@@ -497,6 +497,53 @@ const visionSchema = z.object({
 
 Триггер: при добавлении 2+ новых полей в Vision prompt.
 
+### 32. catalog-refresh — Redis loader-mapping recovery
+
+**Контекст (PR9.5):** state ingest pipeline распределён по трём хранилищам: `catalog_chunks` (Flowise pgvector), `catalog_record_manager` (Flowise PR9.5 RecordManager), Redis HASH `slovo:catalog:loaders` (slovo-side externalId → docId).
+
+**Проблема:** если Redis HASH потеряется (FLUSHDB / replica-fail / ручная зачистка / `persistLoaderMapping` упал на длинном refresh), следующий cron tick:
+
+1. Загрузит пустой mapping (`{}`)
+2. Для каждого item upsert'нёт **без** stored docId
+3. Flowise создаст **новые** loader entries (новые docId) на тот же `externalId`
+4. RecordManager защищает chunks через `sourceIdKey=externalId`, но **loader entries** в `documentstore.loaders` JSON column раздуются дубликатами
+5. Все 155 items пройдут полный re-embed (~$0.0038/refresh × 6 = ~$0.023/day = ~57 ₽/мес — регрессия PR9.5)
+
+**Решение (когда нужно):** при detection `loaderMapping is empty` AND `Flowise store.loaders.length > 0`, автоматически восстановить mapping из Flowise (`GET /document-store/<id>` → каждый loader содержит `metadata.externalId`):
+
+```ts
+if (Object.keys(loaderMapping).length === 0 && store.loaders.length > 0) {
+    const reconciled = await this.reconcileMappingFromFlowise(store);
+    if (Object.keys(reconciled).length > 0) {
+        await this.redis.hset(CATALOG_LOADERS_REDIS_KEY, reconciled);
+        loaderMapping = reconciled;
+    }
+}
+```
+
+Триггер: после первого инцидента с Redis data-loss / при появлении observability на cost-spike (#33).
+
+### 33. catalog-refresh — cost-spike monitoring
+
+**Контекст:** PR9.5 экономит ~95% на embeddings через RecordManager skip. Если Flowise upgrade сломает hash-comparison (RecordManager schema migration / version bump в LangChain), сервис тихо вернётся к full re-embed-all. `runScheduled` логирует counters, но **нет алерта**.
+
+**Решение:**
+
+1. После 2+ refresh'ей с populated mapping — добавить warn-log если `itemsSkipped / itemsTotal < 0.5`. На стабильном каталоге это означает либо: (a) feeder выкатил массовое обновление контента (legitimate), (b) RecordManager перестал работать (regression).
+2. Long-term — Langfuse trace на `slovo.catalog-refresh.skip-rate` (gauge metric) с alert если > 7 дней <50%.
+
+```ts
+const skipRate = result.itemsSkipped / result.itemsTotal;
+if (mappingWasPopulated && skipRate < 0.5) {
+    this.logger.warn(
+        `catalog-refresh skip-rate ${(skipRate * 100).toFixed(0)}% — ` +
+        `проверить RecordManager (regression?) или massive feeder update`,
+    );
+}
+```
+
+Триггер: до prod-релиза worker'а / при появлении Langfuse observability slovo runtime.
+
 ---
 
 ## До первого prod-деплоя миграций
