@@ -3,6 +3,10 @@ import type { TFlowiseDocumentStore } from '@slovo/flowise-client';
 // =============================================================================
 // catalog-refresh result shape — discriminated union на kind.
 // TypeScript narrow'ит ветки автоматически, нельзя забыть проверить флаг.
+//
+// PR9.5 RecordManager update: counters перевелись с
+// «attempted/upserted/failed/loadersWiped» на «упсертнули реально / скипнули
+// через RecordManager / удалили через REMOVED-sweep».
 // =============================================================================
 
 export type TCatalogRefreshSuccess = {
@@ -10,13 +14,20 @@ export type TCatalogRefreshSuccess = {
     storeId: string;
     storeName: string;
     elapsedMs: number;
-    // Slovo-orchestrate (PR6.5): сколько items в payload, сколько successfully
-    // upsert'нуто, сколько failed (per-item failure не валит весь refresh).
-    itemsAttempted: number;
+    // Сколько items в payload пришло
+    itemsTotal: number;
+    // Items которые Flowise обработал (NEW + CHANGED) — embedding cost
+    // действительно потрачен. Каждый = ~$0.0000004 на text-embedding-3-small.
     itemsUpserted: number;
+    // Items skipped через RecordManager hash check — content unchanged,
+    // embedding НЕ вычислялся, $0 cost. Главный эффект PR9.5.
+    itemsSkipped: number;
+    // Items упавшие на Flowise upsert — не критично для refresh, но
+    // следить через alert (slovo-orchestrate retry в next cron).
     itemsFailed: number;
-    // Loaders в store, удалённые на этапе wipe (старые S3 / прежние PlainText).
-    loadersWiped: number;
+    // Items удалённые из store потому что disappeared из payload.
+    // REMOVED-sweep после upsert цикла.
+    itemsRemoved: number;
 };
 
 export type TCatalogRefreshSkipped = {
@@ -36,11 +47,11 @@ export type TCatalogRefreshFailure = {
     // Etap на котором упало — для ловушек observability.
     stage:
         | 'fetch-config'
-        | 'wipe-loaders'
-        | 'wipe-vectors'
+        | 'load-loader-mapping'
         | 'download-payload'
         | 'parse-payload'
-        | 'upsert';
+        | 'upsert'
+        | 'remove-sweep';
 };
 
 export type TCatalogRefreshResult =

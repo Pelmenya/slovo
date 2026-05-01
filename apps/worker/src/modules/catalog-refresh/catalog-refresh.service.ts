@@ -3,7 +3,6 @@ import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
 import { sanitizeError } from '@slovo/common';
-import { PrismaService } from '@slovo/database';
 import {
     ENDPOINTS,
     FlowiseClient,
@@ -14,6 +13,7 @@ import { StorageService } from '@slovo/storage';
 import {
     ALLOWED_VECTOR_TABLES,
     CATALOG_AQUAPHOR_STORE_NAME,
+    CATALOG_LOADERS_REDIS_KEY,
     CATALOG_MAX_PAYLOAD_BYTES,
     CATALOG_PAYLOAD_KEY,
     CATALOG_REFRESH_CRON,
@@ -37,38 +37,49 @@ import type {
 } from './t-catalog-refresh';
 
 // =============================================================================
-// CatalogRefreshService — slovo-orchestrate ingest pipeline (PR6.5).
+// CatalogRefreshService — slovo-orchestrate ingest pipeline (PR9.5
+// RecordManager-based idempotency).
 //
-// Раньше (PR6) call'ил `flowise_docstore_refresh` который через S3 File Loader
-// тянул latest.json и обрабатывал его как plain text — Custom Metadata
-// jsonpointer'ы не извлекались, в metadata оседали литералы вроде "/name".
-// Это ломало `/catalog/search/text` enrichment (см. lab journal day 2).
-//
-// Теперь — slovo читает payload сам и upsert'ит per-item через PlainText
-// loader с явной structured metadata. Vector store + embedding configs
-// наследуются из store entity (один read на refresh). Distributed lock
-// (Redis SET NX EX + Lua-CAS) — без изменений из PR6.
+// Эволюция:
+// - PR6: `flowise_docstore_refresh` через broken S3 File Loader → отказ
+// - PR6.5: slovo-orchestrate с TRUNCATE + per-item upsert (сложно: full
+//   re-embed на каждый cron tick, ~$0.03/день)
+// - PR9.5: + Flowise RecordManager + slovo Redis loader-mapping →
+//   skip-if-unchanged через LangChain Indexing API. ~90× cost reduction.
 //
 // Pipeline:
-// 1. Acquire lock (uuid fence-token)
-// 2. Resolve storeId by name — Flowise list stores → find by name
-// 3. Fetch full store config (vectorStoreConfig, embeddingConfig)
-// 4. Wipe existing loaders (старый S3 + предыдущие PlainText) — clean slate
-// 5. Download latest.json (StorageService.getObjectStream + utf-8 decode)
-// 6. Parse + zod-validate (TBulkIngestPayload)
-// 7. Per-item upsert PlainText (sequential — Flowise saveProcessingLoader
-//    не thread-safe, см. constants.ts про CONCURRENCY)
-// 8. Release lock (Lua-CAS with same uuid)
+// 1. Acquire Redis lock (uuid + Lua-CAS — без изменений)
+// 2. Resolve storeId by name
+// 3. Extract vectorStoreConfig + embeddingConfig + recordManagerConfig из store
+// 4. Load slovo:catalog:loaders mapping (externalId → docId) из Redis
+// 5. Download latest.json через StorageService
+// 6. Parse + zod-validate
+// 7. Per-item upsert (sequential):
+//    - Если есть stored docId → upsert WITH it → RecordManager skip if hash same
+//    - Если нет → upsert WITHOUT docId → Flowise creates new, store returned docId
+// 8. REMOVED-sweep: items в mapping но не в payload → DELETE loader + HDEL
+// 9. Release lock (Lua-CAS)
 // =============================================================================
 
 type TStoreConfigs = {
     vectorStore: { name: string; config: Record<string, unknown> };
     embedding: { name: string; config: Record<string, unknown> };
+    recordManager: { name: string; config: Record<string, unknown> } | null;
 };
 
 type TUpsertOutcome =
-    | { ok: true; externalId: string }
-    | { ok: false; externalId: string; error: string };
+    | { kind: 'upserted'; externalId: string; docId: string }
+    | { kind: 'skipped'; externalId: string; docId: string }
+    | { kind: 'failed'; externalId: string; error: string };
+
+type TFlowiseUpsertResponse = {
+    numAdded?: number;
+    numUpdated?: number;
+    numSkipped?: number;
+    numDeleted?: number;
+    docId?: string;
+    [key: string]: unknown;
+};
 
 @Injectable()
 export class CatalogRefreshService implements OnModuleDestroy {
@@ -79,7 +90,6 @@ export class CatalogRefreshService implements OnModuleDestroy {
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
         @Inject(REDIS_CLIENT_TOKEN) private readonly redis: Redis,
         private readonly storage: StorageService,
-        private readonly prisma: PrismaService,
     ) {}
 
     async onModuleDestroy(): Promise<void> {
@@ -105,8 +115,9 @@ export class CatalogRefreshService implements OnModuleDestroy {
         if (result.kind === 'success') {
             this.logger.log(
                 `catalog-refresh completed: store=${result.storeName} ` +
-                    `items=${result.itemsUpserted}/${result.itemsAttempted} ` +
-                    `failed=${result.itemsFailed} wiped=${result.loadersWiped} elapsed=${result.elapsedMs}ms`,
+                    `total=${result.itemsTotal} upserted=${result.itemsUpserted} ` +
+                    `skipped=${result.itemsSkipped} removed=${result.itemsRemoved} ` +
+                    `failed=${result.itemsFailed} elapsed=${result.elapsedMs}ms`,
             );
         } else if (result.kind === 'skipped') {
             this.logger.warn(
@@ -146,6 +157,9 @@ export class CatalogRefreshService implements OnModuleDestroy {
         storeName: string,
         start: number,
     ): Promise<TCatalogRefreshResult> {
+        // Step 1 — find store + extract configs (vectorStore + embedding +
+        // recordManager). RecordManager **обязателен** для PR9.5 idempotency
+        // — если его нет, refresh fails fast (ratheр чем silent re-embed all).
         const findResult = await this.findStoreByName(storeName);
         if (!findResult.found) {
             return {
@@ -159,9 +173,6 @@ export class CatalogRefreshService implements OnModuleDestroy {
         const { store } = findResult;
         const storeId = store.id;
 
-        // Step 1 — extract configs (vectorStore + embedding).
-        // Без них POST /upsert получит "Vector store not configured" (Flowise
-        // подставляет конфиги в `if (docId)` ветке, для нового loader — нет).
         const configs = this.extractStoreConfigs(store);
         if (!configs) {
             return {
@@ -169,16 +180,32 @@ export class CatalogRefreshService implements OnModuleDestroy {
                 storeId,
                 storeName,
                 elapsedMs: Date.now() - start,
-                error: 'Store has no vectorStoreConfig or embeddingConfig — Phase 0 setup incomplete',
+                error:
+                    'Store has no vectorStoreConfig / embeddingConfig / recordManagerConfig — ' +
+                    'требуется для PR9.5 idempotent ingest. Setup через flowise_docstore_vectorstore_save.',
+                stage: 'fetch-config',
+            };
+        }
+        // Validation table name — defensive против admin mistake (raw SQL
+        // блок'нут на Flowise side, но slovo тоже ловит): TRUNCATE сейчас не
+        // делается (RecordManager handles), но whitelist оставлен на будущее
+        // если понадобится emergency wipe.
+        const tableName = configs.vectorStore.config.tableName;
+        if (typeof tableName === 'string' && !ALLOWED_VECTOR_TABLES.has(tableName)) {
+            return {
+                kind: 'failure',
+                storeId,
+                storeName,
+                elapsedMs: Date.now() - start,
+                error: `vectorStore.tableName "${tableName}" not in ALLOWED_VECTOR_TABLES whitelist`,
                 stage: 'fetch-config',
             };
         }
 
-        // Step 2 — wipe old loaders. Включает прежний broken S3 loader из PR6
-        // и любые остатки от прошлых orchestrate refreshes.
-        let loadersWiped: number;
+        // Step 2 — load existing externalId → docId mapping из Redis.
+        let loaderMapping: Record<string, string>;
         try {
-            loadersWiped = await this.wipeLoaders(storeId, store.loaders);
+            loaderMapping = await this.loadLoaderMapping();
         } catch (error) {
             return {
                 kind: 'failure',
@@ -186,37 +213,7 @@ export class CatalogRefreshService implements OnModuleDestroy {
                 storeName,
                 elapsedMs: Date.now() - start,
                 error: sanitizeError(error),
-                stage: 'wipe-loaders',
-            };
-        }
-
-        // Step 2.5 — TRUNCATE vectors table. Flowise DELETE loader не дропает
-        // vectors из postgres (требует recordManager которого у нас нет —
-        // см. comment в Flowise source: deleteVectorStoreFromStore line 339:
-        // "Record Manager for Document Store is needed to delete data from
-        // Vector Store"). Без TRUNCATE search возвращает stale chunks от
-        // удалённых loader'ов. См. PR6.5 validation runs.
-        const tableName = extractVectorStoreTableName(configs);
-        if (!tableName) {
-            return {
-                kind: 'failure',
-                storeId,
-                storeName,
-                elapsedMs: Date.now() - start,
-                error: 'Cannot extract tableName from vectorStoreConfig.config.tableName — нужно для TRUNCATE',
-                stage: 'wipe-vectors',
-            };
-        }
-        try {
-            await this.wipeVectorStoreTable(tableName);
-        } catch (error) {
-            return {
-                kind: 'failure',
-                storeId,
-                storeName,
-                elapsedMs: Date.now() - start,
-                error: sanitizeError(error),
-                stage: 'wipe-vectors',
+                stage: 'load-loader-mapping',
             };
         }
 
@@ -225,7 +222,6 @@ export class CatalogRefreshService implements OnModuleDestroy {
         try {
             payloadRaw = await this.downloadPayload();
         } catch (error) {
-            // 404 на latest.json → soft-skip, остальные ошибки → failure
             const errorMsg = sanitizeError(error);
             if (errorMsg.toLowerCase().includes('not found')) {
                 return {
@@ -261,14 +257,43 @@ export class CatalogRefreshService implements OnModuleDestroy {
             };
         }
 
-        // Step 5 — per-item upsert with concurrency limit.
-        const outcomes = await this.upsertItems(storeId, configs, payload.items);
-        const itemsUpserted = outcomes.filter((o) => o.ok).length;
-        const itemsFailed = outcomes.length - itemsUpserted;
+        // Step 5 — per-item upsert. RecordManager делает skip-if-unchanged
+        // когда we передаём stored docId (metadata.docId stable → hash stable).
+        const outcomes = await this.upsertItems(storeId, configs, payload.items, loaderMapping);
 
-        // Логируем failed items с externalId — observability
+        // Step 6 — REMOVED-sweep. Items в mapping но не в payload — товар
+        // удалён в feeder. Удаляем loader из Flowise + HDEL Redis mapping.
+        const currentExternalIds = new Set(payload.items.map((i) => i.externalId));
+        const removedExternalIds = Object.keys(loaderMapping).filter(
+            (eid) => !currentExternalIds.has(eid),
+        );
+        let itemsRemoved = 0;
+        try {
+            itemsRemoved = await this.removeStaleLoaders(storeId, loaderMapping, removedExternalIds);
+        } catch (error) {
+            // REMOVED-sweep failure не fatal — main upsert уже succeeded.
+            // Логируем, считаем как partial success.
+            this.logger.warn(
+                `REMOVED-sweep partial failure: ${sanitizeError(error)}. Items может остаться stale до next refresh.`,
+            );
+        }
+
+        // Persist updated mapping в Redis: новые docId после первого upsert
+        // + удалить removed items.
+        try {
+            await this.persistLoaderMapping(loaderMapping, outcomes, removedExternalIds);
+        } catch (error) {
+            this.logger.warn(
+                `persist loader mapping failed: ${sanitizeError(error)}. Next refresh re-issues docIds — extra cost но не корректность.`,
+            );
+        }
+
+        const itemsUpserted = outcomes.filter((o) => o.kind === 'upserted').length;
+        const itemsSkipped = outcomes.filter((o) => o.kind === 'skipped').length;
+        const itemsFailed = outcomes.length - itemsUpserted - itemsSkipped;
+
         for (const outcome of outcomes) {
-            if (!outcome.ok) {
+            if (outcome.kind === 'failed') {
                 this.logger.warn(
                     `upsert failed: externalId=${outcome.externalId} error=${outcome.error}`,
                 );
@@ -280,10 +305,11 @@ export class CatalogRefreshService implements OnModuleDestroy {
             storeId,
             storeName,
             elapsedMs: Date.now() - start,
-            itemsAttempted: payload.items.length,
+            itemsTotal: payload.items.length,
             itemsUpserted,
+            itemsSkipped,
             itemsFailed,
-            loadersWiped,
+            itemsRemoved,
         };
     }
 
@@ -326,65 +352,71 @@ export class CatalogRefreshService implements OnModuleDestroy {
         }
     }
 
-    // Flowise отдаёт vectorStoreConfig/embeddingConfig либо как JSON-string
-    // (raw API), либо как parsed object (через MCP-обёртки). Безопасно
-    // нормализуем через type-guard.
     private extractStoreConfigs(store: TFlowiseDocumentStore): TStoreConfigs | null {
         const vectorRaw = parseJsonIfString(store.vectorStoreConfig);
         const embeddingRaw = parseJsonIfString(store.embeddingConfig);
+        const recordManagerRaw = parseJsonIfString(store.recordManagerConfig);
 
         if (!isStoreConfigShape(vectorRaw) || !isStoreConfigShape(embeddingRaw)) {
             return null;
         }
-        return { vectorStore: vectorRaw, embedding: embeddingRaw };
+        // RecordManager обязателен — без него идём back в re-embed-all flow,
+        // что плохо. Fail fast.
+        if (!isStoreConfigShape(recordManagerRaw)) {
+            return null;
+        }
+        return {
+            vectorStore: vectorRaw,
+            embedding: embeddingRaw,
+            recordManager: recordManagerRaw,
+        };
     }
 
-    private async wipeLoaders(
+    private async loadLoaderMapping(): Promise<Record<string, string>> {
+        return this.redis.hgetall(CATALOG_LOADERS_REDIS_KEY);
+    }
+
+    private async persistLoaderMapping(
+        existingMapping: Record<string, string>,
+        outcomes: TUpsertOutcome[],
+        removedExternalIds: string[],
+    ): Promise<void> {
+        // Updates: новые docId для items без stored mapping
+        const updates: Record<string, string> = {};
+        for (const outcome of outcomes) {
+            if (outcome.kind !== 'failed' && !existingMapping[outcome.externalId]) {
+                updates[outcome.externalId] = outcome.docId;
+            }
+        }
+        if (Object.keys(updates).length > 0) {
+            await this.redis.hset(CATALOG_LOADERS_REDIS_KEY, updates);
+        }
+        if (removedExternalIds.length > 0) {
+            await this.redis.hdel(CATALOG_LOADERS_REDIS_KEY, ...removedExternalIds);
+        }
+    }
+
+    private async removeStaleLoaders(
         storeId: string,
-        loaders: TFlowiseDocumentStore['loaders'],
+        mapping: Record<string, string>,
+        removedExternalIds: string[],
     ): Promise<number> {
-        // Sequential delete — параллельный DELETE может конфликтовать на
-        // shared store entity update. Loaders обычно ≤10, sequential ok.
-        for (const loader of loaders) {
-            await this.flowise.request(ENDPOINTS.docstoreLoaderDelete(storeId, loader.id), {
-                method: 'DELETE',
-            });
+        let count = 0;
+        for (const externalId of removedExternalIds) {
+            const docId = mapping[externalId];
+            if (!docId) continue;
+            try {
+                await this.flowise.request(ENDPOINTS.docstoreLoaderDelete(storeId, docId), {
+                    method: 'DELETE',
+                });
+                count++;
+            } catch (error) {
+                this.logger.warn(
+                    `removeStaleLoader failed: externalId=${externalId} docId=${docId} error=${sanitizeError(error)}`,
+                );
+            }
         }
-        return loaders.length;
-    }
-
-    private async wipeVectorStoreTable(tableName: string): Promise<void> {
-        // Defense-in-depth — два уровня:
-        //
-        // 1. **Format whitelist** (regex): identifier должен match'ить
-        //    Postgres unquoted identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`,
-        //    ≤63 символа). Отсекает classic SQL injection через `;`, `--`,
-        //    кавычки, multibyte / homograph attacks, превышение NAMEDATALEN.
-        //
-        // 2. **Name whitelist** (Set): identifier должен быть в явном
-        //    списке таблиц которые worker'у разрешено TRUNCATE'ить. Защита
-        //    от blast-radius: даже если admin / compromised Flowise
-        //    API-key изменит `vectorStoreConfig.config.tableName` на `User`
-        //    или `accounts` — формат пройдёт regex, но Set отбросит.
-        if (!isValidPostgresIdentifier(tableName)) {
-            throw new Error(`Invalid Postgres table name (format whitelist failed): ${tableName}`);
-        }
-        if (!ALLOWED_VECTOR_TABLES.has(tableName)) {
-            throw new Error(
-                `Table "${tableName}" not in ALLOWED_VECTOR_TABLES whitelist. ` +
-                    `Если это намеренно — добавь в catalog-refresh.constants.ts.`,
-            );
-        }
-        // `$executeRawUnsafe` нужен потому что parameterized `$executeRaw`
-        // не позволяет dynamic table names (только VALUES). Identifier
-        // прошёл двойную валидацию выше.
-        //
-        // `"public"."${tableName}"` — явный schema prefix, не зависим от
-        // search_path. `RESTART IDENTITY` сбрасывает sequence (defensive
-        // на случай добавления id-колонки в Flowise schema в будущем).
-        await this.prisma.$executeRawUnsafe(
-            `TRUNCATE TABLE "public"."${tableName}" RESTART IDENTITY`,
-        );
+        return count;
     }
 
     private async downloadPayload(): Promise<string> {
@@ -392,13 +424,8 @@ export class CatalogRefreshService implements OnModuleDestroy {
         const chunks: Buffer[] = [];
         let totalBytes = 0;
         for await (const chunk of stream.body) {
-            const buf =
-                typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
+            const buf = typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
             totalBytes += buf.length;
-            // Cap во время stream (а не после Buffer.concat) — защита от OOM
-            // при multi-GB payload от compromised feeder. Threshold ×600 от
-            // ожидаемого ~150KB на 155 items, должно хватить даже на 1000+
-            // items с rich metadata.
             if (totalBytes > CATALOG_MAX_PAYLOAD_BYTES) {
                 throw new Error(
                     `Payload size ${totalBytes} bytes exceeds CATALOG_MAX_PAYLOAD_BYTES=${CATALOG_MAX_PAYLOAD_BYTES} — possible malicious feeder`,
@@ -413,14 +440,15 @@ export class CatalogRefreshService implements OnModuleDestroy {
         storeId: string,
         configs: TStoreConfigs,
         items: TBulkIngestItem[],
+        loaderMapping: Record<string, string>,
     ): Promise<TUpsertOutcome[]> {
         const outcomes: TUpsertOutcome[] = [];
-        // Pool с фиксированной concurrency. Не используем p-limit (минимизируем
-        // deps), inline implementation — items.length / CONCURRENCY iterations.
         for (let i = 0; i < items.length; i += CATALOG_UPSERT_CONCURRENCY) {
             const batch = items.slice(i, i + CATALOG_UPSERT_CONCURRENCY);
             const batchResults = await Promise.all(
-                batch.map((item) => this.upsertItem(storeId, configs, item)),
+                batch.map((item) =>
+                    this.upsertItem(storeId, configs, item, loaderMapping[item.externalId]),
+                ),
             );
             outcomes.push(...batchResults);
         }
@@ -431,39 +459,56 @@ export class CatalogRefreshService implements OnModuleDestroy {
         storeId: string,
         configs: TStoreConfigs,
         item: TBulkIngestItem,
+        existingDocId: string | undefined,
     ): Promise<TUpsertOutcome> {
         try {
-            await this.flowise.request(ENDPOINTS.documentStoreUpsert(storeId), {
-                method: 'POST',
-                body: {
-                    loader: {
-                        name: 'plainText',
-                        config: {
-                            text: item.contentForEmbedding,
-                            // PlainText loader ожидает metadata как **JSON-string**,
-                            // не как object. Flowise делает `JSON.parse(config.metadata)`
-                            // в loader pipeline (см. `/usr/local/lib/.../PlainText.js`
-                            // Step 2). Если передать object — внутри Flowise
-                            // `JSON.parse({...})` упадёт. Не «упростить» обратно.
-                            metadata: JSON.stringify(buildItemMetadata(item)),
-                        },
+            const body: Record<string, unknown> = {
+                loader: {
+                    name: 'plainText',
+                    config: {
+                        text: item.contentForEmbedding,
+                        // PlainText loader ожидает metadata как **JSON-string**,
+                        // не как object. Flowise делает `JSON.parse(config.metadata)`.
+                        metadata: JSON.stringify(buildItemMetadata(item)),
                     },
-                    splitter: {
-                        name: 'recursiveCharacterTextSplitter',
-                        config: {
-                            chunkSize: CATALOG_SPLITTER_CHUNK_SIZE,
-                            chunkOverlap: CATALOG_SPLITTER_CHUNK_OVERLAP,
-                        },
-                    },
-                    vectorStore: configs.vectorStore,
-                    embedding: configs.embedding,
-                    replaceExisting: false,
                 },
-            });
-            return { ok: true, externalId: item.externalId };
+                splitter: {
+                    name: 'recursiveCharacterTextSplitter',
+                    config: {
+                        chunkSize: CATALOG_SPLITTER_CHUNK_SIZE,
+                        chunkOverlap: CATALOG_SPLITTER_CHUNK_OVERLAP,
+                    },
+                },
+                vectorStore: configs.vectorStore,
+                embedding: configs.embedding,
+                recordManager: configs.recordManager,
+                // replaceExisting обязателен когда docId передан — иначе
+                // Flowise отказывается update'ить existing loader.
+                replaceExisting: existingDocId !== undefined,
+            };
+            if (existingDocId !== undefined) {
+                body.docId = existingDocId;
+            }
+
+            const response = await this.flowise.request<TFlowiseUpsertResponse>(
+                ENDPOINTS.documentStoreUpsert(storeId),
+                { method: 'POST', body },
+            );
+
+            const docId = response.docId ?? existingDocId ?? '';
+            const wasSkipped =
+                (response.numSkipped ?? 0) > 0 &&
+                (response.numAdded ?? 0) === 0 &&
+                (response.numUpdated ?? 0) === 0;
+
+            return {
+                kind: wasSkipped ? 'skipped' : 'upserted',
+                externalId: item.externalId,
+                docId,
+            };
         } catch (error) {
             return {
-                ok: false,
+                kind: 'failed',
                 externalId: item.externalId,
                 error: formatFlowiseError(error),
             };
@@ -472,16 +517,9 @@ export class CatalogRefreshService implements OnModuleDestroy {
 }
 
 // =============================================================================
-// Helpers (pure, тестируются отдельно от service-state)
+// Helpers (pure)
 // =============================================================================
 
-// Метаданные которые feeder отдаёт через PlainText loader. Whitelist'им только
-// поля которые нужны для search response enrichment + cross-reference с feeder
-// системой. Остальные поля (contentForEmbedding, contentHash, attributes) живут
-// в pageContent / контракте, в metadata их класть не надо — search response
-// фильтрует через METADATA_WHITELIST в TextSearchService.
-//
-// Sync-trigger см. tech-debt #23 «METADATA_WHITELIST sync trigger».
 function buildItemMetadata(item: TBulkIngestItem): Record<string, unknown> {
     return {
         externalId: item.externalId,
@@ -520,23 +558,4 @@ function isStoreConfigShape(
         typeof v.config === 'object' &&
         v.config !== null
     );
-}
-
-// Достаёт `tableName` из vectorStoreConfig.config — нужен для TRUNCATE
-// vector table перед re-upsert. Возвращает null если поле отсутствует или
-// не строка (мы поддерживаем только Postgres vector store; для Pinecone /
-// Chroma / Weaviate понадобится ветка через vectorStoreConfig.name).
-function extractVectorStoreTableName(configs: TStoreConfigs): string | null {
-    const vsName = configs.vectorStore.name;
-    if (vsName !== 'postgres') {
-        return null;
-    }
-    const tableName = configs.vectorStore.config.tableName;
-    return typeof tableName === 'string' && tableName.length > 0 ? tableName : null;
-}
-
-// Postgres identifier whitelist — `[A-Za-z_][A-Za-z0-9_]*` (стандарт SQL без
-// quoting). Не пускаем `--`, `;`, кавычки, пробелы. Длина ≤63 (Postgres limit).
-function isValidPostgresIdentifier(name: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name);
 }

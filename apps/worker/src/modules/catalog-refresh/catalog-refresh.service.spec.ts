@@ -2,11 +2,11 @@ import { Readable } from 'node:stream';
 import { Logger, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type Redis from 'ioredis';
-import { PrismaService } from '@slovo/database';
 import type { FlowiseClient } from '@slovo/flowise-client';
 import { FlowiseError } from '@slovo/flowise-client';
 import { StorageService } from '@slovo/storage';
 import {
+    CATALOG_LOADERS_REDIS_KEY,
     CATALOG_PAYLOAD_KEY,
     CATALOG_REFRESH_LOCK_KEY,
     CATALOG_REFRESH_LOCK_RELEASE_LUA,
@@ -23,26 +23,27 @@ type TRedisClientMock = {
     set: jest.Mock;
     eval: jest.Mock;
     quit: jest.Mock;
+    hgetall: jest.Mock;
+    hset: jest.Mock;
+    hdel: jest.Mock;
 };
 type TStorageServiceMock = { getObjectStream: jest.Mock };
-type TPrismaServiceMock = { $executeRawUnsafe: jest.Mock };
 
 const SAMPLE_STORE = {
     id: 'aec6b741',
     name: 'catalog-aquaphor',
     description: 'Каталог Аквафор',
     status: 'UPSERTED',
-    loaders: [
-        { id: 'old-broken-s3', loaderId: 'S3', loaderName: 'S3', totalChunks: 912 },
-    ],
+    loaders: [],
     whereUsed: [],
     embeddingConfig:
         '{"name":"openAIEmbeddings","config":{"modelName":"text-embedding-3-small","dimensions":1536}}',
     vectorStoreConfig:
         '{"name":"postgres","config":{"host":"slovo-postgres","port":5432,"tableName":"catalog_chunks"}}',
-    recordManagerConfig: null,
-    totalChunks: 912,
-    totalChars: 772232,
+    recordManagerConfig:
+        '{"name":"postgresRecordManager","config":{"tableName":"catalog_record_manager","cleanup":"incremental","sourceIdKey":"externalId"}}',
+    totalChunks: 0,
+    totalChars: 0,
 };
 
 const SAMPLE_PAYLOAD: TBulkIngestPayload = {
@@ -98,6 +99,9 @@ function createRedisMock(): TRedisClientMock {
         set: jest.fn(),
         eval: jest.fn().mockResolvedValue(1),
         quit: jest.fn().mockResolvedValue('OK'),
+        hgetall: jest.fn().mockResolvedValue({}),
+        hset: jest.fn().mockResolvedValue(0),
+        hdel: jest.fn().mockResolvedValue(0),
     };
 }
 
@@ -105,27 +109,21 @@ function createStorageMock(): TStorageServiceMock {
     return { getObjectStream: jest.fn() };
 }
 
-function createPrismaMock(): TPrismaServiceMock {
-    return { $executeRawUnsafe: jest.fn().mockResolvedValue(0) };
-}
-
 // Хелпер: создать Readable из строки (JSON payload).
 function readableFrom(content: string): Readable {
     return Readable.from([Buffer.from(content, 'utf-8')]);
 }
 
-// Хелпер: подготовить mock'и так, чтобы happy-path до upsert'а прошёл.
+// Хелпер: подготовить mock'и так, чтобы happy-path до upsert'а прошёл
+// (lock acquired + store list + empty mapping + payload downloaded).
 function setupHappyPathMocks(
     flowise: TFlowiseClientMock,
     redis: TRedisClientMock,
     storage: TStorageServiceMock,
 ): void {
     redis.set.mockResolvedValueOnce('OK');
-    flowise.request
-        // 1. list stores
-        .mockResolvedValueOnce([SAMPLE_STORE])
-        // 2. wipe loader (DELETE)
-        .mockResolvedValueOnce({ success: true });
+    redis.hgetall.mockResolvedValueOnce({});
+    flowise.request.mockResolvedValueOnce([SAMPLE_STORE]); // list stores
     storage.getObjectStream.mockResolvedValueOnce({
         key: CATALOG_PAYLOAD_KEY,
         body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
@@ -138,13 +136,11 @@ describe('CatalogRefreshService', () => {
     let flowise: TFlowiseClientMock;
     let redis: TRedisClientMock;
     let storage: TStorageServiceMock;
-    let prisma: TPrismaServiceMock;
 
     beforeEach(async () => {
         flowise = createFlowiseClientMock();
         redis = createRedisMock();
         storage = createStorageMock();
-        prisma = createPrismaMock();
 
         const moduleRef = await Test.createTestingModule({
             providers: [
@@ -152,56 +148,54 @@ describe('CatalogRefreshService', () => {
                 { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise as unknown as FlowiseClient },
                 { provide: REDIS_CLIENT_TOKEN, useValue: redis as unknown as Redis },
                 { provide: StorageService, useValue: storage as unknown as StorageService },
-                { provide: PrismaService, useValue: prisma as unknown as PrismaService },
             ],
         }).compile();
 
         service = moduleRef.get(CatalogRefreshService);
     });
 
-    describe('happy path — slovo orchestrate', () => {
-        it('lock → list → wipe → download → parse → per-item upsert → success', async () => {
+    describe('happy path — first refresh (empty mapping, all upserted)', () => {
+        it('lock → list → load mapping → download → parse → per-item upsert → success', async () => {
             setupHappyPathMocks(flowise, redis, storage);
-            // 2 items × 1 upsert each
+            // 2 items × upsert response с returned docId
             flowise.request
-                .mockResolvedValueOnce({ numAdded: 1, addedDocs: [] })
-                .mockResolvedValueOnce({ numAdded: 1, addedDocs: [] });
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-002' });
 
             const result = await service.refresh();
 
             expect(result.kind).toBe('success');
             if (result.kind === 'success') {
                 expect(result.storeId).toBe('aec6b741');
-                expect(result.itemsAttempted).toBe(2);
+                expect(result.itemsTotal).toBe(2);
                 expect(result.itemsUpserted).toBe(2);
+                expect(result.itemsSkipped).toBe(0);
                 expect(result.itemsFailed).toBe(0);
-                expect(result.loadersWiped).toBe(1);
+                expect(result.itemsRemoved).toBe(0);
             }
 
-            // lock acquire с uuid (не '1')
+            // lock acquire с uuid
             const setCall = redis.set.mock.calls[0];
             expect(setCall[0]).toBe(CATALOG_REFRESH_LOCK_KEY);
             expect(setCall[1]).toMatch(/^[0-9a-f-]+$/);
             expect(setCall[4]).toBe('NX');
 
-            // wipe call — DELETE на старый loader
-            expect(flowise.request).toHaveBeenNthCalledWith(
-                2,
-                expect.stringContaining('/loader/aec6b741/old-broken-s3'),
-                { method: 'DELETE' },
-            );
+            // mapping загружен один раз
+            expect(redis.hgetall).toHaveBeenCalledWith(CATALOG_LOADERS_REDIS_KEY);
 
             // download payload
             expect(storage.getObjectStream).toHaveBeenCalledWith(CATALOG_PAYLOAD_KEY);
 
             // upsert calls — 2 items
-            expect(flowise.request).toHaveBeenCalledTimes(4); // list + wipe + 2 upserts
+            expect(flowise.request).toHaveBeenCalledTimes(3); // list + 2 upserts
 
             // первый upsert — структура body
-            const firstUpsertCall = flowise.request.mock.calls[2];
+            const firstUpsertCall = flowise.request.mock.calls[1];
             expect(firstUpsertCall[0]).toContain('/document-store/upsert/aec6b741');
             expect(firstUpsertCall[1].method).toBe('POST');
             const body = firstUpsertCall[1].body as Record<string, unknown>;
+            // empty mapping → docId не передаётся, replaceExisting=false
+            expect(body.docId).toBeUndefined();
             expect(body.replaceExisting).toBe(false);
             expect(body.loader).toEqual(
                 expect.objectContaining({
@@ -224,6 +218,9 @@ describe('CatalogRefreshService', () => {
             expect(body.embedding).toEqual(
                 expect.objectContaining({ name: 'openAIEmbeddings' }),
             );
+            expect(body.recordManager).toEqual(
+                expect.objectContaining({ name: 'postgresRecordManager' }),
+            );
 
             // metadata — JSON.stringify со whitelist'ом полей
             const loaderConfig = (body.loader as { config: { metadata: string } }).config;
@@ -240,6 +237,14 @@ describe('CatalogRefreshService', () => {
                 imageUrls: ['catalogs/aquaphor/images/mu-001/sha1.jpg'],
             });
 
+            // persist mapping — HSET с обоими новыми externalId → docId
+            expect(redis.hset).toHaveBeenCalledWith(
+                CATALOG_LOADERS_REDIS_KEY,
+                { 'mu-001': 'doc-mu-001', 'mu-002': 'doc-mu-002' },
+            );
+            // ничего не удалилось — HDEL не вызван
+            expect(redis.hdel).not.toHaveBeenCalled();
+
             // release через Lua-CAS с тем же uuid
             expect(redis.eval).toHaveBeenCalledWith(
                 CATALOG_REFRESH_LOCK_RELEASE_LUA,
@@ -249,11 +254,10 @@ describe('CatalogRefreshService', () => {
             );
         });
 
-        it('пустой items список → success itemsAttempted=0', async () => {
+        it('пустой items список → success с itemsTotal=0', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true }); // wipe
+            redis.hgetall.mockResolvedValueOnce({});
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
             storage.getObjectStream.mockResolvedValueOnce({
                 key: CATALOG_PAYLOAD_KEY,
                 body: readableFrom(JSON.stringify({ ...SAMPLE_PAYLOAD, items: [] })),
@@ -264,10 +268,154 @@ describe('CatalogRefreshService', () => {
 
             expect(result.kind).toBe('success');
             if (result.kind === 'success') {
-                expect(result.itemsAttempted).toBe(0);
+                expect(result.itemsTotal).toBe(0);
                 expect(result.itemsUpserted).toBe(0);
-                expect(result.loadersWiped).toBe(1);
+                expect(result.itemsSkipped).toBe(0);
+                expect(result.itemsRemoved).toBe(0);
             }
+            // upsert не вызывался
+            expect(flowise.request).toHaveBeenCalledTimes(1); // только list stores
+        });
+    });
+
+    describe('RecordManager skip-if-unchanged — repeat refresh', () => {
+        it('mapping populated + content unchanged → numSkipped=1 → itemsSkipped=2', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            // Mapping pre-populated с docId для каждого externalId
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            // RecordManager: hash совпал → numSkipped=1, numAdded=0
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, numUpdated: 0, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, numUpdated: 0, docId: 'doc-mu-002' });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsTotal).toBe(2);
+                expect(result.itemsUpserted).toBe(0);
+                expect(result.itemsSkipped).toBe(2);
+                expect(result.itemsFailed).toBe(0);
+                expect(result.itemsRemoved).toBe(0);
+            }
+
+            // upsert body передал stored docId + replaceExisting=true
+            const firstUpsertCall = flowise.request.mock.calls[1];
+            const body = firstUpsertCall[1].body as Record<string, unknown>;
+            expect(body.docId).toBe('doc-mu-001');
+            expect(body.replaceExisting).toBe(true);
+
+            // mapping не нужно update'ить (всё уже было) — HSET не вызван
+            expect(redis.hset).not.toHaveBeenCalled();
+            expect(redis.hdel).not.toHaveBeenCalled();
+        });
+
+        it('mixed: 1 skipped, 1 upserted (content changed) → корректные counters', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            // mu-001 — skipped, mu-002 — replaced (content changed)
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, numUpdated: 0, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, numUpdated: 0, docId: 'doc-mu-002' });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsUpserted).toBe(1);
+                expect(result.itemsSkipped).toBe(1);
+                expect(result.itemsFailed).toBe(0);
+            }
+        });
+    });
+
+    describe('REMOVED-sweep — items disappeared from payload', () => {
+        it('item в mapping но не в payload → DELETE loader + HDEL', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            // mu-999 в mapping но НЕ в payload (был удалён в feeder)
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+                'mu-999': 'doc-mu-999',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            // 2 upserts (skipped) + 1 DELETE для mu-999
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-002' })
+                .mockResolvedValueOnce({ success: true }); // DELETE loader response
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsRemoved).toBe(1);
+                expect(result.itemsSkipped).toBe(2);
+                expect(result.itemsTotal).toBe(2);
+            }
+
+            // DELETE loader вызван для mu-999
+            expect(flowise.request).toHaveBeenCalledWith(
+                expect.stringContaining('/loader/aec6b741/doc-mu-999'),
+                { method: 'DELETE' },
+            );
+
+            // HDEL вызван для mu-999
+            expect(redis.hdel).toHaveBeenCalledWith(CATALOG_LOADERS_REDIS_KEY, 'mu-999');
+        });
+
+        it('REMOVED-sweep partial failure не валит refresh', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+                'mu-999': 'doc-mu-999',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-002' })
+                .mockRejectedValueOnce(new FlowiseError('500', 500)); // DELETE упал
+
+            const result = await service.refresh();
+
+            // Refresh всё равно success — sweep лишь partial
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.itemsRemoved).toBe(0); // counter не инкрементнулся
+                expect(result.itemsSkipped).toBe(2);
+            }
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('removeStaleLoader failed'));
+            warnSpy.mockRestore();
         });
     });
 
@@ -283,6 +431,7 @@ describe('CatalogRefreshService', () => {
             }
             expect(flowise.request).not.toHaveBeenCalled();
             expect(storage.getObjectStream).not.toHaveBeenCalled();
+            expect(redis.hgetall).not.toHaveBeenCalled();
             expect(redis.eval).not.toHaveBeenCalled();
         });
     });
@@ -328,9 +477,24 @@ describe('CatalogRefreshService', () => {
             expect(result.kind).toBe('failure');
             if (result.kind === 'failure') {
                 expect(result.stage).toBe('fetch-config');
-                expect(result.error).toContain('vectorStoreConfig');
+                expect(result.error).toContain('recordManagerConfig');
             }
             expect(redis.eval).toHaveBeenCalled();
+        });
+
+        it('store без recordManagerConfig → failure (PR9.5 требует RecordManager)', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request.mockResolvedValueOnce([
+                { ...SAMPLE_STORE, recordManagerConfig: null },
+            ]);
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.stage).toBe('fetch-config');
+                expect(result.error).toContain('recordManagerConfig');
+            }
         });
 
         it('store с пустым embeddingConfig → failure', async () => {
@@ -346,173 +510,50 @@ describe('CatalogRefreshService', () => {
                 expect(result.stage).toBe('fetch-config');
             }
         });
-    });
 
-    describe('wipe-loaders failure', () => {
-        it('DELETE loader упал → failure stage=wipe-loaders', async () => {
+        it('vectorStore.tableName не в whitelist → failure stage=fetch-config', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockRejectedValueOnce(new FlowiseError('Internal Server Error', 500));
+            flowise.request.mockResolvedValueOnce([
+                {
+                    ...SAMPLE_STORE,
+                    vectorStoreConfig:
+                        '{"name":"postgres","config":{"tableName":"User"}}',
+                },
+            ]);
 
             const result = await service.refresh();
 
             expect(result.kind).toBe('failure');
             if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-loaders');
-                expect(result.error).toContain('Internal');
-            }
-        });
-    });
-
-    describe('wipe-vectors — TRUNCATE catalog_chunks', () => {
-        it('happy path: TRUNCATE с schema prefix + RESTART IDENTITY', async () => {
-            setupHappyPathMocks(flowise, redis, storage);
-            flowise.request
-                .mockResolvedValueOnce({ numAdded: 1 })
-                .mockResolvedValueOnce({ numAdded: 1 });
-
-            await service.refresh();
-
-            expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith(
-                'TRUNCATE TABLE "public"."catalog_chunks" RESTART IDENTITY',
-            );
-        });
-
-        it('TRUNCATE упал → failure stage=wipe-vectors', async () => {
-            redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
-            prisma.$executeRawUnsafe.mockRejectedValueOnce(
-                new Error('relation "catalog_chunks" does not exist'),
-            );
-
-            const result = await service.refresh();
-
-            expect(result.kind).toBe('failure');
-            if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-vectors');
-                expect(result.error).toContain('catalog_chunks');
-            }
-        });
-
-        it('non-postgres vectorStore → failure (Pinecone/Chroma не поддержаны)', async () => {
-            redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    { ...SAMPLE_STORE, vectorStoreConfig: '{"name":"pinecone","config":{}}' },
-                ])
-                .mockResolvedValueOnce({ success: true });
-
-            const result = await service.refresh();
-
-            expect(result.kind).toBe('failure');
-            if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-vectors');
-                expect(result.error).toContain('tableName');
-            }
-        });
-
-        it('SQL injection (`;`/`--`/quotes) в tableName → format-whitelist reject', async () => {
-            redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    {
-                        ...SAMPLE_STORE,
-                        vectorStoreConfig:
-                            '{"name":"postgres","config":{"tableName":"catalog_chunks; DROP TABLE users;"}}',
-                    },
-                ])
-                .mockResolvedValueOnce({ success: true });
-
-            const result = await service.refresh();
-
-            expect(result.kind).toBe('failure');
-            if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-vectors');
-                expect(result.error).toContain('format whitelist');
-            }
-            expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
-        });
-
-        it('non-allowed table name (User/accounts) → name-whitelist reject (blast radius)', async () => {
-            // Format-валидный identifier, но не в ALLOWED_VECTOR_TABLES.
-            // Защита от: admin меняет tableName в Flowise UI на критическую таблицу.
-            redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    {
-                        ...SAMPLE_STORE,
-                        vectorStoreConfig: '{"name":"postgres","config":{"tableName":"User"}}',
-                    },
-                ])
-                .mockResolvedValueOnce({ success: true });
-
-            const result = await service.refresh();
-
-            expect(result.kind).toBe('failure');
-            if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-vectors');
-                expect(result.error).toContain('ALLOWED_VECTOR_TABLES');
-            }
-            expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
-        });
-
-        it('Postgres reserved keyword (select/drop) → blocked by name whitelist', async () => {
-            redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    {
-                        ...SAMPLE_STORE,
-                        vectorStoreConfig: '{"name":"postgres","config":{"tableName":"select"}}',
-                    },
-                ])
-                .mockResolvedValueOnce({ success: true });
-
-            const result = await service.refresh();
-
-            expect(result.kind).toBe('failure');
-            if (result.kind === 'failure') {
-                expect(result.stage).toBe('wipe-vectors');
+                expect(result.stage).toBe('fetch-config');
                 expect(result.error).toContain('ALLOWED_VECTOR_TABLES');
             }
         });
+    });
 
-        it('unicode/multibyte tableName → format-whitelist reject', async () => {
+    describe('load-loader-mapping failure', () => {
+        it('Redis HGETALL упал → failure stage=load-loader-mapping', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    {
-                        ...SAMPLE_STORE,
-                        // Кириллица в имени — попытка homograph (выглядит как
-                        // ASCII, но другие code points). Format whitelist
-                        // (only `[A-Za-z0-9_]`) отбрасывает.
-                        vectorStoreConfig: JSON.stringify({
-                            name: 'postgres',
-                            config: { tableName: 'catalog_сhunks' }, // 'с' — кириллица
-                        }),
-                    },
-                ])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            redis.hgetall.mockReset();
+            redis.hgetall.mockRejectedValueOnce(new Error('Redis connection lost'));
 
             const result = await service.refresh();
 
             expect(result.kind).toBe('failure');
             if (result.kind === 'failure') {
-                expect(result.error).toContain('format whitelist');
+                expect(result.stage).toBe('load-loader-mapping');
+                expect(result.error).toContain('Redis connection lost');
             }
+            expect(redis.eval).toHaveBeenCalled();
         });
     });
 
     describe('downloadPayload — size cap (DoS защита)', () => {
         it('payload > MAX_PAYLOAD_BYTES → failure stage=download-payload', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
 
-            // Streaming chunks по 10MB, всего 200MB (выше 100MB cap).
             const big = Buffer.alloc(10 * 1024 * 1024, 'a');
             async function* hugePayload(): AsyncGenerator<Buffer> {
                 for (let i = 0; i < 20; i++) {
@@ -538,9 +579,7 @@ describe('CatalogRefreshService', () => {
     describe('download-payload failures', () => {
         it('S3 NotFoundException → skipped reason=payload-not-found', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
             storage.getObjectStream.mockRejectedValueOnce(
                 new NotFoundException('Object catalogs/aquaphor/latest.json not found'),
             );
@@ -555,9 +594,7 @@ describe('CatalogRefreshService', () => {
 
         it('S3 generic error → failure stage=download-payload', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
             storage.getObjectStream.mockRejectedValueOnce(new Error('S3 connection refused'));
 
             const result = await service.refresh();
@@ -573,9 +610,7 @@ describe('CatalogRefreshService', () => {
     describe('parse-payload failures', () => {
         it('malformed JSON → failure stage=parse-payload', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
             storage.getObjectStream.mockResolvedValueOnce({
                 key: CATALOG_PAYLOAD_KEY,
                 body: readableFrom('{ this is not JSON'),
@@ -592,9 +627,7 @@ describe('CatalogRefreshService', () => {
 
         it('zod validation fail (missing items) → failure stage=parse-payload', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
             storage.getObjectStream.mockResolvedValueOnce({
                 key: CATALOG_PAYLOAD_KEY,
                 body: readableFrom('{"syncMode":"full","sourceSystem":"moysklad","syncedAt":"now"}'),
@@ -614,16 +647,17 @@ describe('CatalogRefreshService', () => {
         it('1 из 2 items упал → success с itemsFailed=1', async () => {
             setupHappyPathMocks(flowise, redis, storage);
             flowise.request
-                .mockResolvedValueOnce({ numAdded: 1, addedDocs: [] })
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-001' })
                 .mockRejectedValueOnce(new FlowiseError('Bad Request', 400));
 
             const result = await service.refresh();
 
             expect(result.kind).toBe('success');
             if (result.kind === 'success') {
-                expect(result.itemsAttempted).toBe(2);
+                expect(result.itemsTotal).toBe(2);
                 expect(result.itemsUpserted).toBe(1);
                 expect(result.itemsFailed).toBe(1);
+                expect(result.itemsSkipped).toBe(0);
             }
         });
 
@@ -644,6 +678,46 @@ describe('CatalogRefreshService', () => {
         });
     });
 
+    describe('persist mapping — partial state updates', () => {
+        it('новый item (без stored docId) → HSET добавляет в mapping', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            // mu-001 уже есть, mu-002 новый
+            redis.hgetall.mockResolvedValueOnce({ 'mu-001': 'doc-mu-001' });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-002' });
+
+            await service.refresh();
+
+            // HSET только для mu-002 (новый), mu-001 уже был
+            expect(redis.hset).toHaveBeenCalledWith(
+                CATALOG_LOADERS_REDIS_KEY,
+                { 'mu-002': 'doc-mu-002' },
+            );
+        });
+
+        it('persist failure → warn, refresh всё равно success', async () => {
+            setupHappyPathMocks(flowise, redis, storage);
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, numSkipped: 0, docId: 'doc-mu-002' });
+            redis.hset.mockRejectedValueOnce(new Error('Redis OOM'));
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success');
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('persist loader mapping failed'));
+            warnSpy.mockRestore();
+        });
+    });
+
     describe('lock fencing — release через Lua CAS не снимает чужой lock', () => {
         it('каждый acquire генерирует новый uuid (fence-token)', async () => {
             redis.set.mockResolvedValue(null);
@@ -660,8 +734,8 @@ describe('CatalogRefreshService', () => {
         it('release передаёт ровно тот uuid что использовал acquire', async () => {
             setupHappyPathMocks(flowise, redis, storage);
             flowise.request
-                .mockResolvedValueOnce({ numAdded: 1 })
-                .mockResolvedValueOnce({ numAdded: 1 });
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
 
             await service.refresh();
 
@@ -691,13 +765,15 @@ describe('CatalogRefreshService', () => {
         it('успешный refresh → logger.log с completed + counters', async () => {
             setupHappyPathMocks(flowise, redis, storage);
             flowise.request
-                .mockResolvedValueOnce({ numAdded: 1 })
-                .mockResolvedValueOnce({ numAdded: 1 });
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
 
             await service.runScheduled();
 
             expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('completed'));
-            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('items=2/2'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('total=2'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('upserted=2'));
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('skipped=0'));
             expect(errorSpy).not.toHaveBeenCalled();
         });
 
@@ -722,33 +798,32 @@ describe('CatalogRefreshService', () => {
         });
     });
 
-    describe('TLS to vectorStoreConfig parsing — JSON-string vs object', () => {
-        it('vectorStoreConfig как object (не string) → корректно extracted', async () => {
-            setupHappyPathMocks(flowise, redis, storage);
-            // Override mock — store с already-parsed configs (как из MCP-обёртки)
-            flowise.request.mockReset();
-            redis.set.mockReset();
+    describe('vectorStoreConfig parsing — JSON-string vs object', () => {
+        it('configs как object (не string) → корректно extracted', async () => {
             redis.set.mockResolvedValueOnce('OK');
-            flowise.request
-                .mockResolvedValueOnce([
-                    {
-                        ...SAMPLE_STORE,
-                        vectorStoreConfig: {
-                            name: 'postgres',
-                            config: { host: 'h', tableName: 'catalog_chunks' },
-                        },
-                        embeddingConfig: { name: 'openAIEmbeddings', config: { dim: 1536 } },
+            redis.hgetall.mockResolvedValueOnce({});
+            flowise.request.mockResolvedValueOnce([
+                {
+                    ...SAMPLE_STORE,
+                    vectorStoreConfig: {
+                        name: 'postgres',
+                        config: { host: 'h', tableName: 'catalog_chunks' },
                     },
-                ])
-                .mockResolvedValueOnce({ success: true })
-                .mockResolvedValueOnce({ numAdded: 1 })
-                .mockResolvedValueOnce({ numAdded: 1 });
-            storage.getObjectStream.mockReset();
+                    embeddingConfig: { name: 'openAIEmbeddings', config: { dim: 1536 } },
+                    recordManagerConfig: {
+                        name: 'postgresRecordManager',
+                        config: { tableName: 'catalog_record_manager' },
+                    },
+                },
+            ]);
             storage.getObjectStream.mockResolvedValueOnce({
                 key: CATALOG_PAYLOAD_KEY,
                 body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
                 contentType: 'application/json',
             });
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
 
             const result = await service.refresh();
             expect(result.kind).toBe('success');

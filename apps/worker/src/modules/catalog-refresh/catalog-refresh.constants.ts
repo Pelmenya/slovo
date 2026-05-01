@@ -67,12 +67,23 @@ export const CATALOG_PAYLOAD_KEY = 'catalogs/aquaphor/latest.json';
 // concurrency=5 дал 80% failure rate на 155 items, concurrency=1 — 100%
 // success.
 //
-// Trade-off: 155 items × ~1.5sec = ~4 мин на refresh. Cron 4ч → ~1.5%
-// duty cycle, нормально. При росте каталога до 1000+ items придётся
-// (a) batch'ить items в один loader через splitter-aware text format,
-// (b) использовать Flowise QUEUE_MODE с Bull (но это требует Redis в Flowise),
-// (c) форкнуть Flowise + добавить row-level lock в saveProcessingLoader.
+// PR9.5 RecordManager update: skip-if-unchanged значимо снижает duty cycle —
+// типичный refresh с 5-10 changes/день длится 5-10 sec вместо 90 sec
+// (unchanged items skipped without embedding cost).
 export const CATALOG_UPSERT_CONCURRENCY = 1;
+
+// Redis HASH для slovo-side mapping externalId → docId. Ключ к idempotent
+// re-upsert через Flowise RecordManager:
+//   - При first refresh: пусто → upsert without docId → Flowise creates new
+//     loader → store returned docId
+//   - При repeat refresh: HGETALL → per-item lookup → upsert WITH stored docId
+//     → metadata.docId stable → RecordManager hash matches → skip embedding
+//
+// REMOVED items (в mapping но не в payload) → DELETE loader + HDEL.
+//
+// Без TTL — mapping живёт пока Document Store существует. При смене store
+// (ребрендинг / per-tenant split) — invalidate manually.
+export const CATALOG_LOADERS_REDIS_KEY = 'slovo:catalog:loaders';
 
 // Splitter config для PlainText loader. Совпадает с предыдущим S3 File Loader
 // setup'ом (Phase 0) — chunkSize 1000, overlap 200. Большинство items

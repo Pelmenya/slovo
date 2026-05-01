@@ -395,35 +395,29 @@ Document Store с другим backend (например Chroma локально
 
 Триггер: при появлении 2-го vectorstore backend.
 
-### 27. catalog-refresh — Flowise vector table coupling
+### 27. catalog-refresh — Flowise vector table coupling ✅ **ЗАКРЫТО (PR9.5)**
 
-Worker делает прямой TRUNCATE Flowise-managed таблицы `catalog_chunks`
-через `prisma.$executeRawUnsafe` (PR6.5). Это hidden coupling: slovo
-зависит от Flowise table schema (имя, public schema). При апгрейде
-Flowise (3.1 → 3.2 → 4.x) проверить:
+PR6.5 делал прямой TRUNCATE через `prisma.$executeRawUnsafe('TRUNCATE
+"catalog_chunks"')` — hidden coupling с Flowise schema.
 
-- Имя таблицы: всё ещё контролируется через `vectorStoreConfig.config.tableName`.
-- Schema: всё ещё `public` или Flowise начнёт создавать в своей.
-- Колонки: TRUNCATE schema-agnostic, но если Flowise добавит обязательные
-  FK — сломается без CASCADE.
+PR9.5 убрал TRUNCATE: Flowise `postgresRecordManager` с
+`cleanup=incremental` сам управляет lifecycle chunks. Slovo больше не
+знает о таблице `catalog_chunks` — coupling ушёл на сторону Flowise
+(где ему и место). `DatabaseModule` удалён из `CatalogRefreshModule`.
 
-Workaround при breaking change: либо вернуться на Flowise refresh с
-RecordManager (требует доп компонент), либо patch Flowise S3 File Loader
-для JSONLoader (вариант B из ADR-007 amendment, отложен).
+`ALLOWED_VECTOR_TABLES` whitelist оставлен в constants как defence-in-depth
+(на случай если admin поменяет `vectorStoreConfig.config.tableName` через
+Flowise UI — refresh fail-fast'ит до того как послать что-либо в БД).
 
-Триггер: апгрейд Flowise major-версии.
+### 28. catalog-refresh — multi-replica TRUNCATE retry/backoff ✅ **ЗАКРЫТО (PR9.5)**
 
-### 28. catalog-refresh — multi-replica TRUNCATE retry/backoff
+TRUNCATE удалён вместе с PR9.5 RecordManager refactor. Race condition
+больше не возможен — Flowise делает per-loader DELETE через RecordManager
+(idempotent, не lock'ит таблицу).
 
-При появлении 2+ workers (k8s replicas) есть race: один worker делает
-TRUNCATE, второй параллельно upsert'ит — `ERROR: cannot TRUNCATE because
-it is being used by active queries`. Сейчас защищено Redis lock (только
-один worker делает refresh за раз), но при разделении responsibilities
-(refresh worker отдельно от upsert worker) гонка может вернуться.
-
-Workaround: short retry с backoff (3 попытки × 1s) вокруг TRUNCATE.
-
-Триггер: переход на k8s deployment с replicas > 1.
+При появлении 2+ workers (k8s replicas) актуальной проблемой остаётся
+Redis lock fairness — два cron'а одновременно дёрнут SET NX, один
+выиграет, второй вернёт `lock-held` (это OK, refresh идемпотентен).
 
 ### 29. FlowiseNameResolver helper — extract single-flight name lookup
 
