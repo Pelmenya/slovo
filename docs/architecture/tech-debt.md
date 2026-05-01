@@ -275,7 +275,22 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 > `f093a6f` (StorageModule.forFeature), `267a05a` (whitelist+single-flight+
 > name-lookup) — здесь не повторяются.
 
-### 21. Embedding/Vision budget cap + Langfuse alert ⚠️ **PR8 RAISED PRIORITY**
+### 21. Embedding/Vision budget cap + Langfuse alert ✅ **ЗАКРЫТО (PR9 budget commit)**
+
+Реализовано в `apps/api/src/modules/budget/`:
+- BudgetService с assertVisionBudget/assertEmbeddingBudget + record методы
+- @Global() module — единая точка для cross-cutting LLM cost protection
+- env: VISION_BUDGET_DAILY_USD ($5), EMBEDDING_BUDGET_DAILY_USD ($1)
+- Counters в Redis с UTC date-key `slovo:budget:{vision|embedding}:YYYYMMDD`
+- 503 ServiceUnavailable + payload с spent/budget/resets_at
+- Live verify: $0.014 vision + $0.000001 embedding после dev-runs
+
+**Что НЕ сделано (отложено):**
+- Per-IPv6-subnet throttle (custom ThrottlerStorage) — следующая фаза до prod
+- Langfuse alerts — требует running Langfuse, отдельный setup
+- Per-user budget после auth-модуля — связано с #17
+
+### 21-historical. Original задача (для исторического контекста)
 
 После PR8 (`/catalog/search/image`) cost exposure вырос ×35:
 - `/text` (embedding): $0.0000004/call — 30 req/min/IP × distributed IPv6 (2^64) = catastrophe but cents-level
@@ -432,6 +447,32 @@ const id = await resolver.resolve(); // lazy, single-flight, retry
 сокращение в каждом потребителе.
 
 Триггер: при появлении 3-го name-lookup потребителя.
+
+### 31. Multi-image Vision — prompt v2 для batch describe ⚠️ **PR9 DISCOVERY**
+
+API `/catalog/search` поддерживает до 5 фото в одном запросе (`images` array).
+Технически Anthropic Vision API принимает все картинки в одном request.
+Но **prompt vision-catalog-describer-v1 не справляется с multi-image input**:
+для 2+ фото возвращает не-JSON-object output → 502 BadGateway в slovo.
+
+Live verify (PR9 e2e through Playwright Swagger, 1 мая 2026):
+- 1 фото → 200 OK, корректный JSON с description_ru
+- 2 фото → 502 "Vision output is not a JSON object (got null/array/primitive)"
+
+**Workaround сейчас:** API contract разрешает 1..5, но реально работает
+только 1 фото. Документируем в Swagger / executive summary что multi
+требует prompt v2.
+
+**Решение (Phase 2 backlog):**
+- Vision prompt v2 со специальным multi-image instruction:
+  «Опиши товар одним общим описанием, объединяя информацию со всех фото
+  (разные ракурсы того же объекта)».
+- A/B test на наборе из 5-10 multi-image кейсов.
+- Возможно отдельный chatflow `vision-catalog-describer-multi-v2` с
+  более точным prompt'ом, name lookup переключаемый по images.length > 1.
+
+Триггер: до открытия multi-image flow клиентам / при появлении multi-image
+UX в `prostor-app`.
 
 ### 30. Vision response — zod schema когда prompt расширится
 

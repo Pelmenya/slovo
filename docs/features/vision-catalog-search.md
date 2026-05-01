@@ -1,9 +1,38 @@
 # Vision Catalog Search
 
-> **Статус:** 🟡 черновик / Phase 1 — Flowise эксперименты
+> **Статус:** ✅ Phase 1 закрыта (PR6.5 + PR7 + PR8 + PR9), 1 мая 2026
 > **Связи:** [knowledge-base.md](knowledge-base.md), [ADR-007 catalog ingest contract](../architecture/decisions/007-catalog-ingest-via-minio.md), [ADR-006](../architecture/decisions/006-knowledge-base-as-first-feature.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md)
 
 Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**. Встраивается в `crm-aqua-kinetics` (собственный продукт разработчика) — пользователь CRM (менеджер / инженер) присылает фото сломанного узла, за пару секунд видит подходящую замену из каталога ~500 товаров MoySklad.
+
+## API endpoint (актуальный — после PR9 universal refactor)
+
+**Один универсальный endpoint** `POST /catalog/search` принимает три режима в одном контракте:
+
+```typescript
+type TSearchRequest = {
+    query?: string;                                            // 1..500 chars
+    images?: Array<{ base64: string; mime: string }>;          // 1..5 фото
+    topK?: number;                                             // 1..50, default 10
+};
+// Хотя бы одно из query/images обязательно.
+```
+
+| Режим | Что отправляет клиент | Что делает slovo |
+|---|---|---|
+| **Text only** | `query` | embedding(query) → pgvector cosine top-K |
+| **Image only** | `images` (1..5) | Vision describe → `description_ru` → embedding → top-K |
+| **Combined** | `query` + `images` | Vision describe → `effective = query + " " + description_ru` → embedding → top-K |
+
+Response shape — `{ count, docs, timeTakenMs, visionOutput? }`. `visionOutput` присутствует только когда был передан `images`.
+
+**Throttle** 5/min/IP (vision-rate). **Budget cap** $5 vision/day + $1 embedding/day → 503 ServiceUnavailable.
+
+**Известное ограничение** (PR9 e2e discovery): multi-image (2+) пока требует prompt v2 — Vision prompt v1 на multi-image input возвращает не-JSON output и slovo отдаёт 502. Single-image (1 фото) работает корректно. См. tech-debt #31.
+
+**Исторический контекст:** в PR7 был `/catalog/search/text`, в PR8 — `/catalog/search/image`, в PR9 они объединены в universal `/catalog/search`. Старые endpoints удалены — клиенты пилотного периода ещё не интегрированы, breaking change без последствий.
+
+---
 
 ---
 
