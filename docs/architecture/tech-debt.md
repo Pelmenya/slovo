@@ -521,6 +521,8 @@ if (Object.keys(loaderMapping).length === 0 && store.loaders.length > 0) {
 }
 ```
 
+**Security caveat при реализации:** `loader.metadata.externalId` хоть изначально и пишется slovo через `buildItemMetadata(item)`, но при reconcile значение приходит из Flowise pgvector — если кто-то скомпрометировал Flowise напрямую (SQL injection / SSRF в Flowise routes), `externalId` может стать любой строкой. Перед записью в Redis применить тот же zod-guard что и для `docId` (`min(1).max(256).regex(/^[a-zA-Z0-9_-]+$/)`).
+
 Триггер: после первого инцидента с Redis data-loss / при появлении observability на cost-spike (#33).
 
 ### 33. catalog-refresh — cost-spike monitoring

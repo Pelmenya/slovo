@@ -456,7 +456,7 @@ export class CatalogRefreshService implements OnModuleDestroy {
             // в зависимости от encoding. Явный type-guard для strict mode.
             let buf: Buffer;
             if (typeof chunk === 'string') {
-                buf = Buffer.from(chunk, 'utf-8');
+                buf = Buffer.from(chunk, 'utf8');
             } else if (Buffer.isBuffer(chunk)) {
                 buf = chunk;
             } else if (chunk instanceof Uint8Array) {
