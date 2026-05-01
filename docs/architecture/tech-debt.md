@@ -17,8 +17,11 @@
 | **B** | SHA256-кэш повторных image-запросов (`slovo:vision:cache:<sha256>` TTL 24ч) | См. **#35** ниже | ⏳ TODO |
 | **C** | UX-loader при image-search (Vision 6-7 сек) — спиннер/skeleton | См. `docs/management/vision-catalog-handoff.md` (фронт-задача) | ⏳ TODO |
 | **D** | Telegram/email alert на budget-cap exhaustion (а не только 503 на endpoint'е) | Расширить `apps/api/src/modules/budget/` | ⏳ TODO |
+| **E** | Webhook-trigger для catalog-refresh (заменить cron 4ч → push от CRM при write в MinIO) | См. **#37** ниже + ADR-007 amendment | ⏳ TODO (enhancement, не security blocker) |
 
-Все 4 — обязательны до Phase 2 (публичный запуск). Без них либо abuse через Vision API, либо клиент с долгой image-search'ой бьёт «обновить» и удваивает cost, либо мы узнаём о превышении бюджета только через клиентскую жалобу.
+Пункты A-D обязательны до Phase 2 (публичный запуск) — без них либо abuse через Vision API, либо клиент с долгой image-search'ой бьёт «обновить» и удваивает cost, либо мы узнаём о превышении бюджета только через клиентскую жалобу.
+
+Пункт E (webhook) — желательно вместе с A-D, но не security-blocker. Можно жить с 4ч-задержкой первую неделю в prod, потом выкатить когда соберём метрики реальной частоты обновлений.
 
 ---
 
@@ -627,6 +630,47 @@ if (mappingWasPopulated && skipRate < 0.5) {
 **Стоимость:** ~30 LOC + env vars `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ADMIN_CHAT_ID` (или SMTP creds). Час работы.
 
 **Триггер:** до публичного запуска prostor-app.
+
+### 37. Webhook-trigger для catalog-refresh — заменить пассивный cron активным push'ом
+
+**Контекст:** ADR-007 amendment 2026-04-30 уже предусмотрел этот переход:
+> *Если cron-latency 4ч начнёт мешать UX → перейти на webhook-trigger (`POST /catalog/sync-now`) поверх того же файлового контракта (slovo читает по триггеру + по cron). ADR не отменяется.*
+
+С запуском prostor-app задержка 4 часа становится ощутимой: товар изменён в CRM в 12:30 → попадёт в search только в 16:00. Для клиентской платформы это плохо (клиент ищет картридж по фото — Vision верно описала «Аквафор B520 PRO», а товар уже снят с продажи в CRM, но slovo об этом не знает).
+
+**Архитектура:**
+
+1. **CRM-aqua-kinetics-back** после write `latest.json` в MinIO (или после `cache-reset` события / на старте приложения) → POST в slovo `/catalog/sync-now` с HMAC-SHA256 подписью body+timestamp.
+2. **slovo (`apps/api`)** — новый controller `CatalogWebhookController`:
+   - Валидация HMAC через shared secret `CATALOG_WEBHOOK_SECRET` (env, обе стороны)
+   - Replay protection: timestamp в payload, отбрасываем если > 60 сек старше now
+   - Публикует RabbitMQ message в queue `catalog.refresh.requested`
+   - Возвращает 202 Accepted за ~50ms
+3. **slovo (`apps/worker`)** — `CatalogRefreshConsumer`:
+   - Подписан на queue `catalog.refresh.requested`
+   - Триггерит существующий `CatalogRefreshService.refresh()` (Redis-lock защита уже есть)
+   - При `lock-held` (другой refresh идёт) → ставит флаг `slovo:catalog:refresh:pending=1`
+   - По завершении текущего refresh — проверяет флаг → если есть, запускает follow-up (один). Естественный coalescing для bulk-update сценариев.
+4. **Cron остаётся как fallback** — `@Cron(CATALOG_REFRESH_CRON)` не выкидываем. Если webhook упал / CRM забыл / network — через 4ч всё равно sync. Belt-and-suspenders.
+5. **`OnApplicationBootstrap` hook** — refresh при старте slovo-app. Сейчас после restart следующий cron-tick через 4ч; с bootstrap-trigger каталог свежий через минуту.
+
+**Что нужно для CRM-стороны:**
+- Endpoint вызывается **после успешной записи** в MinIO (не до — иначе slovo прочитает старый файл).
+- Retry с backoff на не-200 (3 попытки, exponential): сетевые блипы не должны рушить sync.
+- Логирование каждого webhook-вызова для аудита.
+
+**Что нужно для slovo-стороны:**
+- `apps/api/src/modules/catalog/webhook/` — controller + DTO + HMAC-validator
+- 5-10 spec'ов: HMAC valid → 202, HMAC invalid → 401, stale timestamp → 401, valid → message published, RMQ down → 503, replay attempt → 401
+- `apps/worker/src/modules/catalog-refresh/` — consumer module + pending-flag logic + follow-up test
+- env vars `CATALOG_WEBHOOK_SECRET` (shared) + `RMQ_*` уже стоят
+- ADR-007 amendment 2026-05-XX (или later) с фиксацией реализации
+
+**Стоимость:** 1-2 вечера на slovo (~300-400 LOC + ~150 LOC тестов) + 1 PR на стороне CRM (~50 LOC + retry-логика). Требует **координации с CRM-командой** — это не solo-task.
+
+**Триггер:** **в составе Phase 2** (publish prostor-app). Желательно вместе с pre-launch blockers (A-D), но не обязательно — webhook это enhancement, не security.
+
+**Risk если не сделать:** клиенты видят неактуальные данные (изменения в CRM до 4ч) — UX-проблема, не безопасность. Можно жить с cron'ом первую неделю в prod, потом выкатить webhook когда соберём метрики реальной частоты обновлений каталога.
 
 ---
 
