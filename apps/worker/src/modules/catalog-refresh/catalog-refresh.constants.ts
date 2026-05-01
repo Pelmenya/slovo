@@ -6,18 +6,11 @@
 export const FLOWISE_CLIENT_TOKEN = Symbol('CATALOG_REFRESH_FLOWISE_CLIENT');
 export const REDIS_CLIENT_TOKEN = Symbol('CATALOG_REFRESH_REDIS_CLIENT');
 
-// =============================================================================
-// Имя Document Store в Flowise для каталога Аквафор.
-// CRM feeder кладёт latest.json в slovo-datasets/catalogs/aquaphor/, Flowise
-// S3 File Loader тянет его при refresh. Этот store создан вручную в Phase 0
-// (см. lab journal day 2, storeId: aec6b741-8610-4f98-9f5c-bc829dc41a96).
-//
-// TODO(multi-tenant): когда появятся пользователи и каталог станет
-// per-tenant — вынести в Prisma TenantConfig или ENV (CATALOG_STORE_NAMES).
-// Сейчас single-store hardcoded — допустимо для MVP.
-// =============================================================================
-
-export const CATALOG_AQUAPHOR_STORE_NAME = 'catalog-aquaphor';
+// Имя Document Store каталога Аквафор — re-export из libs/common (единый
+// source-of-truth с apps/api/catalog). CRM feeder кладёт latest.json в
+// slovo-datasets/catalogs/aquaphor/, Flowise S3 File Loader тянет при refresh.
+// Store создан вручную в Phase 0 (см. lab journal day 2).
+export { CATALOG_AQUAPHOR_STORE_NAME } from '@slovo/common';
 
 // =============================================================================
 // Distributed lock — Redis SET NX EX с fence-token (uuid per acquire).

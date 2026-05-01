@@ -5,10 +5,11 @@ import type { TAppEnv } from '@slovo/common';
 import { STORAGE_BUCKET, STORAGE_S3_CLIENT } from './storage.constants';
 import { StorageService } from './storage.service';
 
-// Ключи env, в которых хранится имя bucket'а. Приведение через
-// `keyof TAppEnv` обеспечивает type-safety: typo в имени env-переменной
-// падает при компиляции, не в runtime.
-type TStorageBucketEnvKey = keyof TAppEnv;
+// Ключи env-переменных в которых хранится имя bucket'а. Узкий union
+// (не `keyof TAppEnv`) даёт строгий type-safety на стадии компиляции:
+// `forFeature({ bucketEnvKey: 'POSTGRES_HOST' })` не пройдёт TypeScript.
+// Расширяется явно при добавлении нового bucket-env-var (с ревью).
+type TStorageBucketEnvKey = 'S3_BUCKET' | 'S3_CATALOG_BUCKET';
 
 function createS3ClientProvider(): Provider {
     return {
@@ -67,6 +68,14 @@ function createBucketProvider(envKey: TStorageBucketEnvKey): Provider {
 // получает StorageService bound к S3_BUCKET, catalog module — к S3_CATALOG_BUCKET.
 // Два отдельных DI-instance'а в одной NestJS-app, S3Client может share'иться
 // (configured одинаково из тех же env), но bucket разный.
+//
+// ВАЖНО: один feature-модуль НЕ должен импортировать одновременно
+// `StorageModule` и `StorageModule.forFeature(...)` — оба регистрируют
+// один и тот же `STORAGE_BUCKET`/`STORAGE_S3_CLIENT` token и Nest схлопнет
+// их в один scope с непредсказуемым «победителем» (порядок imports). Для
+// одного модуля выбирай **один** вариант. Если нужны два разных bucket'а
+// в одном feature — extract в отдельные sub-модули или жди когда появится
+// `forFeature({ namespace })` с per-instance токенами (tech-debt #22-сосед).
 @Module({
     imports: [ConfigModule],
     providers: [createS3ClientProvider(), createBucketProvider('S3_BUCKET'), StorageService],

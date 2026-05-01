@@ -1,5 +1,11 @@
 import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+    ApiBadRequestResponse,
+    ApiOkResponse,
+    ApiOperation,
+    ApiTags,
+    ApiTooManyRequestsResponse,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { SearchTextRequestDto } from './dto/search-text.request.dto';
 import { SearchTextResponseDto } from './dto/search-text.response.dto';
@@ -27,6 +33,12 @@ export class TextSearchController {
             'Каждый чанк обогащается presigned S3 URL\'ами для картинок (TTL 1ч, кэш 50м).',
     })
     @ApiOkResponse({ type: SearchTextResponseDto })
+    @ApiBadRequestResponse({
+        description: 'ValidationPipe — пустая query, query >500 chars, topK вне [1..50] или левые поля в body',
+    })
+    @ApiTooManyRequestsResponse({
+        description: 'Throttle 30/min/IP превышен',
+    })
     search(@Body() dto: SearchTextRequestDto): Promise<SearchTextResponseDto> {
         return this.service.search(dto.query, dto.topK);
     }

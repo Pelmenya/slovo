@@ -451,7 +451,9 @@ describe('TextSearchService', () => {
             // Оба получили один и тот же URL
             expect(r1.docs[0].imageUrls).toEqual(['https://signed/shared']);
             expect(r2.docs[0].imageUrls).toEqual(['https://signed/shared']);
-            // Sign call всё ещё один (cache hit на втором поскольку set уже произошёл)
+            // Sign call всё ещё один — второй search получил URL через
+            // inflightUrls Map (single-flight Promise share), не через Redis cache.
+            // Redis SET выполнится один раз (после resolve sign Promise).
             expect(storage.getPresignedDownloadUrl).toHaveBeenCalledTimes(1);
         });
     });

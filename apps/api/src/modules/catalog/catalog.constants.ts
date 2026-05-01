@@ -7,22 +7,16 @@
 export const FLOWISE_CLIENT_TOKEN = Symbol('CATALOG_FLOWISE_CLIENT');
 export const REDIS_CLIENT_TOKEN = Symbol('CATALOG_REDIS_CLIENT');
 
-// =============================================================================
-// Document Store name для каталога Аквафор — единый source-of-truth с
-// catalog-refresh worker'ом (см. catalog-refresh.constants.ts:20).
+// Document Store name каталога Аквафор — re-export из libs/common чтобы
+// существующий импорт `from '../catalog.constants'` не ломался. Канонический
+// источник — `@slovo/common` (используется и в apps/worker/catalog-refresh).
 //
 // Раньше API использовал hardcoded UUID `aec6b741-...` (Phase 0 store id),
 // что создавало рассинхрон с worker'ом (тот резолвит через name): при reset
 // Flowise dev-инстанса id меняется → API ломается тихо. Теперь оба идут
-// через name lookup (TextSearchService.lookupStoreId на старте, lazy +
-// single-flight retry on failure).
-//
-// TODO(multi-tenant): когда появятся пользователи / per-tenant каталоги —
-// маппить через Prisma TenantConfig (user.tenantId → storeName). Сейчас single
-// store hardcoded — допустимо для MVP.
-// =============================================================================
-
-export const CATALOG_AQUAPHOR_STORE_NAME = 'catalog-aquaphor';
+// через name lookup (TextSearchService.lookupStoreId, lazy + single-flight
+// retry on failure).
+export { CATALOG_AQUAPHOR_STORE_NAME } from '@slovo/common';
 
 // =============================================================================
 // Top-K границы. Default=10 — баланс между coverage и latency. Max=50 — защита

@@ -57,7 +57,7 @@ import {
 //
 // imageUrls — НЕ в whitelist: возвращаем presigned URLs отдельным полем,
 // raw S3-keys клиенту знать не нужно (только наш bucket → отдельно accessible).
-const METADATA_WHITELIST: ReadonlyArray<string> = [
+const METADATA_WHITELIST: ReadonlySet<string> = new Set([
     'externalId',
     'externalType',
     'externalSource',
@@ -66,7 +66,7 @@ const METADATA_WHITELIST: ReadonlyArray<string> = [
     'description',
     'salePriceKopecks',
     'rangForApp',
-];
+]);
 
 @Injectable()
 export class TextSearchService implements OnModuleDestroy {
@@ -215,8 +215,8 @@ export class TextSearchService implements OnModuleDestroy {
 
 function pickMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    for (const key of METADATA_WHITELIST) {
-        if (key in metadata) {
+    for (const key of Object.keys(metadata)) {
+        if (METADATA_WHITELIST.has(key)) {
             result[key] = metadata[key];
         }
     }
