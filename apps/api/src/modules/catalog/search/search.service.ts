@@ -1,4 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+    BudgetService,
+    VISION_COST_PER_IMAGE_USD,
+} from '../../budget';
 import { SearchRequestDto } from './dto/search.request.dto';
 import {
     SearchResponseDto,
@@ -31,6 +35,7 @@ export class CatalogSearchService {
     constructor(
         private readonly imageSearch: ImageSearchService,
         private readonly textSearch: TextSearchService,
+        private readonly budget: BudgetService,
     ) {}
 
     async search(dto: SearchRequestDto): Promise<SearchResponseDto> {
@@ -43,12 +48,25 @@ export class CatalogSearchService {
             );
         }
 
+        // Budget assertions ДО LLM-вызовов — fail-fast если daily cap
+        // достигнут (503 ServiceUnavailable). Vision check только если
+        // будем вызывать Vision; embedding всегда (text search всегда
+        // делает 1 embedding query).
+        if (hasImages) {
+            await this.budget.assertVisionBudget();
+        }
+        await this.budget.assertEmbeddingBudget();
+
         // Vision pass — только если были images. Все фото идут в один
         // Vision call (multi-image describe). Если is_relevant=false →
         // 400 с visionOutput hint (UX: «AI распознал кота»).
         let visionOutput: VisionOutputDto | undefined;
         if (hasImages) {
             visionOutput = await this.imageSearch.processVision(dto.images!);
+            // Записываем cost per-image — multi-image cost линейный (Anthropic
+            // считает каждое фото как отдельный input). VISION_COST_PER_IMAGE_USD
+            // = $0.007 conservative (Sonnet 4.6 worst case).
+            await this.budget.recordVisionCall(dto.images!.length * VISION_COST_PER_IMAGE_USD);
             if (!visionOutput.isRelevant) {
                 throw new BadRequestException({
                     message: 'Image not relevant — Vision не распознал оборудование на фото',
@@ -59,6 +77,12 @@ export class CatalogSearchService {
 
         const effectiveQuery = buildEffectiveQuery(dto.query, visionOutput?.descriptionRu);
         const textResults = await this.textSearch.search(effectiveQuery, dto.topK);
+
+        // Embedding cost approximate — query length / 4 chars-per-token.
+        // Реальный counter в OpenAI billing, эта запись для cap'а.
+        await this.budget.recordEmbeddingTokens(
+            BudgetService.approximateTokensFromText(effectiveQuery),
+        );
 
         return {
             count: textResults.count,

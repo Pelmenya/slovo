@@ -88,6 +88,14 @@ export const envSchema = z
 
         THROTTLE_TTL: z.coerce.number().int().positive().default(60),
         THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
+
+        // Budget cap (#21) — daily $-cap для LLM cross-cutting calls.
+        // Превышение → 503 ServiceUnavailable. Reset на UTC midnight.
+        // Vision $5/день ≈ 700 single-image searches (или 140 multi-5).
+        // Embedding $1/день ≈ 50M tokens (фактически unlimited для нашего
+        // масштаба — cap для симметрии и future-proofing).
+        VISION_BUDGET_DAILY_USD: z.coerce.number().positive().default(5),
+        EMBEDDING_BUDGET_DAILY_USD: z.coerce.number().positive().default(1),
     })
     .superRefine((env, ctx) => {
         if (env.NODE_ENV !== 'production') {

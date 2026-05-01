@@ -8,6 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { STORAGE_BUCKET, STORAGE_S3_CLIENT, StorageService } from '@slovo/storage';
 import request from 'supertest';
+import { BUDGET_REDIS_TOKEN, BudgetModule, BudgetService } from '../src/modules/budget';
 import { CatalogModule } from '../src/modules/catalog/catalog.module';
 import {
     CATALOG_AQUAPHOR_STORE_NAME,
@@ -73,10 +74,22 @@ describe('Catalog universal search endpoint (e2e)', () => {
                 .mockImplementation((key: string) => Promise.resolve(`https://signed/${key}`)),
         };
 
+        const budgetMock = {
+            assertVisionBudget: jest.fn().mockResolvedValue(undefined),
+            assertEmbeddingBudget: jest.fn().mockResolvedValue(undefined),
+            recordVisionCall: jest.fn().mockResolvedValue(undefined),
+            recordEmbeddingTokens: jest.fn().mockResolvedValue(undefined),
+        };
+
         const moduleRef: TestingModule = await Test.createTestingModule({
             imports: [
                 ConfigModule.forRoot({ ignoreEnvFile: true, isGlobal: true }),
                 ThrottlerModule.forRoot([{ ttl: 60_000, limit: 10_000 }]),
+                // BudgetModule @Global() — без явного import @Global()
+                // не работает в test-only setup (только AppModule имеет
+                // его). Импортим явно + override Redis token + BudgetService
+                // на mock — реальный ioredis в test не нужен.
+                BudgetModule,
                 CatalogModule,
             ],
         })
@@ -90,6 +103,10 @@ describe('Catalog universal search endpoint (e2e)', () => {
             .useValue({})
             .overrideProvider(STORAGE_BUCKET)
             .useValue('test-bucket')
+            .overrideProvider(BUDGET_REDIS_TOKEN)
+            .useValue({})
+            .overrideProvider(BudgetService)
+            .useValue(budgetMock)
             .compile();
 
         app = moduleRef.createNestApplication();
