@@ -7,21 +7,18 @@
 
 ## Про разработчика
 
-**Имя:** Дмитрий Ляпин (GitHub: [Pelmenya](https://github.com/Pelmenya))
-
 **Технический бэкграунд:**
 
-- Кандидат технических наук (05.13.01 — Системный анализ, МГУПИ, 2006)
-- Кандидатская под научным руководством С. П. Шарого по интервальному анализу и моделированию системных связей (диссертация в библиотеке ИВМиМГ СО РАН)
-- Fullstack-разработчик: NestJS, Next.js, React, TypeScript, PostgreSQL, Docker
-- Production-опыт интеграции OpenAI API (проект CRM Aqua Kinetika — анализ воды, подбор оборудования)
-- Опыт парсинга 157k отелей с Puppeteer + pgvector + PostgreSQL full-text search (tsvector)
+- PhD по системному анализу — интервальный анализ и моделирование системных связей.
+- Fullstack: NestJS, Next.js, React, TypeScript, PostgreSQL, Docker.
+- Production-опыт интеграции OpenAI API (CRM для водоочистки — анализ воды, подбор оборудования).
+- Опыт парсинга 157k отелей с Puppeteer + pgvector + PostgreSQL full-text search (tsvector).
 
 **Математический фундамент:** embeddings, метрики расстояния, PCA, кластеризация, интервальный анализ — глубоко на уровне PhD.
 
 **Современный AI-стек:** Claude SDK, Flowise, MCP (PostgreSQL MCP, Custom MCP), Tool Agents, RAG, structured output, function calling.
 
-**Текущий статус:** 45 лет, семья (дети, пожилые родители), основная работа в найме. Проект slovo — pet-project с прицелом на SaaS. Пилит по мере наличия времени, без дедлайнов. Есть финансовая подушка на старте.
+**Контекст работы:** slovo — pet-project с прицелом на SaaS, пилится после основной работы, без дедлайнов. Объяснять можно сразу глубоко (математика, RAG, distributed systems) — не упрощай.
 
 ---
 
@@ -154,7 +151,7 @@ prisma/schema/
 5. **ADR-005** — Prisma + raw queries для pgvector
 6. **ADR-006** — Knowledge Base как первая фича и core capability (🟡 в обсуждении)
 7. **ADR-007** — Catalog ingest contract (file-based pull через MinIO bucket, амендмент 2026-04-30 про bucket→Flowise через slovo orchestrate)
-8. **ADR-008** — MCP-сервер для Flowise (self-built в monorepo, амендмент 2026-04-30 про scope 54→66 tools и план extract в Pelmenya/mcp-flowise + Pelmenya/flowise-flowdata)
+8. **ADR-008** — MCP-сервер для Flowise (self-built в monorepo, амендмент 2026-04-30 про scope 54→66 tools и план extract в отдельные репозитории `mcp-flowise` + `flowise-flowdata`)
 
 При любом пересмотре — создать новый ADR, старый пометить `Устарело` или `Заменено на ADR-XXX`.
 
@@ -166,7 +163,7 @@ prisma/schema/
 
 Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Роль (после пересмотра 2026-04-22 + Phase 0 эксперимента): **LLM runtime + RAG-orchestration слой**. Управление и orchestration — через REST API, не UI вручную (см. ниже).
 
-Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал разработчика — `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` (5 уровней).
+Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал — `~/Desktop/test-marpla/docs/tutorial/` (5 уровней).
 
 **Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно нюансы механики chain-нод и API override. При непонятном поведении — **сразу лезь в исходник** через `docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"` или `node_modules/flowise-components/nodes/<category>/<name>/`. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут.
 
@@ -182,7 +179,7 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 - Закрывает категорию операций (например, обнаружили что `marketplaces/*` нужен — добавляем 2-3 tools одной категорией).
 
 **Когда НЕ добавлять (одноразовая разведка):**
-- Один раз посмотреть какие fields в response — `flowise_introspect` / прямой `fetch` в эксперимент-скрипте `experiments/`. Не плодит баггедж в публичном пакете при extract в `Pelmenya/mcp-flowise`.
+- Один раз посмотреть какие fields в response — `flowise_introspect` / прямой `fetch` в эксперимент-скрипте `experiments/`. Не плодит баггедж в публичном пакете при extract.
 - Тестирование незакрытого endpoint'а Flowise (новые beta-фичи) — через `experiments/`, после стабилизации — добавляем tool.
 
 **Если решено добавлять — рутинный путь:**
@@ -231,7 +228,7 @@ const flowData = serializeFlowData(buildChatflow({
 10 typed factories для частых нод (chatAnthropic, openAIEmbeddings, postgresVectorStore, conversationalRetrievalQAChain, bufferMemory, jsonFile, s3File, и др.) + `fromIntrospection(spec, inputs)` fallback для всех 200+ нод через MCP `nodes_get` runtime introspection.
 
 **Документация:**
-- ADR-008 — обоснование self-built MCP, сравнение с community-вариантами, план extract в Pelmenya/* + npm/Smithery publish.
+- ADR-008 — обоснование self-built MCP, сравнение с community-вариантами, план extract в отдельные репозитории + npm/Smithery publish.
 - `apps/mcp-flowise/README.md` — полные примеры по каждой группе tools.
 - Lab journal: `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md` — reproducible recipe всех ритуалов которые этот MCP заменяет.
 
@@ -362,9 +359,7 @@ claude mcp list
 
 ## История (предыдущий проект test-marpla)
 
-До slovo разработчик делал тестовое задание для компании Marpla (SEO-генератор товаров через Flowise + NestJS). Оффер был получен (180к/мес), но отклонён из-за несовместимости режима труда с семейными обязательствами.
-
-В процессе тестового + последующих обсуждений были пройдены tutorial по Flowise (уровни 1-5):
+До slovo был тестовый проект `test-marpla` (SEO-генератор товаров через Flowise + NestJS). В процессе пройден tutorial по Flowise (уровни 1-5):
 
 - Основы Flowise (Chatflow, Prompt Template, LLM Chain, Structured Output Parser)
 - Memory (Buffer / Window / Summary / Persistent)
@@ -372,7 +367,7 @@ claude mcp list
 - Анализ данных с embeddings (PCA, UMAP, HDBSCAN)
 - Tool Agents + MCP (PostgreSQL MCP, работа с БД через агента)
 
-Tutorial лежал в `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` — при желании можно перенести в `slovo/docs/tutorial/`.
+Tutorial лежит в `~/Desktop/test-marpla/docs/tutorial/` — при желании можно перенести в `slovo/docs/tutorial/`.
 
 **Tutorial-шпаргалки в старом проекте:**
 
@@ -390,7 +385,7 @@ Tutorial лежал в `C:\Users\Diamond\Desktop\test-marpla\docs\tutorial\` —
 4. Проверить что API стартует (`npm run start:dev`)
 5. Перейти к реализации первой фичи (скорее всего **water-analysis**)
 
-Перед реализацией новой фичи — всегда создавать `docs/features/<feature>.md` с планом (по образцу `docs/features/seo-generator.md` из старого проекта Marpla).
+Перед реализацией новой фичи — всегда создавать `docs/features/<feature>.md` с планом (по образцу `docs/features/seo-generator.md` из предыдущего проекта `test-marpla`).
 
 ---
 
