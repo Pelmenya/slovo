@@ -3,7 +3,22 @@
 > Список hardening-задач, отложенных осознанно. Закрываем к моменту соответствующей вехи.
 > Чек-лист на каждый PR, затрагивающий эти зоны — свериться; при закрытии задачи — удалить пункт.
 
-Обновлено: 2026-04-22 (после первого автоматического ревью окружения через агентов в `.claude/agents/`).
+Обновлено: 2026-05-01 (после уточнения сценария запуска — открытый каталог prostor-app).
+
+---
+
+## ⚠️ Pre-launch blockers — публичный запуск prostor-app
+
+**Контекст (2026-05-01):** prostor-app мигрирует с Telegram mini-app, каталог поиска **открытый** (без логина для клиентов и менеджеров). Без перечисленных мер anonymous traffic выедает Vision-бюджет за часы.
+
+| # | Что | Где | Статус |
+|---|---|---|---|
+| **A** | Per-IP/IPv6-/64-subnet rate limit на `/catalog/search/*` (anonymous text 30/min, image 3/min) | См. **#21** «Что НЕ сделано (отложено) → Per-IPv6-subnet throttle» | ⏳ TODO |
+| **B** | SHA256-кэш повторных image-запросов (`slovo:vision:cache:<sha256>` TTL 24ч) | См. **#35** ниже | ⏳ TODO |
+| **C** | UX-loader при image-search (Vision 6-7 сек) — спиннер/skeleton | См. `docs/management/vision-catalog-handoff.md` (фронт-задача) | ⏳ TODO |
+| **D** | Telegram/email alert на budget-cap exhaustion (а не только 503 на endpoint'е) | Расширить `apps/api/src/modules/budget/` | ⏳ TODO |
+
+Все 4 — обязательны до Phase 2 (публичный запуск). Без них либо abuse через Vision API, либо клиент с долгой image-search'ой бьёт «обновить» и удваивает cost, либо мы узнаём о превышении бюджета только через клиентскую жалобу.
 
 ---
 
@@ -572,6 +587,46 @@ if (mappingWasPopulated && skipRate < 0.5) {
 - Autocache proxy: zero code changes, caching работает **на всём** что идёт через Flowise (включая будущие chatflows с Sonnet/Haiku). Но добавляет 5-й контейнер в `docker-compose.infra.yml` + новая критичная зависимость.
 
 Триггер: когда vision-describer / Q&A флоу выйдут в прод и cost prompt-кэшированию реально оправдает оценку. Тогда — два дня A/B на staging (autocache off vs on), решение по cache hit %.
+
+### 35. SHA256-кэш повторных image-запросов (Vision dedup) — pre-launch blocker
+
+**Контекст:** prostor-app — открытая клиентская платформа. Естественный паттерн клиента: сфотографировал свой картридж → искал → не нашёл / нашёл → через минуту пробует **тот же** запрос снова (или с минимальным crop'ом). Сейчас каждый image-запрос идёт в Anthropic Vision ($0.005-0.007), даже на байт-в-байт идентичный файл.
+
+**Решение:**
+
+1. На границе `apps/api/src/modules/catalog/search/image.service.ts` (или universal `search.service.ts`) посчитать `sha256(image.buffer)` на upload'e.
+2. До отправки в Vision проверить Redis: `GET slovo:vision:cache:<sha256>`.
+3. Hit → вернуть cached `vision_description` (skip Vision call). Miss → Vision → `SETEX slovo:vision:cache:<sha256> 86400 <description>`.
+4. TTL 24ч — баланс между частотой повторов и cache pollution. После недели мониторить hit-rate, скорректировать.
+
+**Ожидаемая экономия:**
+- При 30% повторов на одном клиенте + 20% повторов между клиентами (популярные модели Аквафор) = 30-50% Vision calls = 30-50% от Vision-cost.
+- На активном пилоте (3 600 ₽/мес из exec-summary): экономия ~1 200-1 800 ₽/мес.
+
+**Стоимость реализации:** ~50 LOC + 5-10 spec'ов. Половина дня вечером.
+
+**Edge cases:**
+- Cache key — sha256 raw bytes; разные форматы (JPG quality / EXIF rotation) дадут разные хеши, **это правильно** — Vision на эти варианты может ответить по-разному.
+- На multi-image запрос — `sha256(concat(sorted(image_hashes)))` или просто пропустить (multi-image редкий).
+- Cache poisoning: если в cache попал плохой response (например, Vision вернул not-relevant ошибочно), TTL 24ч сам очистит. Manual flush через `redis-cli DEL slovo:vision:cache:*` если нужно срочно.
+
+**Триггер:** до публичного запуска prostor-app (см. pre-launch blockers в начале файла).
+
+### 36. Budget-cap exhaustion — alert-уведомление админу
+
+**Контекст (расширение #21):** `apps/api/src/modules/budget/` уже возвращает 503 при достижении $5/день Vision или $1/день Embedding. Но **никто не узнает** о превышении пока клиент не пожалуется. На открытой клиентской платформе это значит «3 часа сервис не работает, пока админ не зашёл в логи».
+
+**Решение:**
+
+1. В `BudgetService.assertVisionBudget()` / `assertEmbeddingBudget()` — детектить **первое** превышение в день (через Redis флаг `slovo:budget:alerted:<vision|embedding>:YYYYMMDD` с TTL 25ч).
+2. На первое превышение → fire-and-forget POST в Telegram Bot API (или `nodemailer`) с message: «Vision budget exhausted on YYYY-MM-DD at HH:MM. Spent: $X. Recent traffic: ...».
+3. Без Langfuse — это отдельная зависимость которая не оправдана для одного алерта.
+
+**Альтернатива (когда Langfuse будет в prod):** trace на `slovo.budget.exhausted` event + alert rule в Langfuse UI.
+
+**Стоимость:** ~30 LOC + env vars `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ADMIN_CHAT_ID` (или SMTP creds). Час работы.
+
+**Триггер:** до публичного запуска prostor-app.
 
 ---
 
