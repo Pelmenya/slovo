@@ -12,7 +12,9 @@ import {
 } from '@slovo/flowise-client';
 import { StorageService } from '@slovo/storage';
 import {
+    ALLOWED_VECTOR_TABLES,
     CATALOG_AQUAPHOR_STORE_NAME,
+    CATALOG_MAX_PAYLOAD_BYTES,
     CATALOG_PAYLOAD_KEY,
     CATALOG_REFRESH_CRON,
     CATALOG_REFRESH_LOCK_KEY,
@@ -54,7 +56,8 @@ import type {
 // 4. Wipe existing loaders (старый S3 + предыдущие PlainText) — clean slate
 // 5. Download latest.json (StorageService.getObjectStream + utf-8 decode)
 // 6. Parse + zod-validate (TBulkIngestPayload)
-// 7. Per-item upsert PlainText (concurrency=5)
+// 7. Per-item upsert PlainText (sequential — Flowise saveProcessingLoader
+//    не thread-safe, см. constants.ts про CONCURRENCY)
 // 8. Release lock (Lua-CAS with same uuid)
 // =============================================================================
 
@@ -351,24 +354,57 @@ export class CatalogRefreshService implements OnModuleDestroy {
     }
 
     private async wipeVectorStoreTable(tableName: string): Promise<void> {
-        // Validate table name через whitelist regex — defensive против SQL
-        // injection если когда-нибудь tableName начнёт приходить из user-input.
-        // Сейчас это field из vectorStoreConfig (admin-controlled), но дешевле
-        // закрыть сейчас чем разбираться позже.
+        // Defense-in-depth — два уровня:
+        //
+        // 1. **Format whitelist** (regex): identifier должен match'ить
+        //    Postgres unquoted identifier syntax (`[A-Za-z_][A-Za-z0-9_]*`,
+        //    ≤63 символа). Отсекает classic SQL injection через `;`, `--`,
+        //    кавычки, multibyte / homograph attacks, превышение NAMEDATALEN.
+        //
+        // 2. **Name whitelist** (Set): identifier должен быть в явном
+        //    списке таблиц которые worker'у разрешено TRUNCATE'ить. Защита
+        //    от blast-radius: даже если admin / compromised Flowise
+        //    API-key изменит `vectorStoreConfig.config.tableName` на `User`
+        //    или `accounts` — формат пройдёт regex, но Set отбросит.
         if (!isValidPostgresIdentifier(tableName)) {
-            throw new Error(`Invalid Postgres table name (whitelist failed): ${tableName}`);
+            throw new Error(`Invalid Postgres table name (format whitelist failed): ${tableName}`);
         }
-        // pg-prisma раздельные query отдельно — `$executeRawUnsafe` идеально
-        // подходит для DDL/TRUNCATE которые `$executeRaw` (parameterized) не
-        // поддерживает. Identifier уже validated выше.
-        await this.prisma.$executeRawUnsafe(`TRUNCATE TABLE "${tableName}"`);
+        if (!ALLOWED_VECTOR_TABLES.has(tableName)) {
+            throw new Error(
+                `Table "${tableName}" not in ALLOWED_VECTOR_TABLES whitelist. ` +
+                    `Если это намеренно — добавь в catalog-refresh.constants.ts.`,
+            );
+        }
+        // `$executeRawUnsafe` нужен потому что parameterized `$executeRaw`
+        // не позволяет dynamic table names (только VALUES). Identifier
+        // прошёл двойную валидацию выше.
+        //
+        // `"public"."${tableName}"` — явный schema prefix, не зависим от
+        // search_path. `RESTART IDENTITY` сбрасывает sequence (defensive
+        // на случай добавления id-колонки в Flowise schema в будущем).
+        await this.prisma.$executeRawUnsafe(
+            `TRUNCATE TABLE "public"."${tableName}" RESTART IDENTITY`,
+        );
     }
 
     private async downloadPayload(): Promise<string> {
         const stream = await this.storage.getObjectStream(CATALOG_PAYLOAD_KEY);
         const chunks: Buffer[] = [];
+        let totalBytes = 0;
         for await (const chunk of stream.body) {
-            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+            const buf =
+                typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer);
+            totalBytes += buf.length;
+            // Cap во время stream (а не после Buffer.concat) — защита от OOM
+            // при multi-GB payload от compromised feeder. Threshold ×600 от
+            // ожидаемого ~150KB на 155 items, должно хватить даже на 1000+
+            // items с rich metadata.
+            if (totalBytes > CATALOG_MAX_PAYLOAD_BYTES) {
+                throw new Error(
+                    `Payload size ${totalBytes} bytes exceeds CATALOG_MAX_PAYLOAD_BYTES=${CATALOG_MAX_PAYLOAD_BYTES} — possible malicious feeder`,
+                );
+            }
+            chunks.push(buf);
         }
         return Buffer.concat(chunks).toString('utf-8');
     }
@@ -404,6 +440,11 @@ export class CatalogRefreshService implements OnModuleDestroy {
                         name: 'plainText',
                         config: {
                             text: item.contentForEmbedding,
+                            // PlainText loader ожидает metadata как **JSON-string**,
+                            // не как object. Flowise делает `JSON.parse(config.metadata)`
+                            // в loader pipeline (см. `/usr/local/lib/.../PlainText.js`
+                            // Step 2). Если передать object — внутри Flowise
+                            // `JSON.parse({...})` упадёт. Не «упростить» обратно.
                             metadata: JSON.stringify(buildItemMetadata(item)),
                         },
                     },

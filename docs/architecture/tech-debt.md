@@ -345,6 +345,64 @@ import) или нужна будет ad-hoc analytics через SQL.
 Срез плана — `docs/features/vision-catalog-search.md` секция «Phase 2 Prisma
 layer» (PR9 в roadmap).
 
+### 25. catalog-refresh worker — testcontainers integration test
+
+PR6.5 unit-тесты (26 spec'ов) полностью мокают Flowise/Postgres/S3. Live
+validation сделана через gitignored `experiments/run-orchestrate.mjs` —
+не воспроизводится в CI. До прод-релиза worker'а — добавить
+`apps/worker/test/catalog-refresh.e2e-spec.ts` через testcontainers:
+
+- Postgres + pgvector контейнер
+- LocalStack S3 (или `s3rver`) для MinIO эмуляции
+- Flowise stub — простой Express-server возвращающий канонические
+  responses на эндпоинты worker (list stores, delete loader, upsert)
+
+Покроет: TRUNCATE против реального pgvector с HNSW-индексом, S3 stream'инг
+(включая size cap), zod validation на реальных JSON, end-to-end through
+Flowise stub.
+
+Триггер: до первого prod-выкатки worker'а / при выходе на 1000+ items
+каталога.
+
+### 26. catalog-refresh — multi-vectorstore support (Pinecone/Chroma branching)
+
+`extractVectorStoreTableName` сейчас фиксирует `vsName === 'postgres'`.
+ADR-002 запрещает Pinecone/Qdrant, но если когда-то появится 2-й
+Document Store с другим backend (например Chroma локально для embeddings
+на Ollama) — нужна strategy pattern, а не if/else в одной функции.
+
+Триггер: при появлении 2-го vectorstore backend.
+
+### 27. catalog-refresh — Flowise vector table coupling
+
+Worker делает прямой TRUNCATE Flowise-managed таблицы `catalog_chunks`
+через `prisma.$executeRawUnsafe` (PR6.5). Это hidden coupling: slovo
+зависит от Flowise table schema (имя, public schema). При апгрейде
+Flowise (3.1 → 3.2 → 4.x) проверить:
+
+- Имя таблицы: всё ещё контролируется через `vectorStoreConfig.config.tableName`.
+- Schema: всё ещё `public` или Flowise начнёт создавать в своей.
+- Колонки: TRUNCATE schema-agnostic, но если Flowise добавит обязательные
+  FK — сломается без CASCADE.
+
+Workaround при breaking change: либо вернуться на Flowise refresh с
+RecordManager (требует доп компонент), либо patch Flowise S3 File Loader
+для JSONLoader (вариант B из ADR-007 amendment, отложен).
+
+Триггер: апгрейд Flowise major-версии.
+
+### 28. catalog-refresh — multi-replica TRUNCATE retry/backoff
+
+При появлении 2+ workers (k8s replicas) есть race: один worker делает
+TRUNCATE, второй параллельно upsert'ит — `ERROR: cannot TRUNCATE because
+it is being used by active queries`. Сейчас защищено Redis lock (только
+один worker делает refresh за раз), но при разделении responsibilities
+(refresh worker отдельно от upsert worker) гонка может вернуться.
+
+Workaround: short retry с backoff (3 попытки × 1s) вокруг TRUNCATE.
+
+Триггер: переход на k8s deployment с replicas > 1.
+
 ---
 
 ## До первого prod-деплоя миграций

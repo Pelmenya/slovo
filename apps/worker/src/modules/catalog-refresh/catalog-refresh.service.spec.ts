@@ -366,7 +366,7 @@ describe('CatalogRefreshService', () => {
     });
 
     describe('wipe-vectors — TRUNCATE catalog_chunks', () => {
-        it('happy path: TRUNCATE с правильным tableName из vectorStoreConfig', async () => {
+        it('happy path: TRUNCATE с schema prefix + RESTART IDENTITY', async () => {
             setupHappyPathMocks(flowise, redis, storage);
             flowise.request
                 .mockResolvedValueOnce({ numAdded: 1 })
@@ -375,7 +375,7 @@ describe('CatalogRefreshService', () => {
             await service.refresh();
 
             expect(prisma.$executeRawUnsafe).toHaveBeenCalledWith(
-                'TRUNCATE TABLE "catalog_chunks"',
+                'TRUNCATE TABLE "public"."catalog_chunks" RESTART IDENTITY',
             );
         });
 
@@ -383,7 +383,7 @@ describe('CatalogRefreshService', () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
                 .mockResolvedValueOnce([SAMPLE_STORE])
-                .mockResolvedValueOnce({ success: true }); // wipe loader OK
+                .mockResolvedValueOnce({ success: true });
             prisma.$executeRawUnsafe.mockRejectedValueOnce(
                 new Error('relation "catalog_chunks" does not exist'),
             );
@@ -414,7 +414,7 @@ describe('CatalogRefreshService', () => {
             }
         });
 
-        it('SQL injection попытка в tableName → reject (whitelist)', async () => {
+        it('SQL injection (`;`/`--`/quotes) в tableName → format-whitelist reject', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
                 .mockResolvedValueOnce([
@@ -431,10 +431,107 @@ describe('CatalogRefreshService', () => {
             expect(result.kind).toBe('failure');
             if (result.kind === 'failure') {
                 expect(result.stage).toBe('wipe-vectors');
-                expect(result.error).toContain('Invalid Postgres table name');
+                expect(result.error).toContain('format whitelist');
             }
-            // TRUNCATE НЕ должен быть вызван
             expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
+        });
+
+        it('non-allowed table name (User/accounts) → name-whitelist reject (blast radius)', async () => {
+            // Format-валидный identifier, но не в ALLOWED_VECTOR_TABLES.
+            // Защита от: admin меняет tableName в Flowise UI на критическую таблицу.
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request
+                .mockResolvedValueOnce([
+                    {
+                        ...SAMPLE_STORE,
+                        vectorStoreConfig: '{"name":"postgres","config":{"tableName":"User"}}',
+                    },
+                ])
+                .mockResolvedValueOnce({ success: true });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.stage).toBe('wipe-vectors');
+                expect(result.error).toContain('ALLOWED_VECTOR_TABLES');
+            }
+            expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
+        });
+
+        it('Postgres reserved keyword (select/drop) → blocked by name whitelist', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request
+                .mockResolvedValueOnce([
+                    {
+                        ...SAMPLE_STORE,
+                        vectorStoreConfig: '{"name":"postgres","config":{"tableName":"select"}}',
+                    },
+                ])
+                .mockResolvedValueOnce({ success: true });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.stage).toBe('wipe-vectors');
+                expect(result.error).toContain('ALLOWED_VECTOR_TABLES');
+            }
+        });
+
+        it('unicode/multibyte tableName → format-whitelist reject', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request
+                .mockResolvedValueOnce([
+                    {
+                        ...SAMPLE_STORE,
+                        // Кириллица в имени — попытка homograph (выглядит как
+                        // ASCII, но другие code points). Format whitelist
+                        // (only `[A-Za-z0-9_]`) отбрасывает.
+                        vectorStoreConfig: JSON.stringify({
+                            name: 'postgres',
+                            config: { tableName: 'catalog_сhunks' }, // 'с' — кириллица
+                        }),
+                    },
+                ])
+                .mockResolvedValueOnce({ success: true });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.error).toContain('format whitelist');
+            }
+        });
+    });
+
+    describe('downloadPayload — size cap (DoS защита)', () => {
+        it('payload > MAX_PAYLOAD_BYTES → failure stage=download-payload', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request
+                .mockResolvedValueOnce([SAMPLE_STORE])
+                .mockResolvedValueOnce({ success: true });
+
+            // Streaming chunks по 10MB, всего 200MB (выше 100MB cap).
+            const big = Buffer.alloc(10 * 1024 * 1024, 'a');
+            async function* hugePayload(): AsyncGenerator<Buffer> {
+                for (let i = 0; i < 20; i++) {
+                    yield big;
+                }
+            }
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: Readable.from(hugePayload()),
+                contentType: 'application/json',
+            });
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.stage).toBe('download-payload');
+                expect(result.error).toContain('exceeds CATALOG_MAX_PAYLOAD_BYTES');
+            }
         });
     });
 

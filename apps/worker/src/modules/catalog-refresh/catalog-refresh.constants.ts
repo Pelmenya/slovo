@@ -79,3 +79,26 @@ export const CATALOG_UPSERT_CONCURRENCY = 1;
 // уложатся в 1 chunk; description'ы товаров — обычно 200-500 chars.
 export const CATALOG_SPLITTER_CHUNK_SIZE = 1000;
 export const CATALOG_SPLITTER_CHUNK_OVERLAP = 200;
+
+// =============================================================================
+// Защитные ограничения от malicious / broken feeder (PR6.5 security follow-up)
+// =============================================================================
+
+// Whitelist Flowise vector tables которые worker'у разрешено TRUNCATE'ить.
+// `isValidPostgresIdentifier` regex защищает от SQL injection через формат,
+// но НЕ от blast-radius: если admin / compromised Flowise API-key изменит
+// `vectorStoreConfig.config.tableName` на `User` / `accounts` — Postgres
+// (с двойным цитированием) разрешит, и worker уничтожит наши данные.
+// Жёсткий whitelist — защита-в-глубину: даже корректный по формату
+// identifier должен быть в этом списке.
+//
+// Расширение: добавить новое имя при создании 2-го Document Store с другим
+// каталогом (per-tenant в будущем). Для multi-tenant — заменить на per-store
+// маппинг через Prisma (см. tech-debt про multi-vectorstore).
+export const ALLOWED_VECTOR_TABLES: ReadonlySet<string> = new Set(['catalog_chunks']);
+
+// Max размер latest.json payload (100MB). Worker буферит весь stream в RAM
+// (`Buffer.concat`), поэтому без cap'а compromised MinIO IAM-ключ или баг в
+// feeder → multi-GB payload → OOM kill worker → cron ломается, lock висит.
+// 100MB = ×600 от ожидаемых ~150KB на 155 items, оставляет запас на рост.
+export const CATALOG_MAX_PAYLOAD_BYTES = 100 * 1024 * 1024;
