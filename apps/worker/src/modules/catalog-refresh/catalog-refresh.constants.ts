@@ -45,3 +45,37 @@ end
 // =============================================================================
 
 export const CATALOG_REFRESH_CRON = '0 */4 * * *';
+
+// =============================================================================
+// Slovo-orchestrate ingest (PR6.5) — заменил `flowise_docstore_refresh`.
+// Worker сам читает latest.json из MinIO + per-item upsert через PlainText
+// loader. Причина: Flowise S3 File Loader для application/json идёт в
+// isTextBased ветку (не запускает JSONLoader), Custom Metadata jsonpointer'ы
+// сохраняются как литералы — search получает мусор. См. lab journal day 2 +
+// `docs/architecture/decisions/007-catalog-ingest-via-minio.md` amendment C.
+// =============================================================================
+
+// S3-key payload'а в bucket S3_CATALOG_BUCKET (slovo-datasets).
+// CRM feeder перезаписывает на каждом cache-reset событии.
+export const CATALOG_PAYLOAD_KEY = 'catalogs/aquaphor/latest.json';
+
+// Concurrency для per-item upsert. **Sequential обязателен** — Flowise
+// `saveProcessingLoader` внутри `executeDocStoreUpsert` имеет classic
+// read-modify-write на `documentstore.loaders` JSON column без транзакции:
+// concurrent upserts на тот же store теряют loader-ы (last-write-wins),
+// часть upsert'ов падает с HTTP 500. Discovered в PR6.5 validation:
+// concurrency=5 дал 80% failure rate на 155 items, concurrency=1 — 100%
+// success.
+//
+// Trade-off: 155 items × ~1.5sec = ~4 мин на refresh. Cron 4ч → ~1.5%
+// duty cycle, нормально. При росте каталога до 1000+ items придётся
+// (a) batch'ить items в один loader через splitter-aware text format,
+// (b) использовать Flowise QUEUE_MODE с Bull (но это требует Redis в Flowise),
+// (c) форкнуть Flowise + добавить row-level lock в saveProcessingLoader.
+export const CATALOG_UPSERT_CONCURRENCY = 1;
+
+// Splitter config для PlainText loader. Совпадает с предыдущим S3 File Loader
+// setup'ом (Phase 0) — chunkSize 1000, overlap 200. Большинство items
+// уложатся в 1 chunk; description'ы товаров — обычно 200-500 chars.
+export const CATALOG_SPLITTER_CHUNK_SIZE = 1000;
+export const CATALOG_SPLITTER_CHUNK_OVERLAP = 200;

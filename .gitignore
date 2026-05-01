@@ -53,3 +53,6 @@ prisma/migrations/dev.db*
 # для curl, дампы ответов API. Reproducible recipe лежит в docs/experiments/<name>/
 # lab journal'е, сами артефакты локальные и в git не идут.
 /experiments/
+
+# Playwright MCP временные snapshot'ы / screenshot'ы.
+.playwright-mcp/

@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client';
 import type { TAppEnv } from '@slovo/common';
+import { DatabaseModule } from '@slovo/database';
+import { StorageModule } from '@slovo/storage';
 import { FLOWISE_CLIENT_TOKEN, REDIS_CLIENT_TOKEN } from './catalog-refresh.constants';
 import { CatalogRefreshService } from './catalog-refresh.service';
 
@@ -25,6 +27,16 @@ function assertEnv(value: string | undefined, name: string): string {
 const REFRESH_FLOWISE_TIMEOUT_MS = 300_000;
 
 @Module({
+    imports: [
+        // Worker читает latest.json из bucket S3_CATALOG_BUCKET (slovo-datasets)
+        // — отдельно от knowledge S3_BUCKET (slovo-sources). См. PR6.5
+        // (slovo-orchestrate ingest) и ADR-007.
+        StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' }),
+        // PrismaService нужен для TRUNCATE Flowise-managed `catalog_chunks`
+        // table перед re-upsert. Flowise DELETE loader не дропает vectors —
+        // приходится чистить напрямую через raw SQL. См. PR6.5 service:wipe.
+        DatabaseModule,
+    ],
     providers: [
         CatalogRefreshService,
         {
