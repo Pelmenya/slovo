@@ -17,10 +17,7 @@ import {
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
-import {
-    SearchTextDocResponseDto,
-    SearchTextResponseDto,
-} from './dto/search-text.response.dto';
+import { SearchDocResponseDto, SearchResponseDto } from './dto/search.response.dto';
 
 // =============================================================================
 // TextSearchService — vector search по каталогу через Flowise Document Store
@@ -104,7 +101,7 @@ export class TextSearchService implements OnModuleDestroy {
         }
     }
 
-    async search(query: string, topK?: number): Promise<SearchTextResponseDto> {
+    async search(query: string, topK?: number): Promise<SearchResponseDto> {
         const effectiveTopK = topK ?? CATALOG_DEFAULT_TOP_K;
         const storeId = await this.resolveStoreId();
 
@@ -130,7 +127,7 @@ export class TextSearchService implements OnModuleDestroy {
         const urls = await Promise.all(keysArray.map((key) => this.resolvePresignedUrl(key)));
         const urlMap = new Map(keysArray.map((key, idx) => [key, urls[idx]] as const));
 
-        const docs = flowiseResponse.docs.map((doc): SearchTextDocResponseDto => {
+        const docs = flowiseResponse.docs.map((doc): SearchDocResponseDto => {
             const keys = extractImageKeys(doc.metadata);
             return {
                 id: doc.id,

@@ -8,20 +8,21 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import { parseCorsOrigin, type TAppEnv } from '@slovo/common';
 import { AppModule } from './app.module';
 
-// Per-route body limits — НЕ глобально 10MB.
+// Per-route body limits — НЕ глобально 40MB.
 //
-// Глобальный 10MB на весь API расширил бы DoS-вектор: knowledge
+// Глобальный высокий limit на весь API расширил бы DoS-вектор: knowledge
 // text-source принимает rawText ≤500KB по DTO `MaxLength`, но Express
-// парсер выделил бы до 10MB RAM ещё ДО ValidationPipe. Без auth-guard'а
-// any anonymous IP мог бы 30 req/min × 10MB = 300MB/min RAM-burst.
+// парсер выделил бы 40MB RAM ещё ДО ValidationPipe. Без auth-guard'а
+// any anonymous IP мог бы burst-RAM атаку.
 //
-// Решение: high limit ТОЛЬКО для image upload route, где он реально нужен;
+// Решение: high limit ТОЛЬКО для catalog search route (image upload до 5
+// фото × 5MB декодированных ≈ 35MB base64 + JSON overhead → 40MB cap);
 // глобальный default — стандартный 600KB (с запасом на knowledge 500KB).
-// Express маршрутит middleware по path: /catalog/search/image первый
-// match'ит 10MB-парсер, остальные fall-through к 600KB.
+// Express маршрутит middleware по path: /catalog/search первый match'ит
+// 40MB-парсер, остальные fall-through к 600KB.
 const BODY_PARSER_LIMIT_DEFAULT = '600kb';
-const BODY_PARSER_LIMIT_IMAGE = '10mb';
-const IMAGE_UPLOAD_ROUTE = '/catalog/search/image';
+const BODY_PARSER_LIMIT_CATALOG_SEARCH = '40mb';
+const CATALOG_SEARCH_ROUTE = '/catalog/search';
 
 async function bootstrap() {
     const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -33,7 +34,7 @@ async function bootstrap() {
     // Per-route order matters: первый matching middleware парсит body
     // и заполняет req.body — последующие парсеры видят что body уже есть
     // и пропускают (no-op).
-    app.use(IMAGE_UPLOAD_ROUTE, json({ limit: BODY_PARSER_LIMIT_IMAGE }));
+    app.use(CATALOG_SEARCH_ROUTE, json({ limit: BODY_PARSER_LIMIT_CATALOG_SEARCH }));
     app.use(json({ limit: BODY_PARSER_LIMIT_DEFAULT }));
     app.use(urlencoded({ extended: true, limit: BODY_PARSER_LIMIT_DEFAULT }));
 

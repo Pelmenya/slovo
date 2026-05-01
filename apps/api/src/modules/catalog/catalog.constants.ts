@@ -80,6 +80,18 @@ export type TVisionAllowedMime = (typeof VISION_ALLOWED_MIME_TYPES)[number];
 // и допускала бы 5MB декодированных padding).
 export const VISION_MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
+// Max количество фото в одном запросе. Anthropic Vision API поддерживает
+// до 100, но 5 — разумный UX-кап:
+// (a) cost — $0.005-0.007/photo × 5 = ~$0.035 на запрос (≈2.5 ₽);
+// (b) UX — клиент обычно фотографирует 1-3 ракурса оборудования,
+//     5 хватит на «фронт + сбоку + наклейка с моделью + верх + низ»;
+// (c) request payload — 5 × 5MB = 25MB декодированных ≈ 35MB base64 +
+//     JSON-обёртка → укладывается в 10MB лимит body parser? НЕТ:
+//     5 × 7MB = 35MB > 10MB. Нужно либо поднять body limit на /catalog/search
+//     до 40MB, либо снизить per-image cap до ~1.5MB. Pragmatic: оставляем
+//     5MB per image, body parser limit поднимем до 40MB на этом route.
+export const VISION_MAX_IMAGES_PER_REQUEST = 5;
+
 // Vision-search это **дорогая** операция — ~$0.005-0.007 за вызов
 // (Claude Sonnet 4.6 Vision). Throttle 5/min/IP vs 30/min для text:
 // (1) cost cap — 5 × 60 = 300 vision/час max от 1 IP = $1.5/час,

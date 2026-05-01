@@ -1,6 +1,5 @@
 import {
     BadGatewayException,
-    BadRequestException,
     Inject,
     Injectable,
     Logger,
@@ -13,17 +12,22 @@ import {
     type TFlowisePredictionResponse,
 } from '@slovo/flowise-client';
 import { FLOWISE_CLIENT_TOKEN, VISION_CHATFLOW_NAME } from '../catalog.constants';
-import { VisionOutputDto, SearchImageResponseDto } from './dto/search-image.response.dto';
-import { TextSearchService } from './text.service';
+import { CatalogImageItemDto } from './dto/search.request.dto';
+import { VisionOutputDto } from './dto/search.response.dto';
 
 // =============================================================================
-// ImageSearchService — vision-каталог поиск через Claude Vision + reuse PR7
-// text search.
+// ImageSearchService — Claude Vision describer для catalog images.
 //
-// Pipeline: resolve VISION_CHATFLOW_ID → POST /prediction с base64 image
-// → defensive parse JSON → if !is_relevant → 400 / else → reuse
-// TextSearchService.search(description_ru). См. подробности в комментариях
-// inline + commit message PR8.
+// Refactored в universal-search rewrite: больше не делает downstream search
+// (это responsibility CatalogSearchService orchestrator'а). Только:
+// 1. Resolve VISION_CHATFLOW_ID by name (lazy + single-flight + retry on
+//    failure — паттерн из text.service:resolveStoreId).
+// 2. POST /prediction/<chatflowId> с base64 image upload.
+// 3. Defensive parse response.text как JSON (со strip markdown wrapper
+//    ```json...``` если LLM завернёт).
+// 4. Sanitize free-form LLM output (control chars + HTML strip).
+// 5. Returns VisionOutputDto — каллер решает что делать (если is_relevant=
+//    false — UX-friendly 400, иначе orchestrate downstream search).
 // =============================================================================
 
 type TVisionRawOutput = {
@@ -44,59 +48,39 @@ export class ImageSearchService {
 
     constructor(
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
-        private readonly textSearch: TextSearchService,
     ) {}
 
-    async search(
-        imageBase64: string,
-        mime: string,
-        topK?: number,
-    ): Promise<SearchImageResponseDto> {
+    async processVision(images: CatalogImageItemDto[]): Promise<VisionOutputDto> {
+        if (images.length === 0) {
+            throw new Error('processVision: empty images array — should be caught upstream');
+        }
+
         const chatflowId = await this.resolveChatflowId();
 
-        // mime прошёл IsIn(VISION_ALLOWED_MIME_TYPES) на ValidationPipe,
-        // здесь invariant — split всегда даст ext. `?? 'bin'` мёртвый код,
-        // оставлен дёшево для defensive runtime.
-        const ext = mime.split('/')[1] ?? 'bin';
+        // Multi-image upload: Anthropic Vision принимает все картинки в
+        // одном request (uploads array). Vision-describer prompt v1 умеет
+        // обрабатывать множественные кадры — возвращает one combined
+        // description_ru объединяющее все ракурсы. mime прошёл
+        // IsIn(VISION_ALLOWED_MIME_TYPES) на ValidationPipe per-item.
+        const uploads = images.map((img, idx) => {
+            const ext = img.mime.split('/')[1] ?? 'bin';
+            return {
+                data: `data:${img.mime};base64,${img.base64}`,
+                type: 'file' as const,
+                name: `image-${idx}.${ext}`,
+                mime: img.mime,
+            };
+        });
+
         const visionResponse = await this.flowise.request<TFlowisePredictionResponse>(
             ENDPOINTS.prediction(chatflowId),
             {
                 method: 'POST',
-                body: {
-                    question: '',
-                    uploads: [
-                        {
-                            data: `data:${mime};base64,${imageBase64}`,
-                            type: 'file',
-                            name: `image.${ext}`,
-                            mime,
-                        },
-                    ],
-                },
+                body: { question: '', uploads },
             },
         );
 
-        const visionOutput = this.parseVisionResponse(visionResponse);
-
-        // is_relevant=false → UX-friendly 400 с hint. Не failure, не 500
-        // — клиент должен показать «попробуй другое фото».
-        if (!visionOutput.isRelevant) {
-            throw new BadRequestException({
-                message: 'Image not relevant — Vision не распознал оборудование на фото',
-                visionOutput,
-            });
-        }
-
-        // Reuse PR7 pipeline — TextSearchService сам делает storeId lookup
-        // + vectorstoreQuery + presigned URLs + metadata whitelist.
-        const textResults = await this.textSearch.search(visionOutput.descriptionRu, topK);
-
-        return {
-            count: textResults.count,
-            docs: textResults.docs,
-            timeTakenMs: textResults.timeTakenMs,
-            visionOutput,
-        };
+        return this.parseVisionResponse(visionResponse);
     }
 
     private resolveChatflowId(): Promise<string> {
@@ -193,8 +177,6 @@ export class ImageSearchService {
 // Helpers
 // =============================================================================
 
-// LLM иногда оборачивает JSON в markdown-fence: ```json\n{...}\n```.
-// Strip wrapper если найден; иначе вернуть as-is.
 function stripMarkdownWrapper(text: string): string {
     const trimmed = text.trim();
     const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/);
@@ -205,22 +187,11 @@ function isValidConfidence(value: unknown): value is 'high' | 'medium' | 'low' {
     return value === 'high' || value === 'medium' || value === 'low';
 }
 
-// Backend sanitization free-form LLM output перед возвратом клиенту.
-// Защита от adversarial input image с текстом-инструкцией внутри —
-// LLM может echo HTML/JS в descriptionRu, фронт без escape → XSS.
-//
-// Не полная XSS-defense (front обязан escape всегда), но дешёвый barrier:
-// (1) strip ASCII control chars (codes 0..31 + 127, NUL/CR/LF и т.д.);
-// (2) strip HTML tags;
-// (3) cap длиной 2000 chars — defensive против unbounded LLM output.
 const ASCII_CONTROL_CHAR_MAX_CODE = 31;
 const ASCII_DEL_CHAR_CODE = 127;
 const SANITIZE_FREE_FORM_MAX_LENGTH = 2000;
 
 function sanitizeFreeFormText(value: string): string {
-    // Char-by-char filter — без regex-литералов с control chars в
-    // исходнике (избегаем багов tooling'а который молча вставляет raw
-    // bytes при редактировании unicode escape ranges).
     let result = '';
     for (const ch of value) {
         const code = ch.charCodeAt(0);
