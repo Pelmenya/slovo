@@ -34,6 +34,10 @@ export const envSchema = z
 
         FLOWISE_PORT: portFromString.default(3130),
         FLOWISE_API_URL: z.url().optional(),
+        // Bearer token из Flowise UI → API Keys. Optional для dev (apps/api без
+        // Flowise integration работает с пустым ключом). Для production-runtime
+        // который ходит в Flowise REST — обязателен (см. superRefine ниже).
+        FLOWISE_API_KEY: z.string().optional().default(''),
 
         LANGFUSE_ENABLED: booleanFromString.default(false),
         LANGFUSE_PORT: portFromString.default(3100),
@@ -127,6 +131,17 @@ export const envSchema = z
                     });
                 }
             }
+        }
+        // Если slovo runtime в production ходит в Flowise (FLOWISE_API_URL set) —
+        // FLOWISE_API_KEY обязателен. Без него Flowise REST вернёт 401 на
+        // RBAC-protected endpoint'ах (всё кроме /ping и public predictions).
+        if (env.FLOWISE_API_URL && !env.FLOWISE_API_KEY) {
+            ctx.addIssue({
+                code: 'custom',
+                path: ['FLOWISE_API_KEY'],
+                message:
+                    'FLOWISE_API_KEY обязателен в production когда FLOWISE_API_URL задан — создай ключ в Flowise UI → API Keys',
+            });
         }
     });
 

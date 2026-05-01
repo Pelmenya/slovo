@@ -182,5 +182,57 @@ describe('validateEnv', () => {
             });
             expect(parsed.NODE_ENV).toBe('production');
         });
+
+        it('падает если FLOWISE_API_URL задан, а FLOWISE_API_KEY пуст', () => {
+            expect(() =>
+                validateEnv({
+                    ...PROD_BASE,
+                    JWT_SECRET: 'test-only-prod-jwt-secret-'.padEnd(64, 'x'),
+                    POSTGRES_PASSWORD: 'test-only-prod-pg-password',
+                    RABBITMQ_PASSWORD: 'test-only-prod-rmq-password',
+                    FLOWISE_API_URL: 'https://flowise.example.com',
+                    // FLOWISE_API_KEY не задан
+                }),
+            ).toThrow(/FLOWISE_API_KEY/);
+        });
+
+        it('прод с FLOWISE_API_URL + FLOWISE_API_KEY — проходит', () => {
+            const parsed = validateEnv({
+                ...PROD_BASE,
+                JWT_SECRET: 'test-only-prod-jwt-secret-'.padEnd(64, 'x'),
+                POSTGRES_PASSWORD: 'test-only-prod-pg-password',
+                RABBITMQ_PASSWORD: 'test-only-prod-rmq-password',
+                FLOWISE_API_URL: 'https://flowise.example.com',
+                FLOWISE_API_KEY: 'test-only-prod-flowise-key',
+            });
+            expect(parsed.FLOWISE_API_URL).toBe('https://flowise.example.com');
+            expect(parsed.FLOWISE_API_KEY).toBe('test-only-prod-flowise-key');
+        });
+
+        it('прод без FLOWISE_API_URL — FLOWISE_API_KEY не требуется', () => {
+            const parsed = validateEnv({
+                ...PROD_BASE,
+                JWT_SECRET: 'test-only-prod-jwt-secret-'.padEnd(64, 'x'),
+                POSTGRES_PASSWORD: 'test-only-prod-pg-password',
+                RABBITMQ_PASSWORD: 'test-only-prod-rmq-password',
+            });
+            expect(parsed.FLOWISE_API_URL).toBeUndefined();
+            expect(parsed.FLOWISE_API_KEY).toBe('');
+        });
+    });
+
+    describe('FLOWISE_API_KEY (dev режим)', () => {
+        it('default empty string — apps/api без Flowise integration работает', () => {
+            const parsed = validateEnv(BASE_ENV);
+            expect(parsed.FLOWISE_API_KEY).toBe('');
+        });
+
+        it('передан явно — сохраняется', () => {
+            const parsed = validateEnv({
+                ...BASE_ENV,
+                FLOWISE_API_KEY: 'test-only-dev-flowise-key',
+            });
+            expect(parsed.FLOWISE_API_KEY).toBe('test-only-dev-flowise-key');
+        });
     });
 });
