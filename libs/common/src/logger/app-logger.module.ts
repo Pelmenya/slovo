@@ -16,6 +16,9 @@ const REDACT_PATHS = [
     'req.body.password',
     'req.body.rawText',
     'req.body.extractedText',
+    // PR8 — image upload base64. Если когда-то включим req.body
+    // в pino-http serializers — 5MB base64 не должно засорять log store.
+    'req.body.imageBase64',
     '*.apiKey',
     '*.secret',
 ];

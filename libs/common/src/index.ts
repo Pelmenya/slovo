@@ -2,6 +2,7 @@ export * from './config/app-config.module';
 export * from './config/env.schema';
 export * from './config/parse-cors-origin';
 export * from './constants/catalog';
+export * from './validators/max-decoded-bytes.validator';
 export * from './errors/sanitize-ingestion-error';
 export * from './http/dev-only-header-auth.guard';
 export * from './http/headers';

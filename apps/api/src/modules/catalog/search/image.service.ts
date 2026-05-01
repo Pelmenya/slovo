@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+    BadGatewayException,
+    BadRequestException,
+    Inject,
+    Injectable,
+    Logger,
+} from '@nestjs/common';
 import { sanitizeError } from '@slovo/common';
 import {
     ENDPOINTS,
@@ -14,25 +20,12 @@ import { TextSearchService } from './text.service';
 // ImageSearchService — vision-каталог поиск через Claude Vision + reuse PR7
 // text search.
 //
-// Pipeline:
-// 1. Resolve VISION_CHATFLOW_ID by name (lazy + single-flight + retry on
-//    failure — тот же паттерн что storeId в TextSearchService).
-// 2. POST /prediction/<chatflowId> с base64 image upload.
-// 3. Parse response.text как JSON (Vision-describer возвращает structured
-//    output). Если parse fails — defensive throw.
-// 4. Если is_relevant=false → throw BadRequestException с visionOutput как
-//    hint в response (UX: «AI распознал кота, не оборудование»).
-// 5. Reuse TextSearchService.search(descriptionRu, topK) — downstream
-//    pipeline идентичен PR7 (storeId resolve → vectorstoreQuery → presigned URLs).
-// 6. Возвращаем shape с docs + timeTakenMs + visionOutput.
-//
-// Cost: ~$0.005-0.007 за Vision-вызов (Claude Sonnet 4.6) + ~$0.0000004 за
-// downstream embedding для description_ru. Vision доминирует cost.
+// Pipeline: resolve VISION_CHATFLOW_ID → POST /prediction с base64 image
+// → defensive parse JSON → if !is_relevant → 400 / else → reuse
+// TextSearchService.search(description_ru). См. подробности в комментариях
+// inline + commit message PR8.
 // =============================================================================
 
-// Schema из vision-catalog-describer-v1 prompt (Phase 0). Validation
-// defensive: feeder может расширить prompt с новыми полями, но критичные
-// для нашего pipeline — стабильны.
 type TVisionRawOutput = {
     is_relevant: boolean;
     category?: string | null;
@@ -40,7 +33,6 @@ type TVisionRawOutput = {
     model_hint?: string | null;
     description_ru: string;
     confidence?: 'high' | 'medium' | 'low';
-    // features / condition есть в prompt но мы их не используем.
     [key: string]: unknown;
 };
 
@@ -48,9 +40,6 @@ type TVisionRawOutput = {
 export class ImageSearchService {
     private readonly logger = new Logger(ImageSearchService.name);
 
-    // Lazy-resolved chatflowId — first search триггерит lookup,
-    // остальные ждут ту же Promise (single-flight). При ошибке —
-    // promise обнуляется, следующий request делает retry.
     private chatflowIdPromise: Promise<string> | null = null;
 
     constructor(
@@ -65,9 +54,9 @@ export class ImageSearchService {
     ): Promise<SearchImageResponseDto> {
         const chatflowId = await this.resolveChatflowId();
 
-        // Vision pass — Flowise prediction с image upload.
-        // `name` обязателен в TFlowisePredictionUpload — генерим
-        // human-readable из mime для Flowise / Anthropic logs.
+        // mime прошёл IsIn(VISION_ALLOWED_MIME_TYPES) на ValidationPipe,
+        // здесь invariant — split всегда даст ext. `?? 'bin'` мёртвый код,
+        // оставлен дёшево для defensive runtime.
         const ext = mime.split('/')[1] ?? 'bin';
         const visionResponse = await this.flowise.request<TFlowisePredictionResponse>(
             ENDPOINTS.prediction(chatflowId),
@@ -89,8 +78,8 @@ export class ImageSearchService {
 
         const visionOutput = this.parseVisionResponse(visionResponse);
 
-        // Если Vision не распознал оборудование — UX-friendly 400 с hint.
-        // Не failure, не 500 — клиент должен показать «попробуй другое фото».
+        // is_relevant=false → UX-friendly 400 с hint. Не failure, не 500
+        // — клиент должен показать «попробуй другое фото».
         if (!visionOutput.isRelevant) {
             throw new BadRequestException({
                 message: 'Image not relevant — Vision не распознал оборудование на фото',
@@ -98,8 +87,8 @@ export class ImageSearchService {
             });
         }
 
-        // Reuse PR7 pipeline — TextSearchService сам делает storeId lookup +
-        // vectorstoreQuery + presigned URLs + metadata whitelist.
+        // Reuse PR7 pipeline — TextSearchService сам делает storeId lookup
+        // + vectorstoreQuery + presigned URLs + metadata whitelist.
         const textResults = await this.textSearch.search(visionOutput.descriptionRu, topK);
 
         return {
@@ -113,8 +102,6 @@ export class ImageSearchService {
     private resolveChatflowId(): Promise<string> {
         if (!this.chatflowIdPromise) {
             this.chatflowIdPromise = this.lookupChatflowId().catch((err: unknown) => {
-                // Reset чтобы следующий request попробовал заново. Без
-                // этого временный network-blip намертво сломал бы service.
                 this.chatflowIdPromise = null;
                 throw err;
             });
@@ -133,54 +120,71 @@ export class ImageSearchService {
                     `проверь что Phase 0 chatflow создан и не переименован`,
             );
         }
-        this.logger.log(`vision chatflow "${VISION_CHATFLOW_NAME}" → id=${chatflow.id}`);
+        // debug-level — chatflow id не sensitive (uuid), но захламляет
+        // observability traces при каждом первом cold-start request'е.
+        this.logger.debug(`vision chatflow "${VISION_CHATFLOW_NAME}" → id=${chatflow.id}`);
         return chatflow.id;
     }
 
     private parseVisionResponse(response: TFlowisePredictionResponse): VisionOutputDto {
-        // Vision-describer возвращает structured JSON в `response.text`.
-        // Если Structured Output Parser в chatflow настроен на JSON-mode —
-        // получим raw JSON-string, иначе LLM может обернуть в markdown
-        // ```json ... ```. Defensive: пытаемся parse прямо, потом strip
-        // markdown wrapper.
+        // Все ошибки парсинга = upstream (Vision вернул мусор), отсюда
+        // BadGatewayException 502 — семантически корректнее чем generic
+        // Error 500. Проблема не в нашем коде, а в Flowise/Anthropic.
+        //
+        // TODO(when 7+ fields): zod schema для TVisionRawOutput. Сейчас
+        // 5 полей — manual narrowing проще. Прокачается до zod когда
+        // prompt расширится с features/condition/brand_family/etc.
         const rawText = response.text ?? '';
         if (rawText.length === 0) {
-            throw new Error('Vision response empty — chatflow returned no text');
+            throw new BadGatewayException('Vision response empty — chatflow returned no text');
         }
 
-        let parsed: TVisionRawOutput;
+        let parsed: unknown;
         try {
-            parsed = JSON.parse(stripMarkdownWrapper(rawText)) as TVisionRawOutput;
+            parsed = JSON.parse(stripMarkdownWrapper(rawText));
         } catch (error) {
             this.logger.warn(
                 `Vision output not parseable as JSON: ${sanitizeError(error)}. Raw: ${rawText.slice(0, 200)}`,
             );
-            throw new Error(`Vision output is not valid JSON: ${sanitizeError(error)}`, {
-                cause: error,
-            });
+            throw new BadGatewayException(
+                `Vision output is not valid JSON: ${sanitizeError(error)}`,
+                { cause: error },
+            );
         }
 
-        if (typeof parsed.is_relevant !== 'boolean') {
-            throw new Error('Vision output missing required field "is_relevant"');
+        // JSON.parse('null')→null, JSON.parse('[]')→[], JSON.parse('"str"')→'str'
+        // — все валидный JSON, но не object с полями. Без этого guard
+        // `parsed.is_relevant` упал бы с `Cannot read properties of null`.
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new BadGatewayException(
+                'Vision output is not a JSON object (got null/array/primitive)',
+            );
         }
 
-        // description_ru обязателен только когда is_relevant=true (для
-        // downstream search). При false → пусто допустимо.
+        const raw = parsed as TVisionRawOutput;
+
+        if (typeof raw.is_relevant !== 'boolean') {
+            throw new BadGatewayException(
+                'Vision output missing required field "is_relevant"',
+            );
+        }
+
         const descriptionRu =
-            typeof parsed.description_ru === 'string' ? parsed.description_ru : '';
-        if (parsed.is_relevant && descriptionRu.length === 0) {
-            throw new Error(
+            typeof raw.description_ru === 'string' ? sanitizeFreeFormText(raw.description_ru) : '';
+        if (raw.is_relevant && descriptionRu.length === 0) {
+            throw new BadGatewayException(
                 'Vision is_relevant=true but description_ru empty — search невозможен',
             );
         }
 
         return {
-            isRelevant: parsed.is_relevant,
-            category: typeof parsed.category === 'string' ? parsed.category : null,
-            brand: typeof parsed.brand === 'string' ? parsed.brand : null,
-            modelHint: typeof parsed.model_hint === 'string' ? parsed.model_hint : null,
+            isRelevant: raw.is_relevant,
+            category: typeof raw.category === 'string' ? sanitizeFreeFormText(raw.category) : null,
+            brand: typeof raw.brand === 'string' ? sanitizeFreeFormText(raw.brand) : null,
+            modelHint:
+                typeof raw.model_hint === 'string' ? sanitizeFreeFormText(raw.model_hint) : null,
             descriptionRu,
-            confidence: isValidConfidence(parsed.confidence) ? parsed.confidence : 'low',
+            confidence: isValidConfidence(raw.confidence) ? raw.confidence : 'low',
         };
     }
 }
@@ -199,4 +203,31 @@ function stripMarkdownWrapper(text: string): string {
 
 function isValidConfidence(value: unknown): value is 'high' | 'medium' | 'low' {
     return value === 'high' || value === 'medium' || value === 'low';
+}
+
+// Backend sanitization free-form LLM output перед возвратом клиенту.
+// Защита от adversarial input image с текстом-инструкцией внутри —
+// LLM может echo HTML/JS в descriptionRu, фронт без escape → XSS.
+//
+// Не полная XSS-defense (front обязан escape всегда), но дешёвый barrier:
+// (1) strip ASCII control chars (codes 0..31 + 127, NUL/CR/LF и т.д.);
+// (2) strip HTML tags;
+// (3) cap длиной 2000 chars — defensive против unbounded LLM output.
+const ASCII_CONTROL_CHAR_MAX_CODE = 31;
+const ASCII_DEL_CHAR_CODE = 127;
+const SANITIZE_FREE_FORM_MAX_LENGTH = 2000;
+
+function sanitizeFreeFormText(value: string): string {
+    // Char-by-char filter — без regex-литералов с control chars в
+    // исходнике (избегаем багов tooling'а который молча вставляет raw
+    // bytes при редактировании unicode escape ranges).
+    let result = '';
+    for (const ch of value) {
+        const code = ch.charCodeAt(0);
+        if (code <= ASCII_CONTROL_CHAR_MAX_CODE || code === ASCII_DEL_CHAR_CODE) {
+            continue;
+        }
+        result += ch;
+    }
+    return result.replace(/<[^>]*>/g, '').slice(0, SANITIZE_FREE_FORM_MAX_LENGTH);
 }

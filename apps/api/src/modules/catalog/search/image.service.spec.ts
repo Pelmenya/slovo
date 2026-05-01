@@ -201,6 +201,70 @@ describe('ImageSearchService', () => {
             );
         });
 
+        it('JSON-валидный null → throw "not a JSON object"', async () => {
+            flowise.request.mockResolvedValueOnce({ text: 'null' });
+
+            await expect(service.search(SAMPLE_IMAGE_BASE64, SAMPLE_MIME)).rejects.toThrow(
+                /not a JSON object/,
+            );
+        });
+
+        it('JSON-валидный array [] → throw "not a JSON object"', async () => {
+            flowise.request.mockResolvedValueOnce({ text: '[]' });
+
+            await expect(service.search(SAMPLE_IMAGE_BASE64, SAMPLE_MIME)).rejects.toThrow(
+                /not a JSON object/,
+            );
+        });
+
+        it('JSON-валидный primitive "string" → throw "not a JSON object"', async () => {
+            flowise.request.mockResolvedValueOnce({ text: '"hello"' });
+
+            await expect(service.search(SAMPLE_IMAGE_BASE64, SAMPLE_MIME)).rejects.toThrow(
+                /not a JSON object/,
+            );
+        });
+
+        it('descriptionRu с control chars + HTML → sanitized', async () => {
+            // Vision LLM теоретически может echo `<script>` или \x00 байты
+            // если adversarial photo содержит prompt injection. Sanitizer
+            // должен strip оба класса.
+            // Используем String.fromCharCode чтобы control byte (0x07) не
+            // попал в исходник spec-файла (тот же tooling-нюанс что в service).
+            const adversarialDesc =
+                'Фильтр' + String.fromCharCode(0) + 'обратного <script>alert(1)</script> осмоса';
+            flowise.request.mockResolvedValueOnce({
+                text: JSON.stringify({
+                    is_relevant: true,
+                    description_ru: adversarialDesc,
+                    category: '<b>обратный</b>' + String.fromCharCode(127),
+                    brand: 'Аквафор',
+                    confidence: 'high',
+                }),
+            });
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESPONSE);
+
+            const result = await service.search(SAMPLE_IMAGE_BASE64, SAMPLE_MIME);
+
+            // descriptionRu — без NUL (control char), теги `<script>` /
+            // `</script>` удалены. Содержимое тегов (`alert(1)`) ОСТАЁТСЯ —
+            // sanitizer basic «strip tags», не full DOM-parser. Это
+            // документировано в комментарии sanitizeFreeFormText. Дальше
+            // фронт обязан escape всё, серверная санитизация — barrier
+            // против NUL и грубых тегов, не XSS-defense.
+            expect(result.visionOutput.descriptionRu).toBe('Фильтробратного alert(1) осмоса');
+            expect(result.visionOutput.descriptionRu).not.toMatch(/<script/);
+            expect(result.visionOutput.descriptionRu).not.toContain(String.fromCharCode(0));
+            // category — без <b></b> и без DEL (0x7F)
+            expect(result.visionOutput.category).toBe('обратный');
+            expect(result.visionOutput.category).not.toContain(String.fromCharCode(127));
+            // textSearch вызвалась с sanitized version
+            expect(textSearch.search).toHaveBeenCalledWith(
+                'Фильтробратного alert(1) осмоса',
+                undefined,
+            );
+        });
+
         it('JSON без is_relevant поля → throw', async () => {
             flowise.request.mockResolvedValueOnce({
                 text: JSON.stringify({ category: 'прочее', description_ru: 'foo' }),
@@ -327,8 +391,10 @@ describe('ImageSearchService', () => {
     });
 
     describe('logger', () => {
-        it('chatflow lookup success → log message с id', async () => {
-            const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+        it('chatflow lookup success → debug message с id', async () => {
+            // log переведён на debug-level (chatflow id не sensitive,
+            // но не нужен в info-стриме observability на каждом cold-start).
+            const debugSpy = jest.spyOn(Logger.prototype, 'debug').mockImplementation();
             (service as unknown as { chatflowIdPromise: Promise<string> | null }).chatflowIdPromise =
                 null;
             flowise.request
@@ -338,10 +404,10 @@ describe('ImageSearchService', () => {
 
             await service.search(SAMPLE_IMAGE_BASE64, SAMPLE_MIME);
 
-            expect(logSpy).toHaveBeenCalledWith(
+            expect(debugSpy).toHaveBeenCalledWith(
                 expect.stringContaining(VISION_CHATFLOW_NAME),
             );
-            logSpy.mockRestore();
+            debugSpy.mockRestore();
         });
     });
 });

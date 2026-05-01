@@ -1,14 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBase64, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { MaxDecodedBytes } from '@slovo/common';
+import { IsBase64, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import {
     CATALOG_DEFAULT_TOP_K,
     CATALOG_MAX_TOP_K,
     CATALOG_MIN_TOP_K,
     VISION_ALLOWED_MIME_TYPES,
-    VISION_MAX_BASE64_LENGTH,
+    VISION_MAX_IMAGE_SIZE_BYTES,
 } from '../../catalog.constants';
-
-const ALLOWED_MIME_LIST = Array.from(VISION_ALLOWED_MIME_TYPES);
 
 // Image upload через JSON base64 (а не multipart) — клиенты `prostor-app`
 // (Telegram MiniApp / web) уже base64-кодируют файлы для CRM API. Один
@@ -21,22 +20,25 @@ const ALLOWED_MIME_LIST = Array.from(VISION_ALLOWED_MIME_TYPES);
 export class SearchImageRequestDto {
     @ApiProperty({
         description:
-            'Base64-encoded JPEG/PNG/WebP image (без data: prefix). Декодированный размер ≤5MB.',
-        example: '/9j/4AAQSkZJRgABAQEAYABgAAD...',
-        maxLength: VISION_MAX_BASE64_LENGTH,
+            'Base64-encoded JPEG/PNG/WebP image (БЕЗ префикса `data:image/...;base64,`). ' +
+            'Декодированный размер ≤5MB.',
+        // Корректный padded base64 (1×1 пиксель белый PNG): валидный для @IsBase64.
+        example: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=',
     })
     @IsString()
     @IsBase64()
-    @MaxLength(VISION_MAX_BASE64_LENGTH)
+    // Реальный декодированный размер ≤5MB — точнее чем @MaxLength на строке
+    // (base64 раздувает на 33%, и attacker мог бы залить пустой 7MB padding).
+    @MaxDecodedBytes(VISION_MAX_IMAGE_SIZE_BYTES)
     imageBase64!: string;
 
     @ApiProperty({
         description: 'MIME-тип картинки',
-        enum: ALLOWED_MIME_LIST,
+        enum: VISION_ALLOWED_MIME_TYPES,
         example: 'image/jpeg',
     })
     @IsString()
-    @IsIn(ALLOWED_MIME_LIST)
+    @IsIn(VISION_ALLOWED_MIME_TYPES)
     mime!: string;
 
     @ApiPropertyOptional({
