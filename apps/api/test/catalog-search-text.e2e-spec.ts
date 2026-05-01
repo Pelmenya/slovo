@@ -12,11 +12,14 @@ import { STORAGE_BUCKET, STORAGE_S3_CLIENT, StorageService } from '@slovo/storag
 import request from 'supertest';
 import { CatalogModule } from '../src/modules/catalog/catalog.module';
 import {
-    CATALOG_AQUAPHOR_STORE_ID,
+    CATALOG_AQUAPHOR_STORE_NAME,
     CATALOG_DEFAULT_TOP_K,
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../src/modules/catalog/catalog.constants';
+import { TextSearchService } from '../src/modules/catalog/search/text.service';
+
+const TEST_STORE_ID = 'aec6b741-test';
 
 type TFlowiseMock = { request: jest.Mock };
 type TRedisMock = { get: jest.Mock; set: jest.Mock; quit: jest.Mock };
@@ -100,10 +103,24 @@ describe('Catalog search/text endpoint (e2e)', () => {
         redis.get.mockClear();
         redis.set.mockClear();
         storage.getPresignedDownloadUrl.mockClear();
+        // service создаётся один раз в beforeAll (через app), поэтому
+        // storeIdPromise персистит между тестами. Сбрасываем чтобы каждый
+        // тест мог чисто mock'ать lookup → query последовательность.
+        const svcInstance = app.get(TextSearchService) as unknown as {
+            storeIdPromise: Promise<string> | null;
+        };
+        svcInstance.storeIdPromise = null;
     });
+
+    function mockStoreLookup(): void {
+        flowise.request.mockResolvedValueOnce([
+            { id: TEST_STORE_ID, name: CATALOG_AQUAPHOR_STORE_NAME },
+        ]);
+    }
 
     describe('POST /catalog/search/text — happy path', () => {
         it('возвращает 200 с count, docs, timeTakenMs', async () => {
+            mockStoreLookup();
             flowise.request.mockResolvedValueOnce({
                 timeTaken: 312,
                 docs: [
@@ -131,16 +148,20 @@ describe('Catalog search/text endpoint (e2e)', () => {
             expect(body.docs[0].imageUrls).toEqual([
                 'https://signed/catalogs/aquaphor/images/abc/sha111.jpg',
             ]);
-            expect(flowise.request).toHaveBeenCalledWith(
+            // metadata whitelisted: imageUrls отбрасывается (отдаётся отдельным
+            // полем как presigned URLs)
+            expect(body.docs[0].metadata).toEqual({ externalId: 'mu-1' });
+            expect(flowise.request).toHaveBeenLastCalledWith(
                 expect.stringContaining('/document-store/vectorstore/query'),
                 expect.objectContaining({
                     method: 'POST',
-                    body: { storeId: CATALOG_AQUAPHOR_STORE_ID, query: 'фильтр для жёсткой воды', topK: 5 },
+                    body: { storeId: TEST_STORE_ID, query: 'фильтр для жёсткой воды', topK: 5 },
                 }),
             );
         });
 
         it('topK не передан → service использует default', async () => {
+            mockStoreLookup();
             flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: [] });
 
             await request(server)
@@ -148,7 +169,7 @@ describe('Catalog search/text endpoint (e2e)', () => {
                 .send({ query: 'тест' })
                 .expect(200);
 
-            expect(flowise.request).toHaveBeenCalledWith(
+            expect(flowise.request).toHaveBeenLastCalledWith(
                 expect.anything(),
                 expect.objectContaining({
                     body: expect.objectContaining({ topK: CATALOG_DEFAULT_TOP_K }),

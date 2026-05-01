@@ -5,7 +5,7 @@ import type { FlowiseClient } from '@slovo/flowise-client';
 import { FlowiseError } from '@slovo/flowise-client';
 import { StorageService } from '@slovo/storage';
 import {
-    CATALOG_AQUAPHOR_STORE_ID,
+    CATALOG_AQUAPHOR_STORE_NAME,
     CATALOG_DEFAULT_TOP_K,
     CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
     CATALOG_PRESIGNED_CACHE_TTL_SEC,
@@ -23,6 +23,8 @@ type TRedisClientMock = {
 };
 type TStorageServiceMock = { getPresignedDownloadUrl: jest.Mock };
 
+const TEST_STORE_ID = 'aec6b741-test';
+
 const SAMPLE_FLOWISE_DOC = {
     id: 'chunk-42',
     pageContent: 'Товар: Аквафор DWM-101S\nОписание: фильтр обратного осмоса',
@@ -36,6 +38,14 @@ const SAMPLE_FLOWISE_DOC = {
     },
     chunkNo: 1,
 };
+
+// Pre-cache storeId в service чтобы happy-path тесты не дёргали первый
+// flowise.request на listing stores. Само разрешение покрыто отдельным
+// describe 'storeId resolution'.
+function preCacheStoreId(svc: TextSearchService, id = TEST_STORE_ID): void {
+    (svc as unknown as { storeIdPromise: Promise<string> | null }).storeIdPromise =
+        Promise.resolve(id);
+}
 
 function createFlowiseClientMock(): TFlowiseClientMock {
     return { request: jest.fn() };
@@ -74,6 +84,7 @@ describe('TextSearchService', () => {
         }).compile();
 
         service = moduleRef.get(TextSearchService);
+        preCacheStoreId(service);
     });
 
     describe('search — happy path', () => {
@@ -91,11 +102,17 @@ describe('TextSearchService', () => {
 
             expect(result.count).toBe(1);
             expect(result.timeTakenMs).toBe(312);
-            expect(result.docs[0]).toEqual({
-                id: 'chunk-42',
-                pageContent: SAMPLE_FLOWISE_DOC.pageContent,
-                metadata: SAMPLE_FLOWISE_DOC.metadata,
-                imageUrls: ['https://signed/sha111', 'https://signed/sha222'],
+            expect(result.docs[0].id).toBe('chunk-42');
+            expect(result.docs[0].pageContent).toBe(SAMPLE_FLOWISE_DOC.pageContent);
+            expect(result.docs[0].imageUrls).toEqual([
+                'https://signed/sha111',
+                'https://signed/sha222',
+            ]);
+            // metadata whitelist: imageUrls отфильтровано (отдаётся отдельным
+            // полем как presigned URLs, не raw S3-keys)
+            expect(result.docs[0].metadata).toEqual({
+                externalId: 'moysklad-uuid-1',
+                externalType: 'product',
             });
         });
 
@@ -109,7 +126,7 @@ describe('TextSearchService', () => {
                 expect.objectContaining({
                     method: 'POST',
                     body: {
-                        storeId: CATALOG_AQUAPHOR_STORE_ID,
+                        storeId: TEST_STORE_ID,
                         query: 'тест',
                         topK: CATALOG_DEFAULT_TOP_K,
                     },
@@ -142,7 +159,137 @@ describe('TextSearchService', () => {
         });
     });
 
-    describe('presigned URL cache', () => {
+    describe('storeId resolution — name lookup на старте', () => {
+        beforeEach(() => {
+            // Сбрасываем pre-cache чтобы протестировать сам lookup
+            (service as unknown as { storeIdPromise: Promise<string> | null }).storeIdPromise = null;
+        });
+
+        it('первый search → list stores → найти по name → cache id', async () => {
+            flowise.request
+                .mockResolvedValueOnce([
+                    { id: 'other-id', name: 'other-store' },
+                    { id: 'aec6b741-real', name: CATALOG_AQUAPHOR_STORE_NAME },
+                ])
+                .mockResolvedValueOnce({ timeTaken: 100, docs: [] });
+
+            await service.search('тест');
+
+            // первый вызов — listing stores
+            expect(flowise.request).toHaveBeenNthCalledWith(
+                1,
+                expect.stringContaining('/document-store/store'),
+            );
+            // второй вызов — query с найденным id
+            expect(flowise.request).toHaveBeenNthCalledWith(
+                2,
+                expect.stringContaining('/vectorstore/query'),
+                expect.objectContaining({
+                    body: expect.objectContaining({ storeId: 'aec6b741-real' }),
+                }),
+            );
+        });
+
+        it('второй search использует cached storeId (single-flight)', async () => {
+            flowise.request
+                .mockResolvedValueOnce([{ id: 'aec6b741-real', name: CATALOG_AQUAPHOR_STORE_NAME }])
+                .mockResolvedValueOnce({ timeTaken: 100, docs: [] })
+                .mockResolvedValueOnce({ timeTaken: 100, docs: [] });
+
+            await service.search('первый');
+            await service.search('второй');
+
+            // Первый вызов — list, потом 2 query — итого 3, не 4
+            expect(flowise.request).toHaveBeenCalledTimes(3);
+        });
+
+        it('store не найден → throw, следующий request делает retry', async () => {
+            flowise.request
+                .mockResolvedValueOnce([{ id: 'wrong', name: 'wrong-name' }])
+                // retry — теперь нашёлся
+                .mockResolvedValueOnce([{ id: 'aec6b741-real', name: CATALOG_AQUAPHOR_STORE_NAME }])
+                .mockResolvedValueOnce({ timeTaken: 100, docs: [] });
+
+            await expect(service.search('первый')).rejects.toThrow(/not found/);
+
+            // retry должен сработать (storeIdPromise обнулился на ошибке)
+            const result = await service.search('второй');
+            expect(result.count).toBe(0);
+        });
+
+        it('Flowise list упал → ошибка пробрасывается, retry на следующий request', async () => {
+            flowise.request
+                .mockRejectedValueOnce(new FlowiseError('Internal Server Error', 500))
+                .mockResolvedValueOnce([{ id: 'aec6b741-real', name: CATALOG_AQUAPHOR_STORE_NAME }])
+                .mockResolvedValueOnce({ timeTaken: 100, docs: [] });
+
+            await expect(service.search('первый')).rejects.toBeInstanceOf(FlowiseError);
+
+            // retry успешен
+            await expect(service.search('второй')).resolves.toBeDefined();
+        });
+    });
+
+    describe('metadata whitelist (info-leak защита)', () => {
+        it('отдаёт только whitelisted поля, лишние отбрасывает', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [
+                    {
+                        ...SAMPLE_FLOWISE_DOC,
+                        metadata: {
+                            // whitelisted
+                            externalId: 'mu-1',
+                            externalType: 'product',
+                            externalSource: 'moysklad',
+                            categoryPath: 'Фильтры/RO',
+                            name: 'Аквафор',
+                            description: 'desc',
+                            salePriceKopecks: 100000,
+                            rangForApp: 5,
+                            // НЕ whitelisted (must be filtered)
+                            cost: 50000,
+                            margin: 0.5,
+                            supplierInternalId: 'leak-this',
+                            imageUrls: ['ok.jpg'],
+                        },
+                    },
+                ],
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockResolvedValue('https://signed/ok');
+
+            const result = await service.search('тест');
+
+            expect(result.docs[0].metadata).toEqual({
+                externalId: 'mu-1',
+                externalType: 'product',
+                externalSource: 'moysklad',
+                categoryPath: 'Фильтры/RO',
+                name: 'Аквафор',
+                description: 'desc',
+                salePriceKopecks: 100000,
+                rangForApp: 5,
+            });
+            expect(result.docs[0].metadata).not.toHaveProperty('cost');
+            expect(result.docs[0].metadata).not.toHaveProperty('margin');
+            expect(result.docs[0].metadata).not.toHaveProperty('supplierInternalId');
+            expect(result.docs[0].metadata).not.toHaveProperty('imageUrls');
+        });
+
+        it('пустая metadata → пустой объект (не throw)', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [{ ...SAMPLE_FLOWISE_DOC, metadata: {} }],
+            });
+
+            const result = await service.search('тест');
+
+            expect(result.docs[0].metadata).toEqual({});
+        });
+    });
+
+    describe('presigned URL cache — Redis-level', () => {
         it('cache hit → не дёргает S3, не пишет в cache повторно', async () => {
             flowise.request.mockResolvedValueOnce({
                 timeTaken: 100,
@@ -208,6 +355,107 @@ describe('TextSearchService', () => {
         });
     });
 
+    describe('intra-request dedup — один S3-key в нескольких docs', () => {
+        it('тот же ключ в 5 docs → resolveOne вызвался один раз', async () => {
+            const sharedKey = 'catalogs/aquaphor/images/shared/sha-x.jpg';
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [1, 2, 3, 4, 5].map((n) => ({
+                    id: `chunk-${n}`,
+                    pageContent: `chunk ${n}`,
+                    metadata: { imageUrls: [sharedKey] },
+                    chunkNo: n,
+                })),
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockResolvedValue('https://signed/shared');
+
+            const result = await service.search('тест');
+
+            expect(result.docs).toHaveLength(5);
+            // Каждый doc получил presigned URL
+            for (const doc of result.docs) {
+                expect(doc.imageUrls).toEqual(['https://signed/shared']);
+            }
+            // Но S3 sign дёрнули один раз (level-1 dedup)
+            expect(storage.getPresignedDownloadUrl).toHaveBeenCalledTimes(1);
+        });
+
+        it('разные ключи в одном docs → каждый resolveOne один раз', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [
+                    {
+                        id: 'c1',
+                        pageContent: 'c1',
+                        metadata: { imageUrls: ['k1.jpg', 'k2.jpg'] },
+                        chunkNo: 1,
+                    },
+                    {
+                        id: 'c2',
+                        pageContent: 'c2',
+                        metadata: { imageUrls: ['k1.jpg', 'k3.jpg'] },
+                        chunkNo: 2,
+                    },
+                ],
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockImplementation(
+                (k: string) => Promise.resolve(`https://signed/${k}`),
+            );
+
+            const result = await service.search('тест');
+
+            // 3 уникальных ключа (k1, k2, k3) → 3 sign calls (не 4)
+            expect(storage.getPresignedDownloadUrl).toHaveBeenCalledTimes(3);
+            expect(result.docs[0].imageUrls).toEqual(['https://signed/k1.jpg', 'https://signed/k2.jpg']);
+            expect(result.docs[1].imageUrls).toEqual(['https://signed/k1.jpg', 'https://signed/k3.jpg']);
+        });
+    });
+
+    describe('inter-request single-flight — concurrent searches на cold key', () => {
+        it('два параллельных search\'а на тот же ключ → один S3 sign', async () => {
+            // Симулируем медленный S3 sign — 50мс
+            let resolveSign: (v: string) => void;
+            const slowSign = new Promise<string>((r) => {
+                resolveSign = r;
+            });
+            storage.getPresignedDownloadUrl.mockReturnValueOnce(slowSign);
+            redis.get.mockResolvedValue(null);
+
+            // Оба запроса дёргают одинаковый key
+            flowise.request
+                .mockResolvedValueOnce({
+                    timeTaken: 100,
+                    docs: [{ ...SAMPLE_FLOWISE_DOC, metadata: { imageUrls: ['shared.jpg'] } }],
+                })
+                .mockResolvedValueOnce({
+                    timeTaken: 100,
+                    docs: [{ ...SAMPLE_FLOWISE_DOC, metadata: { imageUrls: ['shared.jpg'] } }],
+                });
+
+            const search1 = service.search('первый');
+            const search2 = service.search('второй');
+
+            // Дать event loop'у пройти flowise.request оба раза, но S3 sign
+            // зависнет в ожидании resolveSign
+            await new Promise((r) => setImmediate(r));
+
+            // S3 sign должен быть в полёте только ОДИН раз — second search
+            // увидел inflight Promise и ждёт его
+            expect(storage.getPresignedDownloadUrl).toHaveBeenCalledTimes(1);
+
+            resolveSign!('https://signed/shared');
+            const [r1, r2] = await Promise.all([search1, search2]);
+
+            // Оба получили один и тот же URL
+            expect(r1.docs[0].imageUrls).toEqual(['https://signed/shared']);
+            expect(r2.docs[0].imageUrls).toEqual(['https://signed/shared']);
+            // Sign call всё ещё один (cache hit на втором поскольку set уже произошёл)
+            expect(storage.getPresignedDownloadUrl).toHaveBeenCalledTimes(1);
+        });
+    });
+
     describe('metadata edge cases', () => {
         it('imageUrls отсутствует → пустой массив', async () => {
             flowise.request.mockResolvedValueOnce({
@@ -243,7 +491,9 @@ describe('TextSearchService', () => {
                 ],
             });
             redis.get.mockResolvedValue(null);
-            storage.getPresignedDownloadUrl.mockResolvedValue('https://signed/url');
+            storage.getPresignedDownloadUrl.mockImplementation(
+                (k: string) => Promise.resolve(`https://signed/${k}`),
+            );
 
             const result = await service.search('тест');
 
@@ -306,7 +556,7 @@ describe('TextSearchService', () => {
         it('отбрасывает не-ASCII (\\0, control chars, кириллица)', async () => {
             const urls = await searchWithImageKeys([
                 'катал/ok.jpg',
-                'ok .jpg',
+                'ok .jpg',
                 'ok.jpg',
             ]);
             expect(urls).toEqual(['https://signed/ok.jpg']);

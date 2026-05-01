@@ -8,16 +8,21 @@ export const FLOWISE_CLIENT_TOKEN = Symbol('CATALOG_FLOWISE_CLIENT');
 export const REDIS_CLIENT_TOKEN = Symbol('CATALOG_REDIS_CLIENT');
 
 // =============================================================================
-// Document Store id для каталога Аквафор. Создан в Phase 0 через REST API
-// (см. lab journal day 2 — `docs/experiments/vision-catalog/...`).
+// Document Store name для каталога Аквафор — единый source-of-truth с
+// catalog-refresh worker'ом (см. catalog-refresh.constants.ts:20).
+//
+// Раньше API использовал hardcoded UUID `aec6b741-...` (Phase 0 store id),
+// что создавало рассинхрон с worker'ом (тот резолвит через name): при reset
+// Flowise dev-инстанса id меняется → API ломается тихо. Теперь оба идут
+// через name lookup (TextSearchService.lookupStoreId на старте, lazy +
+// single-flight retry on failure).
 //
 // TODO(multi-tenant): когда появятся пользователи / per-tenant каталоги —
-// маппить через Prisma TenantConfig (user.tenantId → storeId). Сейчас single
-// store hardcoded — допустимо для MVP. Тот же подход в catalog-refresh
-// (через name lookup), здесь — direct id для search-hot-path.
+// маппить через Prisma TenantConfig (user.tenantId → storeName). Сейчас single
+// store hardcoded — допустимо для MVP.
 // =============================================================================
 
-export const CATALOG_AQUAPHOR_STORE_ID = 'aec6b741-8610-4f98-9f5c-bc829dc41a96';
+export const CATALOG_AQUAPHOR_STORE_NAME = 'catalog-aquaphor';
 
 // =============================================================================
 // Top-K границы. Default=10 — баланс между coverage и latency. Max=50 — защита
