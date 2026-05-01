@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { createAppConfigModule, createAppLoggerModule } from '@slovo/common';
 import type { TAppEnv } from '@slovo/common';
+import { CatalogModule } from './modules/catalog/catalog.module';
 import { HealthModule } from './modules/health/health.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 
@@ -22,6 +23,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
         }),
         HealthModule,
         KnowledgeModule,
+        CatalogModule,
     ],
     providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

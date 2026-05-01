@@ -10,6 +10,8 @@
         "^@slovo/common(.*)$": "<rootDir>/libs/common/src$1",
         "^@slovo/database(.*)$": "<rootDir>/libs/database/src$1",
         "^@slovo/llm(.*)$": "<rootDir>/libs/llm/src$1",
-        "^@slovo/storage(.*)$": "<rootDir>/libs/storage/src$1"
+        "^@slovo/storage(.*)$": "<rootDir>/libs/storage/src$1",
+        "^@slovo/flowise-client(.*)$": "<rootDir>/libs/flowise-client/src$1",
+        "^@slovo/flowise-flowdata(.*)$": "<rootDir>/libs/flowise-flowdata/src$1"
     }
 }

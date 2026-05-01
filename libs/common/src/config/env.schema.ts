@@ -72,6 +72,11 @@ export const envSchema = z
         S3_ACCESS_KEY: z.string().min(1),
         S3_SECRET_KEY: z.string().min(1),
         S3_BUCKET: z.string().min(1),
+        // Bucket для catalog images (vision-catalog-search). Отдельный от
+        // S3_BUCKET (knowledge uploads) потому что feeder'ы (CRM, 1С) пишут
+        // картинки каталога в shared bucket с другим IAM-scope (см. ADR-007).
+        // Default 'slovo-datasets' соответствует Phase 0 setup'у (lab journal).
+        S3_CATALOG_BUCKET: z.string().min(1).default('slovo-datasets'),
         S3_FORCE_PATH_STYLE: booleanFromString.default(true),
         MINIO_PORT: portFromString.default(9010),
         MINIO_CONSOLE_PORT: portFromString.default(9011),
