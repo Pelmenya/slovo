@@ -10,7 +10,7 @@ export class FlowiseError extends Error {
     }
 }
 
-export function formatErrorForMcp(error: unknown): string {
+export function formatFlowiseError(error: unknown): string {
     if (error instanceof FlowiseError) {
         const parts: string[] = [error.message];
         if (typeof error.statusCode === 'number') {

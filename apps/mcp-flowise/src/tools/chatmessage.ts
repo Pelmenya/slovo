@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { getFlowiseClient } from '../api/client';
-import { ENDPOINTS } from '../api/endpoints';
-import type { TFlowiseChatMessage } from '../api/t-flowise';
+import { getFlowiseClient } from '../config';
+import { ENDPOINTS } from '@slovo/flowise-client';
+import type { TFlowiseChatMessage } from '@slovo/flowise-client';
 import { buildQuery, withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 

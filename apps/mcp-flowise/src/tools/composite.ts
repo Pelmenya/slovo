@@ -8,7 +8,7 @@ import {
     docstoreVectorstoreInsertHandler,
     docstoreVectorstoreSaveHandler,
 } from './docstore';
-import type { TFlowiseChatflow, TFlowiseDocumentStore } from '../api/t-flowise';
+import type { TFlowiseChatflow, TFlowiseDocumentStore } from '@slovo/flowise-client';
 import type { TToolResult } from './t-tool';
 
 // =============================================================================

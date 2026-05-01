@@ -1,4 +1,4 @@
-import { formatErrorForMcp } from '../utils/errors';
+import { formatFlowiseError } from '@slovo/flowise-client';
 import type { TToolResult } from './t-tool';
 
 /**
@@ -12,7 +12,7 @@ export async function withErrorHandling<T>(
         const data = await fn();
         return { success: true, data };
     } catch (error) {
-        return { success: false, error: formatErrorForMcp(error) };
+        return { success: false, error: formatFlowiseError(error) };
     }
 }
 

@@ -1,0 +1,8 @@
+{
+    "name": "@slovo/flowise-client",
+    "version": "0.0.1",
+    "private": true,
+    "main": "src/index.ts",
+    "types": "src/index.ts",
+    "description": "Тонкий типизированный REST-клиент для Flowise. Используется apps/mcp-flowise/ как foundation и slovo runtime apps (api/worker) когда нужно ходить в Flowise напрямую."
+}

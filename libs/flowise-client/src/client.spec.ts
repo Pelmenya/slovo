@@ -1,13 +1,13 @@
 import { FlowiseClient } from './client';
-import { FlowiseError } from '../utils/errors';
-import type { TFlowiseConfig } from '../config';
+import { FlowiseError } from './errors';
+import type { TFlowiseClientConfig } from './t-config';
 
-const baseConfig: TFlowiseConfig = {
-    FLOWISE_API_URL: 'http://flowise.test',
-    FLOWISE_API_KEY: 'secret-key',
-    FLOWISE_REQUEST_TIMEOUT_MS: 1000,
-    FLOWISE_THROTTLE_MS: 0,
-    FLOWISE_MAX_RETRIES: 2,
+const baseConfig: TFlowiseClientConfig = {
+    apiUrl: 'http://flowise.test',
+    apiKey: 'secret-key',
+    requestTimeoutMs: 1000,
+    throttleMs: 0,
+    maxRetries: 2,
 };
 
 describe('FlowiseClient', () => {
@@ -92,8 +92,7 @@ describe('FlowiseClient', () => {
     });
 
     it('persistent 429 — кидает FlowiseError(429) вместо generic после исчерпания', async () => {
-        // baseConfig.FLOWISE_MAX_RETRIES = 2 → всего 3 попытки (0, 1, 2)
-        const persistentConfig = { ...baseConfig, FLOWISE_MAX_RETRIES: 1 };
+        const persistentConfig: TFlowiseClientConfig = { ...baseConfig, maxRetries: 1 };
         fetchMock
             .mockResolvedValueOnce(mockResponse(429, '', { 'retry-after': '0' }))
             .mockResolvedValueOnce(mockResponse(429, '', { 'retry-after': '0' }));
@@ -104,5 +103,10 @@ describe('FlowiseClient', () => {
             message: expect.stringContaining('Rate limited'),
         });
         expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('минимальный config (без override-ов) — конструктор не падает', () => {
+        const minimal = new FlowiseClient({ apiUrl: 'http://x', apiKey: 'k' });
+        expect(minimal).toBeInstanceOf(FlowiseClient);
     });
 });

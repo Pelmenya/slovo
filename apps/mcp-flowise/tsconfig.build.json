@@ -13,3 +13,10 @@
     "include": ["src/**/*"],
     "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/__test-helpers__/**"]
 }
+// NOTE: build mcp-flowise через `npx tsc --project tsconfig.build.json` сейчас
+// не собирает зависимость на @slovo/flowise-client (она через TS path-alias
+// резолвится из libs/flowise-client/src/, что вне rootDir). Для in-monorepo
+// разработки используется `tsx` (npm run dev) — он не требует pre-build.
+// При extract в Pelmenya/mcp-flowise (см. ADR-008): flowise-client будет
+// опубликован в npm как @pelmenya/flowise-flowdata, импорт станет обычной
+// node_modules-зависимостью, build снова заработает out-of-the-box.

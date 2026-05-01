@@ -1,4 +1,3 @@
-import { resetClientForTests } from '../api/client';
 import { resetConfigForTests } from '../config';
 
 export type TFetchMock = jest.Mock<Promise<Response>, Parameters<typeof fetch>>;
@@ -32,7 +31,6 @@ export function setupFetchMock(): TSetupFetchMock {
         process.env.FLOWISE_API_URL = 'http://flowise.test';
         process.env.FLOWISE_THROTTLE_MS = '0';
         resetConfigForTests();
-        resetClientForTests();
         fetchMock.mockReset();
         (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     });

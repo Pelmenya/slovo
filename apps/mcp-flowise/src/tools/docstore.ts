@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { getFlowiseClient } from '../api/client';
-import { ENDPOINTS } from '../api/endpoints';
+import { getFlowiseClient } from '../config';
+import { ENDPOINTS } from '@slovo/flowise-client';
 import type {
     TFlowiseComponentNode,
     TFlowiseDocumentStore,
@@ -9,7 +9,7 @@ import type {
     TFlowiseDocumentStoreLoader,
     TFlowiseLoaderPreviewResponse,
     TFlowiseQueryResponse,
-} from '../api/t-flowise';
+} from '@slovo/flowise-client';
 import { withErrorHandling } from './_helpers';
 import type { TToolResult } from './t-tool';
 

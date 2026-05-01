@@ -1,5 +1,4 @@
 import { pingHandler } from './ping';
-import { resetClientForTests } from '../api/client';
 import { resetConfigForTests } from '../config';
 
 describe('flowise_ping handler', () => {
@@ -11,7 +10,6 @@ describe('flowise_ping handler', () => {
         process.env.FLOWISE_API_URL = 'http://flowise.test';
         process.env.FLOWISE_THROTTLE_MS = '0';
         resetConfigForTests();
-        resetClientForTests();
         fetchMock.mockReset();
         (globalThis as unknown as { fetch: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     });

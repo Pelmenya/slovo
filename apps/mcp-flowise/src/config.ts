@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client';
+
+// =============================================================================
+// MCP-server-specific config: читает env (process.env), валидирует через zod,
+// конструирует TFlowiseClientConfig и singleton FlowiseClient из libs/flowise-client.
+// Lib сама не знает про env — это ответственность apps-слоя.
+// =============================================================================
 
 const configSchema = z.object({
     FLOWISE_API_URL: z.url().default('http://127.0.0.1:3130'),
@@ -11,6 +18,7 @@ const configSchema = z.object({
 export type TFlowiseConfig = z.infer<typeof configSchema>;
 
 let cached: TFlowiseConfig | null = null;
+let clientInstance: FlowiseClient | null = null;
 
 export function getConfig(): TFlowiseConfig {
     if (cached) {
@@ -27,6 +35,22 @@ export function getConfig(): TFlowiseConfig {
     return cached;
 }
 
+export function getFlowiseClient(): FlowiseClient {
+    if (!clientInstance) {
+        const config = getConfig();
+        const clientConfig: TFlowiseClientConfig = {
+            apiUrl: config.FLOWISE_API_URL,
+            apiKey: config.FLOWISE_API_KEY,
+            requestTimeoutMs: config.FLOWISE_REQUEST_TIMEOUT_MS,
+            throttleMs: config.FLOWISE_THROTTLE_MS,
+            maxRetries: config.FLOWISE_MAX_RETRIES,
+        };
+        clientInstance = new FlowiseClient(clientConfig);
+    }
+    return clientInstance;
+}
+
 export function resetConfigForTests(): void {
     cached = null;
+    clientInstance = null;
 }

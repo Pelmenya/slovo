@@ -1,25 +1,25 @@
-import { FlowiseError, formatErrorForMcp } from './errors';
+import { FlowiseError, formatFlowiseError } from './errors';
 
-describe('formatErrorForMcp', () => {
+describe('formatFlowiseError', () => {
     it('форматирует FlowiseError с HTTP кодом', () => {
         const err = new FlowiseError('Not found', 404, { code: 'X' });
-        expect(formatErrorForMcp(err)).toBe('Not found — HTTP 404');
+        expect(formatFlowiseError(err)).toBe('Not found — HTTP 404');
     });
 
     it('FlowiseError без кода — только message', () => {
         const err = new FlowiseError('Generic failure');
-        expect(formatErrorForMcp(err)).toBe('Generic failure');
+        expect(formatFlowiseError(err)).toBe('Generic failure');
     });
 
     it('обычный Error — message', () => {
-        expect(formatErrorForMcp(new Error('boom'))).toBe('boom');
+        expect(formatFlowiseError(new Error('boom'))).toBe('boom');
     });
 
     it('строка — как есть', () => {
-        expect(formatErrorForMcp('plain string')).toBe('plain string');
+        expect(formatFlowiseError('plain string')).toBe('plain string');
     });
 
     it('неизвестный объект — String(...)', () => {
-        expect(formatErrorForMcp({ x: 1 })).toBe('[object Object]');
+        expect(formatFlowiseError({ x: 1 })).toBe('[object Object]');
     });
 });

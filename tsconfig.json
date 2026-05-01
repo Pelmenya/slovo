@@ -30,7 +30,9 @@
             "@slovo/storage": ["./libs/storage/src"],
             "@slovo/storage/*": ["./libs/storage/src/*"],
             "@slovo/flowise-flowdata": ["./libs/flowise-flowdata/src"],
-            "@slovo/flowise-flowdata/*": ["./libs/flowise-flowdata/src/*"]
+            "@slovo/flowise-flowdata/*": ["./libs/flowise-flowdata/src/*"],
+            "@slovo/flowise-client": ["./libs/flowise-client/src"],
+            "@slovo/flowise-client/*": ["./libs/flowise-client/src/*"]
         }
     }
 }

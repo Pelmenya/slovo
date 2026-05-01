@@ -1,5 +1,10 @@
-import { getConfig, type TFlowiseConfig } from '../config';
-import { FlowiseError } from '../utils/errors';
+import {
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    DEFAULT_THROTTLE_MS,
+    type TFlowiseClientConfig,
+} from './t-config';
+import { FlowiseError } from './errors';
 
 type TRequestOptions = {
     method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -9,12 +14,25 @@ type TRequestOptions = {
 
 const RETRY_BASE_DELAY_MS = 500;
 
+// =============================================================================
+// FlowiseClient — тонкий REST-клиент с bearer auth, retry на 429, throttle,
+// timeout. Не зависит от env / dotenv / NestJS — config передаётся в конструктор.
+// =============================================================================
+
 export class FlowiseClient {
-    private readonly config: TFlowiseConfig;
+    private readonly apiUrl: string;
+    private readonly apiKey: string;
+    private readonly requestTimeoutMs: number;
+    private readonly throttleMs: number;
+    private readonly maxRetries: number;
     private lastRequestAt = 0;
 
-    constructor(config?: TFlowiseConfig) {
-        this.config = config ?? getConfig();
+    constructor(config: TFlowiseClientConfig) {
+        this.apiUrl = config.apiUrl;
+        this.apiKey = config.apiKey;
+        this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+        this.throttleMs = config.throttleMs ?? DEFAULT_THROTTLE_MS;
+        this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
     }
 
     async request<T>(path: string, options: TRequestOptions = {}): Promise<T> {
@@ -25,7 +43,7 @@ export class FlowiseClient {
         const url = this.buildUrl(path, query);
         let lastError: Error | null = null;
 
-        for (let attempt = 0; attempt <= this.config.FLOWISE_MAX_RETRIES; attempt += 1) {
+        for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
             try {
                 const response = await this.fetchWithTimeout(url, method, body);
 
@@ -38,7 +56,7 @@ export class FlowiseClient {
                         `Rate limited (HTTP 429), retry-after=${retryAfter ?? 'n/a'}`,
                         429,
                     );
-                    if (attempt < this.config.FLOWISE_MAX_RETRIES) {
+                    if (attempt < this.maxRetries) {
                         await sleep(delayMs);
                         continue;
                     }
@@ -59,7 +77,7 @@ export class FlowiseClient {
                     throw error;
                 }
                 lastError = error instanceof Error ? error : new Error(String(error));
-                if (attempt < this.config.FLOWISE_MAX_RETRIES) {
+                if (attempt < this.maxRetries) {
                     await sleep(RETRY_BASE_DELAY_MS * (attempt + 1));
                 }
             }
@@ -70,12 +88,12 @@ export class FlowiseClient {
 
     private async fetchWithTimeout(url: string, method: string, body: unknown): Promise<Response> {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.config.FLOWISE_REQUEST_TIMEOUT_MS);
+        const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
         try {
             return await fetch(url, {
                 method,
                 headers: {
-                    Authorization: `Bearer ${this.config.FLOWISE_API_KEY}`,
+                    Authorization: `Bearer ${this.apiKey}`,
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
                 },
@@ -88,19 +106,19 @@ export class FlowiseClient {
     }
 
     private async throttle(): Promise<void> {
-        if (this.config.FLOWISE_THROTTLE_MS === 0) {
+        if (this.throttleMs === 0) {
             return;
         }
         const now = Date.now();
         const elapsed = now - this.lastRequestAt;
-        if (elapsed < this.config.FLOWISE_THROTTLE_MS) {
-            await sleep(this.config.FLOWISE_THROTTLE_MS - elapsed);
+        if (elapsed < this.throttleMs) {
+            await sleep(this.throttleMs - elapsed);
         }
         this.lastRequestAt = Date.now();
     }
 
     private buildUrl(path: string, query?: Record<string, string | number | boolean | undefined>): string {
-        const base = this.config.FLOWISE_API_URL.replace(/\/+$/, '');
+        const base = this.apiUrl.replace(/\/+$/, '');
         const url = new URL(`${base}${path}`);
         if (query) {
             for (const [key, value] of Object.entries(query)) {
@@ -142,17 +160,4 @@ function extractErrorMessage(payload: unknown): string | null {
         }
     }
     return null;
-}
-
-let clientInstance: FlowiseClient | null = null;
-
-export function getFlowiseClient(): FlowiseClient {
-    if (!clientInstance) {
-        clientInstance = new FlowiseClient();
-    }
-    return clientInstance;
-}
-
-export function resetClientForTests(): void {
-    clientInstance = null;
 }
