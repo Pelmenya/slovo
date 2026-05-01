@@ -268,6 +268,85 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
 Решить: когда появится 5–10 DTO вручную и копипаст станет заметен. Если выбираем zod-first — это влияет на подход к валидации request body.
 
+## После PR7 — vision-catalog hardening
+
+> Открытые follow-up'ы по итогам architect+security review коммита `d8ca373`
+> (`/catalog/search/text` endpoint). Закрытые в коммитах `22fe5cc` (hardening),
+> `f093a6f` (StorageModule.forFeature), `267a05a` (whitelist+single-flight+
+> name-lookup) — здесь не повторяются.
+
+### 21. Embedding budget cap + Langfuse alert
+
+`/catalog/search/text` принимает 30 req/min/IP без auth-guard'а. На 1000
+distributed IPv6 endpoints = 30K embedding/min ≈ $0.012/min OpenAI cost.
+До prod-релиза:
+
+1. Global daily/hourly cap на embedding calls (Redis counter
+   `slovo:embed:budget:<bucket>` с TTL=86400). При превышении — return 429
+   `quota_exceeded` для anonymous, allow для authenticated.
+2. Langfuse alert при `daily_embedding_calls > threshold` (изначально 10K,
+   тюним по реальному usage).
+3. Когда появится auth-модуль (см. #17) — снизить anonymous limit до 10/min,
+   30+/min оставить authenticated.
+
+Триггер: до открытия endpoint наружу из dev-сети / появления первого
+authenticated пользователя.
+
+### 22. `libs/redis/forFeature` — extract в paire с storage
+
+Сейчас Redis client инстанцируется отдельно в `apps/api/catalog.module.ts`
+и `apps/worker/catalog-refresh.module.ts` — конфигурация (host/port/password/
+maxRetriesPerRequest/connectTimeout/commandTimeout) копируется. Drift риск:
+один поправит password handling, другой нет.
+
+Triggered когда появится **3-й** Redis-consumer (knowledge cache, LLM session
+storage, rate-limit shared store). Pattern по аналогии с `StorageModule.forFeature`:
+
+```ts
+RedisModule.forFeature({ namespace: 'catalog' })
+  // → провайдит Redis client с keyPrefix='catalog:' для namespace isolation
+```
+
+Размер extract: ~50 LOC новый module, ~25 LOC сокращение в каждом потребителе.
+
+Триггер: PR с 3-м потребителем Redis.
+
+### 23. METADATA_WHITELIST sync trigger
+
+`apps/api/src/modules/catalog/search/text.service.ts:METADATA_WHITELIST` —
+explicit whitelist полей feeder-метаданных которые отдаются клиенту. При
+расширении feeder'а (CRM aquaphor добавит новое поле в `latest.json`):
+
+- **DO**: проверить что новое поле — public-safe, добавить в whitelist
+  (если нужно отображать в UI), обновить тесты.
+- **DON'T**: не пропускать через `metadata: doc.metadata` без whitelist —
+  вернётся info-leak risk.
+
+Pattern для check'а в pre-PR review: при изменении `crm-aqua-kinetics-back/.../
+catalog-snapshot/build-payload.ts` — обновить METADATA_WHITELIST синхронно.
+
+Триггер: каждый PR в feeder который меняет shape `TBulkIngestItem.attributes`
+или добавляет новые top-level поля в `latest.json` items.
+
+### 24. Vision-catalog: Prisma `CatalogItem` модель (опционально)
+
+Сейчас Document Store metadata + Flowise чанки — единственное хранилище
+каталога (Level 1 архитектура из lab journal day 2). Когда понадобится:
+
+- **soft-delete tracking** через `lastSeenAt < syncStart` (catalog-refresh
+  worker не делает GC сейчас).
+- **presigned URL caching на стороне БД** (вместо Redis 50м TTL — постоянная
+  таблица `catalog_image_keys` с rotation policy).
+- **per-tenant store mapping** (multi-tenant TODO).
+
+Триггер: каталог достигнет 1000+ items + появятся multiple feeder'ы (1С + ручной
+import) или нужна будет ad-hoc analytics через SQL.
+
+Срез плана — `docs/features/vision-catalog-search.md` секция «Phase 2 Prisma
+layer» (PR9 в roadmap).
+
+---
+
 ## До первого prod-деплоя миграций
 
 ### 20. `pg_dump` перед `prisma migrate deploy`
