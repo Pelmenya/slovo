@@ -28,7 +28,7 @@ Response shape — `{ count, docs, timeTakenMs, visionOutput? }`. `visionOutput`
 
 **Throttle** 5/min/IP (vision-rate). **Budget cap** $5 vision/day + $1 embedding/day → 503 ServiceUnavailable.
 
-**Известное ограничение** (PR9 e2e discovery): multi-image (2+) пока требует prompt v2 — Vision prompt v1 на multi-image input возвращает не-JSON output и slovo отдаёт 502. Single-image (1 фото) работает корректно. См. tech-debt #31.
+**Multi-image статус:** ✅ работает. PR9 e2e обнаружил что prompt v1 возвращал массив описаний для 2+ фото (502 BadGateway). 1 мая 2026 prompt обновлён до v2 с явной инструкцией «одно или несколько фото ОДНОГО товара → один JSON-объект». Verified: 2 фото → 200 OK с combined description ~6s end-to-end. См. tech-debt #31 (закрыто).
 
 **Исторический контекст:** в PR7 был `/catalog/search/text`, в PR8 — `/catalog/search/image`, в PR9 они объединены в universal `/catalog/search`. Старые endpoints удалены — клиенты пилотного периода ещё не интегрированы, breaking change без последствий.
 

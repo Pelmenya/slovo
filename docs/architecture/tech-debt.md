@@ -448,31 +448,40 @@ const id = await resolver.resolve(); // lazy, single-flight, retry
 
 Триггер: при появлении 3-го name-lookup потребителя.
 
-### 31. Multi-image Vision — prompt v2 для batch describe ⚠️ **PR9 DISCOVERY**
+### 31. Multi-image Vision — prompt v2 ✅ **ЗАКРЫТО (1 мая 2026)**
 
-API `/catalog/search` поддерживает до 5 фото в одном запросе (`images` array).
-Технически Anthropic Vision API принимает все картинки в одном request.
-Но **prompt vision-catalog-describer-v1 не справляется с multi-image input**:
-для 2+ фото возвращает не-JSON-object output → 502 BadGateway в slovo.
+PR9 e2e обнаружил: prompt v1 не справлялся с multi-image input — возвращал
+not-JSON-object → 502 BadGateway. Vision интерпретировал «несколько фото»
+как «несколько товаров → массив описаний».
 
-Live verify (PR9 e2e through Playwright Swagger, 1 мая 2026):
-- 1 фото → 200 OK, корректный JSON с description_ru
-- 2 фото → 502 "Vision output is not a JSON object (got null/array/primitive)"
+**Решение (1 мая 2026):** обновлён `systemMessagePrompt` в Flowise chatflow
+`vision-catalog-describer-v1` (id `991f9b70-fdae-...`) через `flowise_chatflow_update`.
+Скрипт реализации — `experiments/update-vision-prompt-v2.mjs` (gitignored,
+рецепт повторим). Ключевые добавления:
 
-**Workaround сейчас:** API contract разрешает 1..5, но реально работает
-только 1 фото. Документируем в Swagger / executive summary что multi
-требует prompt v2.
+1. Явное «На вход — одно или несколько (до 5) изображений ОДНОГО товара»
+2. «Если фото несколько — это разные ракурсы того же объекта»
+3. Strict «**Верни ровно ОДИН валидный JSON-объект** (не массив, не строку,
+   не null)»
+4. Правило #4 «При нескольких фото — объедини информацию со всех ракурсов
+   в ОДИН описательный объект»
+5. Правило #9 «JSON должен быть валидный: ровно один объект (typeof ===
+   'object', не Array.isArray, не null)»
 
-**Решение (Phase 2 backlog):**
-- Vision prompt v2 со специальным multi-image instruction:
-  «Опиши товар одним общим описанием, объединяя информацию со всех фото
-  (разные ракурсы того же объекта)».
-- A/B test на наборе из 5-10 multi-image кейсов.
-- Возможно отдельный chatflow `vision-catalog-describer-multi-v2` с
-  более точным prompt'ом, name lookup переключаемый по images.length > 1.
+Live verify (1 мая 2026, retest через `experiments/test-universal-search.mjs`):
+- TEST 4b: 2 копии reverse-osmosis.jpg → **200 OK** в 6.1s, ОДИН combined
+  description (не массив).
+- TEST 4: filter+softener (разные товары на фото) → 400 is_relevant=false
+  семантически корректно (Vision не нашёл водоочистки на конкретных кадрах).
 
-Триггер: до открытия multi-image flow клиентам / при появлении multi-image
-UX в `prostor-app`.
+**Историческая запись:** Phase 0 prompt был оптимизирован под single-image,
+multi-image поддержка появилась только когда API contract стал универсальным.
+
+**Tech-debt residual:**
+- A/B test on production data — когда появятся реальные multi-image
+  запросы от клиентов, проверить metric (relevance / cost / latency).
+- При расширении prompt'а с features/condition/etc — мигрировать на zod
+  schema parsing (см. tech-debt #30).
 
 ### 30. Vision response — zod schema когда prompt расширится
 
