@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type Redis from 'ioredis';
+import { sanitizeError } from '@slovo/common';
 import {
     ENDPOINTS,
     type FlowiseClient,
-    formatFlowiseError,
     type TFlowiseQueryResponse,
 } from '@slovo/flowise-client';
 import type { StorageService } from '@slovo/storage';
@@ -55,7 +55,7 @@ export class TextSearchService implements OnModuleDestroy {
         try {
             await this.redis.quit();
         } catch (error) {
-            this.logger.warn(`redis.quit() failed (degraded shutdown): ${formatFlowiseError(error)}`);
+            this.logger.warn(`redis.quit() failed (degraded shutdown): ${sanitizeError(error)}`);
         }
     }
 
@@ -120,19 +120,42 @@ export class TextSearchService implements OnModuleDestroy {
 
 // =============================================================================
 // Извлечь S3-keys картинок из metadata чанка. Feeder (CRM) кладёт их в поле
-// `imageUrls` как `string[]` (см. ADR-007 + vision-catalog-search.md). До
-// перехода feeder'а на pure JSON loader Flowise может сериализовать массив
-// как строку — отдельная логика fallback'а здесь не нужна, в Phase 0 lab
-// journal зафиксировано что приходит чистый array.
+// `imageUrls` как `string[]` (см. ADR-007 + vision-catalog-search.md).
 //
 // Любая иная форма (string, undefined, объект) → пустой массив. Не throw'аем,
 // чтобы один битый чанк не валил весь search.
+//
+// Защита от path-injection: feeder теоретически может класть `../../../...`
+// или абсолютные URL'ы — `getPresignedDownloadUrl` подпишет любую строку
+// без проверки. Whitelist validation на стороне slovo: разрешены только
+// относительные S3-keys из ASCII-набора `[a-zA-Z0-9/_.-]`, без leading `/`
+// и без `..` segments. Защита defensive — наш bucket, мы только читаем —
+// но проще закрыть здесь чем разбираться в incident'ах позже.
 // =============================================================================
+
+const S3_KEY_ALLOWED_CHARS = /^[a-zA-Z0-9/_.-]+$/;
+
+function isValidS3Key(key: string): boolean {
+    if (key.length === 0 || key.length > 1024) {
+        return false;
+    }
+    if (key.startsWith('/') || key.startsWith('.')) {
+        return false;
+    }
+    // Path traversal: '..' как отдельный сегмент. `'a..b'` — допустимо
+    // (часть имени файла), `'../etc'` — нет.
+    if (key.split('/').some((segment) => segment === '..')) {
+        return false;
+    }
+    return S3_KEY_ALLOWED_CHARS.test(key);
+}
 
 function extractImageKeys(metadata: Record<string, unknown>): string[] {
     const raw = metadata.imageUrls;
     if (!Array.isArray(raw)) {
         return [];
     }
-    return raw.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    return raw.filter(
+        (v): v is string => typeof v === 'string' && isValidS3Key(v),
+    );
 }

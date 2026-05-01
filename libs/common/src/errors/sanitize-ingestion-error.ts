@@ -1,8 +1,13 @@
-// Sanitize error message перед записью в knowledge_sources.error или логи.
-// Сырые ошибки от AWS SDK / Groq / Anthropic / pdf-parse могут содержать
-// секреты (API-ключи, presigned signatures, Bearer tokens) и PII
-// (фрагменты user-документа в stack-trace парсера). Помимо редакции
-// применяем ограничение по длине — в БД не кладём >2KB на ошибку.
+// Sanitize error message перед записью в БД (knowledge_sources.error и т.п.)
+// или логи. Сырые ошибки от AWS SDK / Groq / Anthropic / pdf-parse / ioredis
+// / fetch могут содержать секреты (API-ключи, presigned signatures, Bearer
+// tokens, postgres connection strings с паролями) и PII (фрагменты
+// user-документа в stack-trace парсера). Помимо редакции применяем
+// ограничение по длине — в БД не кладём >2KB на ошибку.
+//
+// Функция generic — `sanitizeError` экспортируется как канонический алиас.
+// `sanitizeIngestionError` оставлен для обратной совместимости с knowledge
+// модулем (используется в knowledge.service.ts и его spec'е).
 
 export const MAX_SANITIZED_ERROR_LENGTH = 2048;
 export const REDACTED_TOKEN = '[REDACTED]';
@@ -35,7 +40,7 @@ const REDACTION_PATTERNS: ReadonlyArray<RegExp> = [
     /postgres(?:ql)?:\/\/[^:/?\s]+:[^@/\s]+@/gi,
 ];
 
-export function sanitizeIngestionError(err: unknown): string {
+export function sanitizeError(err: unknown): string {
     const raw = extractMessage(err);
     const redacted = REDACTION_PATTERNS.reduce(
         (acc, pattern) => acc.replace(pattern, REDACTED_TOKEN),
@@ -46,6 +51,11 @@ export function sanitizeIngestionError(err: unknown): string {
     }
     return `${redacted.slice(0, MAX_SANITIZED_ERROR_LENGTH - 3)}...`;
 }
+
+// Backward-compat алиас. Knowledge модуль импортирует этот символ — не
+// переименовываем чтобы избежать diff-шума там, где имя «Ingestion» точно
+// описывает контекст (запись в knowledge_sources.error).
+export const sanitizeIngestionError = sanitizeError;
 
 function extractMessage(err: unknown): string {
     if (err instanceof Error) {

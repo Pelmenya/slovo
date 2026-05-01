@@ -24,6 +24,13 @@ function assertEnv(value: string | undefined, name: string): string {
     return value;
 }
 
+// Search hot-path — 10s timeout. Flowise vectorstoreQuery норма ~300-500мс
+// (1 OpenAI embed + pgvector cosine). 10s — потолок при загрузке (ругательно
+// но не фатально для UX), при превышении лучше fail-fast чем висеть на ETIMEDOUT
+// (default Node ~120s). Worker (catalog-refresh) использует более высокий
+// timeout — refresh синхронен, на 1000+ items может занимать минуты.
+const SEARCH_FLOWISE_TIMEOUT_MS = 10_000;
+
 const flowiseClientProvider: Provider = {
     provide: FLOWISE_CLIENT_TOKEN,
     inject: [ConfigService],
@@ -31,6 +38,7 @@ const flowiseClientProvider: Provider = {
         const clientConfig: TFlowiseClientConfig = {
             apiUrl: assertEnv(config.get('FLOWISE_API_URL', { infer: true }), 'FLOWISE_API_URL'),
             apiKey: assertEnv(config.get('FLOWISE_API_KEY', { infer: true }), 'FLOWISE_API_KEY'),
+            requestTimeoutMs: SEARCH_FLOWISE_TIMEOUT_MS,
         };
         return new FlowiseClient(clientConfig);
     },
@@ -49,6 +57,12 @@ const redisClientProvider: Provider = {
             password: password || undefined,
             lazyConnect: false,
             maxRetriesPerRequest: 3,
+            // 5s connectTimeout vs ioredis default ~10-15s. При недоступном
+            // Valkey health-endpoint отдаст 503 быстрее, deploy не висит.
+            connectTimeout: 5_000,
+            // Отдельный command timeout — защита от зависших команд на
+            // healthy connection (network blip, slowlog event).
+            commandTimeout: 3_000,
         });
     },
 };

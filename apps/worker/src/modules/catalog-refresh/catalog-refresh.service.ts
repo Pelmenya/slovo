@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
+import { sanitizeError } from '@slovo/common';
 import {
     ENDPOINTS,
     FlowiseClient,
@@ -55,14 +56,14 @@ export class CatalogRefreshService implements OnModuleDestroy {
                 await this.releaseLock(this.currentLockToken);
             } catch (error) {
                 this.logger.warn(
-                    `failed to release lock on shutdown: ${formatFlowiseError(error)}`,
+                    `failed to release lock on shutdown: ${sanitizeError(error)}`,
                 );
             }
         }
         try {
             await this.redis.quit();
         } catch (error) {
-            this.logger.warn(`redis.quit() failed (degraded shutdown): ${formatFlowiseError(error)}`);
+            this.logger.warn(`redis.quit() failed (degraded shutdown): ${sanitizeError(error)}`);
         }
     }
 

@@ -257,6 +257,81 @@ describe('TextSearchService', () => {
         });
     });
 
+    describe('S3-key validation (path-injection защита)', () => {
+        async function searchWithImageKeys(keys: unknown[]): Promise<string[]> {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [{ ...SAMPLE_FLOWISE_DOC, metadata: { imageUrls: keys } }],
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockImplementation(
+                (k: string) => Promise.resolve(`https://signed/${k}`),
+            );
+            const result = await service.search('тест');
+            return result.docs[0].imageUrls;
+        }
+
+        it('отбрасывает path traversal (../etc/passwd)', async () => {
+            const urls = await searchWithImageKeys(['../etc/passwd', 'ok.jpg']);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('отбрасывает leading slash (абсолютный путь)', async () => {
+            const urls = await searchWithImageKeys(['/etc/passwd', 'ok.jpg']);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('отбрасывает leading dot (скрытый файл / относительный путь)', async () => {
+            const urls = await searchWithImageKeys(['.hidden.jpg', 'ok.jpg']);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('отбрасывает абсолютный URL (https://attacker.com/...)', async () => {
+            const urls = await searchWithImageKeys([
+                'https://attacker.com/payload',
+                'ok.jpg',
+            ]);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('отбрасывает .. как отдельный сегмент в середине пути', async () => {
+            const urls = await searchWithImageKeys([
+                'catalogs/../secrets/passwd',
+                'catalogs/aquaphor/images/ok.jpg',
+            ]);
+            expect(urls).toEqual(['https://signed/catalogs/aquaphor/images/ok.jpg']);
+        });
+
+        it('допускает .. как часть имени (a..b — не path traversal)', async () => {
+            const urls = await searchWithImageKeys(['catalogs/a..b/ok.jpg']);
+            expect(urls).toEqual(['https://signed/catalogs/a..b/ok.jpg']);
+        });
+
+        it('отбрасывает не-ASCII (\\0, control chars, кириллица)', async () => {
+            const urls = await searchWithImageKeys([
+                'катал/ok.jpg',
+                'ok .jpg',
+                'ok.jpg',
+            ]);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('отбрасывает строку > 1024 chars', async () => {
+            const longKey = 'a'.repeat(1025);
+            const urls = await searchWithImageKeys([longKey, 'ok.jpg']);
+            expect(urls).toEqual(['https://signed/ok.jpg']);
+        });
+
+        it('допускает валидные относительные пути с дефисами/подчёркиваниями', async () => {
+            const urls = await searchWithImageKeys([
+                'catalogs/aquaphor/images/abc-123_xyz/sha256-def.jpg',
+            ]);
+            expect(urls).toEqual([
+                'https://signed/catalogs/aquaphor/images/abc-123_xyz/sha256-def.jpg',
+            ]);
+        });
+    });
+
     describe('error propagation', () => {
         it('Flowise упал → ошибка пробрасывается клиенту', async () => {
             flowise.request.mockRejectedValueOnce(new FlowiseError('Internal Server Error', 500));

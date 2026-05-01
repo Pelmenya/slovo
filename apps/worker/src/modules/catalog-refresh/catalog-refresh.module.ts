@@ -17,6 +17,13 @@ function assertEnv(value: string | undefined, name: string): string {
     return value;
 }
 
+// Refresh синхронен — POST /document-store/refresh ждёт пока Flowise re-embed
+// все loader'ы (см. tech-debt секция C). На 155 items сейчас ~5 сек, на 1000+
+// items может занимать минуты. 5min ceiling — потолок для самого долгого
+// разумного refresh; если превысит — лучше abort'нуть и переоткрыть, чем
+// висеть бесконечно с занятым lock'ом до TTL=30min.
+const REFRESH_FLOWISE_TIMEOUT_MS = 300_000;
+
 @Module({
     providers: [
         CatalogRefreshService,
@@ -26,6 +33,7 @@ function assertEnv(value: string | undefined, name: string): string {
                 const clientConfig: TFlowiseClientConfig = {
                     apiUrl: assertEnv(config.get('FLOWISE_API_URL', { infer: true }), 'FLOWISE_API_URL'),
                     apiKey: assertEnv(config.get('FLOWISE_API_KEY', { infer: true }), 'FLOWISE_API_KEY'),
+                    requestTimeoutMs: REFRESH_FLOWISE_TIMEOUT_MS,
                 };
                 return new FlowiseClient(clientConfig);
             },
@@ -46,6 +54,13 @@ function assertEnv(value: string | undefined, name: string): string {
                     password: password || undefined,
                     lazyConnect: false,
                     maxRetriesPerRequest: 3,
+                    // 5s connectTimeout vs ioredis default ~10-15s. При
+                    // недоступном Valkey worker не виснет на ETIMEDOUT,
+                    // быстрее переходит к fallback / restart.
+                    connectTimeout: 5_000,
+                    // Lock acquire/release должен быть мгновенным — 3s
+                    // ceiling ловит slowlog events и сетевые blip'ы.
+                    commandTimeout: 3_000,
                 });
             },
             inject: [ConfigService],
