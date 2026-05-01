@@ -235,6 +235,43 @@ const flowData = serializeFlowData(buildChatflow({
 - `apps/mcp-flowise/README.md` — полные примеры по каждой группе tools.
 - Lab journal: `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md` — reproducible recipe всех ритуалов которые этот MCP заменяет.
 
+### Playwright MCP — UI debugging для Flowise / Swagger / dev-консолей
+
+Глобально установленный (`scope=user`, `~/.claude.json`) MCP-сервер для работы с браузером — позволяет Claude видеть Flowise UI (3130), Swagger UI (3101/api/docs), pgAdmin (5050), Redis Commander (8081), Langfuse (3100), MinIO Console (9011) без скриншот-loop'а от пользователя.
+
+**Когда использовать:**
+- Flowise UI debugging — отладка нод chatflow, проверка credentials, осмотр Document Store через UI (не всё покрывается MCP-арсеналом, особенно кнопки/dialog'и).
+- Swagger UI — быстро тестнуть endpoint руками, увидеть response shape, проверить что новый DTO правильно отрендерился.
+- Прод-проверка `aquaphor-pro.store` или внешних сервисов в которых что-то отлаживаем.
+- Скрейпинг docs / npm / Docker Hub — вместо полагания на память про версии (см. правило «всегда проверяй актуальные версии»).
+
+**Когда НЕ использовать:**
+- Если есть MCP-tool на ту же задачу — предпочитай его (Flowise → `mcp__flowise-slovo__*`, не Playwright). UI всегда медленнее API.
+- Тестовые сценарии — это `apps/api/test/*.e2e-spec.ts` через supertest, не браузер.
+
+**Установка** (один раз, scope=user — глобально для Claude Code):
+
+```powershell
+# 1. Скачать chromium binary (~170MB)
+npx playwright install chromium
+
+# 2. Зарегистрировать MCP-сервер глобально
+claude mcp add playwright --scope user -- npx -y @playwright/mcp@latest
+
+# 3. Проверить что connected
+claude mcp list
+
+# 4. Перезапустить Claude Code
+```
+
+После рестарта появятся `mcp__playwright__browser_navigate`, `..._click`, `..._screenshot`, `..._evaluate`, `..._console_messages`. Whitelist в `~/.claude/settings.json`:
+
+```json
+{
+    "permissions": { "allow": ["mcp__playwright__*"] }
+}
+```
+
 ---
 
 ## Стек (версии на апрель 2026)
