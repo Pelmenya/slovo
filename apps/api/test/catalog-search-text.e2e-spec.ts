@@ -8,12 +8,12 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { STORAGE_BUCKET, STORAGE_S3_CLIENT, StorageService } from '@slovo/storage';
 import request from 'supertest';
 import { CatalogModule } from '../src/modules/catalog/catalog.module';
 import {
     CATALOG_AQUAPHOR_STORE_ID,
     CATALOG_DEFAULT_TOP_K,
-    CATALOG_STORAGE_SERVICE_TOKEN,
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../src/modules/catalog/catalog.constants';
@@ -64,8 +64,18 @@ describe('Catalog search/text endpoint (e2e)', () => {
             .useValue(flowise)
             .overrideProvider(REDIS_CLIENT_TOKEN)
             .useValue(redis)
-            .overrideProvider(CATALOG_STORAGE_SERVICE_TOKEN)
+            .overrideProvider(StorageService)
             .useValue(storage)
+            // STORAGE_S3_CLIENT и STORAGE_BUCKET создаются useFactory'ями
+            // в `StorageModule.forFeature()` и читают S3_REGION/S3_ACCESS_KEY
+            // и т.п. через ConfigService. В этом e2e ConfigModule стартует с
+            // ignoreEnvFile:true (изоляция от dev .env), поэтому override-им
+            // оба токена пустыми заглушками — реальный S3Client тут не нужен,
+            // StorageService сам уже замокан.
+            .overrideProvider(STORAGE_S3_CLIENT)
+            .useValue({})
+            .overrideProvider(STORAGE_BUCKET)
+            .useValue('test-bucket')
             .compile();
 
         app = moduleRef.createNestApplication();

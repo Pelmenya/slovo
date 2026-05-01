@@ -6,7 +6,6 @@
 
 export const FLOWISE_CLIENT_TOKEN = Symbol('CATALOG_FLOWISE_CLIENT');
 export const REDIS_CLIENT_TOKEN = Symbol('CATALOG_REDIS_CLIENT');
-export const CATALOG_STORAGE_SERVICE_TOKEN = Symbol('CATALOG_STORAGE_SERVICE');
 
 // =============================================================================
 // Document Store id для каталога Аквафор. Создан в Phase 0 через REST API

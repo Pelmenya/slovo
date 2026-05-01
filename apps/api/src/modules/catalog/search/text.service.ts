@@ -6,14 +6,13 @@ import {
     type FlowiseClient,
     type TFlowiseQueryResponse,
 } from '@slovo/flowise-client';
-import type { StorageService } from '@slovo/storage';
+import { StorageService } from '@slovo/storage';
 import {
     CATALOG_AQUAPHOR_STORE_ID,
     CATALOG_DEFAULT_TOP_K,
     CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
     CATALOG_PRESIGNED_CACHE_TTL_SEC,
     CATALOG_PRESIGNED_URL_TTL_SEC,
-    CATALOG_STORAGE_SERVICE_TOKEN,
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
@@ -45,7 +44,11 @@ export class TextSearchService implements OnModuleDestroy {
     constructor(
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
         @Inject(REDIS_CLIENT_TOKEN) private readonly redis: Redis,
-        @Inject(CATALOG_STORAGE_SERVICE_TOKEN) private readonly storage: StorageService,
+        // StorageService injected стандартно — DynamicModule scope из
+        // `StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' })`
+        // в catalog.module.ts даёт нам instance bound к slovo-datasets,
+        // не к knowledge bucket S3_BUCKET=slovo-sources.
+        private readonly storage: StorageService,
     ) {}
 
     async onModuleDestroy(): Promise<void> {

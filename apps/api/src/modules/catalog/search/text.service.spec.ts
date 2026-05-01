@@ -3,14 +3,13 @@ import { Test } from '@nestjs/testing';
 import type Redis from 'ioredis';
 import type { FlowiseClient } from '@slovo/flowise-client';
 import { FlowiseError } from '@slovo/flowise-client';
-import type { StorageService } from '@slovo/storage';
+import { StorageService } from '@slovo/storage';
 import {
     CATALOG_AQUAPHOR_STORE_ID,
     CATALOG_DEFAULT_TOP_K,
     CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
     CATALOG_PRESIGNED_CACHE_TTL_SEC,
     CATALOG_PRESIGNED_URL_TTL_SEC,
-    CATALOG_STORAGE_SERVICE_TOKEN,
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
@@ -70,10 +69,7 @@ describe('TextSearchService', () => {
                 TextSearchService,
                 { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise as unknown as FlowiseClient },
                 { provide: REDIS_CLIENT_TOKEN, useValue: redis as unknown as Redis },
-                {
-                    provide: CATALOG_STORAGE_SERVICE_TOKEN,
-                    useValue: storage as unknown as StorageService,
-                },
+                { provide: StorageService, useValue: storage as unknown as StorageService },
             ],
         }).compile();
 

@@ -1,50 +1,88 @@
 import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
-import { Module, type Provider } from '@nestjs/common';
+import { type DynamicModule, Module, type Provider } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { TAppEnv } from '@slovo/common';
 import { STORAGE_BUCKET, STORAGE_S3_CLIENT } from './storage.constants';
 import { StorageService } from './storage.service';
 
-const s3ClientProvider: Provider = {
-    provide: STORAGE_S3_CLIENT,
-    inject: [ConfigService],
-    useFactory: (config: ConfigService<TAppEnv, true>): S3Client => {
-        const endpoint = config.get('S3_ENDPOINT', { infer: true });
-        const region = config.getOrThrow('S3_REGION', { infer: true });
-        const accessKeyId = config.getOrThrow('S3_ACCESS_KEY', { infer: true });
-        const secretAccessKey = config.getOrThrow('S3_SECRET_KEY', { infer: true });
-        const forcePathStyle = config.get('S3_FORCE_PATH_STYLE', { infer: true });
+// Ключи env, в которых хранится имя bucket'а. Приведение через
+// `keyof TAppEnv` обеспечивает type-safety: typo в имени env-переменной
+// падает при компиляции, не в runtime.
+type TStorageBucketEnvKey = keyof TAppEnv;
 
-        const clientConfig: S3ClientConfig = {
-            region,
-            credentials: { accessKeyId, secretAccessKey },
-            forcePathStyle,
-        };
-        // S3_ENDPOINT пустая строка означает «использовать AWS S3 default endpoint
-        // для региона». Непустое значение — кастомный endpoint (MinIO в dev,
-        // Cloudflare R2 / DigitalOcean Spaces в prod).
-        if (endpoint && endpoint.length > 0) {
-            clientConfig.endpoint = endpoint;
-        }
-        return new S3Client(clientConfig);
-    },
-};
+function createS3ClientProvider(): Provider {
+    return {
+        provide: STORAGE_S3_CLIENT,
+        inject: [ConfigService],
+        useFactory: (config: ConfigService<TAppEnv, true>): S3Client => {
+            const endpoint = config.get('S3_ENDPOINT', { infer: true });
+            const region = config.getOrThrow('S3_REGION', { infer: true });
+            const accessKeyId = config.getOrThrow('S3_ACCESS_KEY', { infer: true });
+            const secretAccessKey = config.getOrThrow('S3_SECRET_KEY', { infer: true });
+            const forcePathStyle = config.get('S3_FORCE_PATH_STYLE', { infer: true });
 
-const bucketProvider: Provider = {
-    provide: STORAGE_BUCKET,
-    inject: [ConfigService],
-    useFactory: (config: ConfigService<TAppEnv, true>): string =>
-        config.getOrThrow('S3_BUCKET', { infer: true }),
-};
+            const clientConfig: S3ClientConfig = {
+                region,
+                credentials: { accessKeyId, secretAccessKey },
+                forcePathStyle,
+            };
+            // S3_ENDPOINT пустая строка означает «использовать AWS S3 default endpoint
+            // для региона». Непустое значение — кастомный endpoint (MinIO в dev,
+            // Cloudflare R2 / DigitalOcean Spaces в prod).
+            if (endpoint && endpoint.length > 0) {
+                clientConfig.endpoint = endpoint;
+            }
+            return new S3Client(clientConfig);
+        },
+    };
+}
 
-// StorageModule намеренно НЕ @Global(). Импортируется в каждый feature-модуль
-// которому нужен S3 (knowledge-module, в будущем — avatars/exports). Плюсы:
-// (a) границы зависимостей явные в графе модулей; (b) когда появится split
-// public vs private bucket — каждый feature сможет инстанцировать StorageModule
-// со своим BUCKET-токеном. Минус — 1 строка импорта в каждом модуле, ок.
+function createBucketProvider(envKey: TStorageBucketEnvKey): Provider {
+    return {
+        provide: STORAGE_BUCKET,
+        inject: [ConfigService],
+        useFactory: (config: ConfigService<TAppEnv, true>): string => {
+            const value = config.getOrThrow(envKey, { infer: true });
+            if (typeof value !== 'string' || value.length === 0) {
+                throw new Error(
+                    `StorageModule.forFeature: env "${String(envKey)}" must be non-empty string, got: ${typeof value}`,
+                );
+            }
+            return value;
+        },
+    };
+}
+
+// StorageModule НЕ @Global(). Импортируется в каждый feature-модуль которому
+// нужен S3. Два режима использования:
+//
+//   1. `imports: [StorageModule]` — bucket из env S3_BUCKET. Default для
+//      knowledge модуля и других user-uploads features.
+//
+//   2. `imports: [StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' })]`
+//      — bucket из произвольного env-key. Для multi-bucket setup (catalog
+//      пишет в slovo-datasets, knowledge — в slovo-sources, ADR-007).
+//
+// DynamicModule scope изолирует providers per feature: knowledge module
+// получает StorageService bound к S3_BUCKET, catalog module — к S3_CATALOG_BUCKET.
+// Два отдельных DI-instance'а в одной NestJS-app, S3Client может share'иться
+// (configured одинаково из тех же env), но bucket разный.
 @Module({
     imports: [ConfigModule],
-    providers: [s3ClientProvider, bucketProvider, StorageService],
+    providers: [createS3ClientProvider(), createBucketProvider('S3_BUCKET'), StorageService],
     exports: [StorageService, STORAGE_S3_CLIENT, STORAGE_BUCKET],
 })
-export class StorageModule {}
+export class StorageModule {
+    static forFeature(opts: { bucketEnvKey: TStorageBucketEnvKey }): DynamicModule {
+        return {
+            module: StorageModule,
+            imports: [ConfigModule],
+            providers: [
+                createS3ClientProvider(),
+                createBucketProvider(opts.bucketEnvKey),
+                StorageService,
+            ],
+            exports: [StorageService, STORAGE_S3_CLIENT, STORAGE_BUCKET],
+        };
+    }
+}

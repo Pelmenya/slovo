@@ -1,15 +1,10 @@
-import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 import { Module, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client';
 import type { TAppEnv } from '@slovo/common';
-import { StorageService } from '@slovo/storage';
-import {
-    CATALOG_STORAGE_SERVICE_TOKEN,
-    FLOWISE_CLIENT_TOKEN,
-    REDIS_CLIENT_TOKEN,
-} from './catalog.constants';
+import { StorageModule } from '@slovo/storage';
+import { FLOWISE_CLIENT_TOKEN, REDIS_CLIENT_TOKEN } from './catalog.constants';
 import { TextSearchController } from './search/text.controller';
 import { TextSearchService } from './search/text.service';
 
@@ -67,43 +62,20 @@ const redisClientProvider: Provider = {
     },
 };
 
-// Catalog StorageService — bound к S3_CATALOG_BUCKET (slovo-datasets), не
-// к S3_BUCKET (slovo-sources, knowledge module). Отдельный bucket per
-// ADR-007 (feeder'ы пишут в catalogs/aquaphor/, knowledge — другие keys).
+// Catalog images живут в bucket S3_CATALOG_BUCKET (slovo-datasets), отдельно
+// от knowledge S3_BUCKET (slovo-sources) — feeder'ы (CRM, 1С) пишут в
+// catalogs/<feeder>/ префикс с другим IAM-scope (см. ADR-007).
 //
-// TODO(libs/storage): когда появится 3-й feature с ещё одним bucket'ом —
-// extract в `StorageModule.forFeature({ bucketEnvKey: ... })`. Сейчас два
-// bucket'а — самый минимум inline-факторинга, full module pattern overkill.
-const catalogStorageProvider: Provider = {
-    provide: CATALOG_STORAGE_SERVICE_TOKEN,
-    inject: [ConfigService],
-    useFactory: (config: ConfigService<TAppEnv, true>): StorageService => {
-        const endpoint = config.get('S3_ENDPOINT', { infer: true });
-        const region = config.getOrThrow('S3_REGION', { infer: true });
-        const accessKeyId = config.getOrThrow('S3_ACCESS_KEY', { infer: true });
-        const secretAccessKey = config.getOrThrow('S3_SECRET_KEY', { infer: true });
-        const forcePathStyle = config.get('S3_FORCE_PATH_STYLE', { infer: true });
-        const bucket = config.getOrThrow('S3_CATALOG_BUCKET', { infer: true });
-
-        const clientConfig: S3ClientConfig = {
-            region,
-            credentials: { accessKeyId, secretAccessKey },
-            forcePathStyle,
-        };
-        if (endpoint && endpoint.length > 0) {
-            clientConfig.endpoint = endpoint;
-        }
-        const s3 = new S3Client(clientConfig);
-        return new StorageService(s3, bucket);
-    },
-};
-
+// `StorageModule.forFeature(...)` создаёт scope-isolated StorageService для
+// этого модуля — knowledge module всё ещё импортирует обычный StorageModule
+// и получает свой StorageService на S3_BUCKET. Два независимых instance'а
+// в одной NestJS-app.
 @Module({
+    imports: [StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' })],
     controllers: [TextSearchController],
     providers: [
         flowiseClientProvider,
         redisClientProvider,
-        catalogStorageProvider,
         TextSearchService,
     ],
 })
