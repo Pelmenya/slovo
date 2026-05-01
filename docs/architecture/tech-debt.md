@@ -546,6 +546,33 @@ if (mappingWasPopulated && skipRate < 0.5) {
 
 Триггер: до prod-релиза worker'а / при появлении Langfuse observability slovo runtime.
 
+### 34. Anthropic prompt caching — оценить montevive/autocache как альтернативу гибриду
+
+**Контекст:** Flowise 3.1.2 ChatAnthropic node (version=8) не поддерживает `cache_control: { type: "ephemeral" }`. Source-scan подтвердил: в `flowise-components/dist/nodes/chatmodels/ChatAnthropic/ChatAnthropic.js` нет ни одного упоминания cache_control/cacheControl/ephemeral. Upstream [#4289](https://github.com/FlowiseAI/Flowise/issues/4289) и [#4634](https://github.com/FlowiseAI/Flowise/issues/4634) — open без движения.
+
+**Текущий план (knowledge-base.md):** гибрид. Retrieval через `flowise_docstore_query`, генерация через `libs/llm/` (прямой Anthropic SDK с native `cache_control`). Стоимость: ~200-400 LOC в `libs/llm` + переключение каждого LLM-вызова на свой fallback.
+
+**Альтернатива — transparent proxy:** [montevive/autocache](https://github.com/montevive/autocache)
+
+- Go-сервис, MIT, ~70 ⭐ (Apr 2026), активный (last commit 20 Apr 2026)
+- Встаёт между Flowise и `api.anthropic.com`, на лету инжектит `cache_control` блоки в проходящие запросы
+- В README заявлена поддержка Flowise/n8n/Make.com/LangChain/LlamaIndex как «no code changes required»
+- Стоимость интеграции: одна переменная окружения `ANTHROPIC_BASE_URL=http://autocache:8080` в `docker-compose.infra.yml` для Flowise + добавить контейнер в compose
+
+**Что нужно проверить перед commitment:**
+
+1. Реальное cache hit ratio на наших промптах (vision-describer multi-image system prompt + user query — варьируется ли префикс достаточно стабильно для cache hit)
+2. Latency overhead proxy hop (~10-30ms ожидаем — приемлемо)
+3. Мониторинг: как autocache раскрывает stat кешей для Langfuse
+4. Совместимость с streaming responses Flowise → Anthropic
+5. Безопасность: API ключ Anthropic будет проходить через autocache → проверить что secrets не логируются
+
+**Trade-off:**
+- Гибрид (libs/llm): полный контроль, явно видно где caching применяется, но требует переписать каждый call site. Cache работает **только** в `libs/llm` вызовах, не в Flowise chatflows.
+- Autocache proxy: zero code changes, caching работает **на всём** что идёт через Flowise (включая будущие chatflows с Sonnet/Haiku). Но добавляет 5-й контейнер в `docker-compose.infra.yml` + новая критичная зависимость.
+
+Триггер: когда vision-describer / Q&A флоу выйдут в прод и cost prompt-кэшированию реально оправдает оценку. Тогда — два дня A/B на staging (autocache off vs on), решение по cache hit %.
+
 ---
 
 ## До первого prod-деплоя миграций

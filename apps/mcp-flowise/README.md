@@ -4,7 +4,7 @@
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue)](https://modelcontextprotocol.io/specification/2025-11-25)
 [![Flowise](https://img.shields.io/badge/Flowise-3.1+-purple)](https://flowiseai.com)
 
-**MCP-сервер для управления Flowise REST API из Claude Code и любого MCP-клиента.** 54 tools, полное зеркало Flowise REST: Document Stores (22), Chatflows (6), Nodes discovery (2), Predictions с uploads (1), Credentials (5), Variables (4), Custom Tools (5), Assistants (5), Chat history (2), Misc (2).
+**MCP-сервер для управления Flowise REST API из Claude Code и любого MCP-клиента.** 66 tools, полное зеркало Flowise REST: Document Stores (22), Chatflows (6), Nodes discovery (2), Predictions с uploads (1), Credentials (5), Variables (4), Custom Tools (5), Assistants (5), Chat history (3), Vector legacy (1), Attachments (1), Upsert history (2), Composite (3 — `chatflow_clone`, `docstore_clone`, `docstore_full_setup`), DX helpers (3 — `introspect`, `smoke`, `docstore_search_by_name`), Misc (3).
 
 Standalone-приложение в slovo monorepo (`apps/mcp-flowise/`), готовое к extract в отдельный репо `Pelmenya/mcp-flowise` и публикации в npm/Smithery (см. ADR-008 amendment).
 
@@ -471,6 +471,18 @@ npm run build             # → dist/
 
 `tsconfig.build.json` исключает `*.spec.ts` и `__test-helpers__/`. Только source попадает в bundle.
 
+## FAQ
+
+### Anthropic prompt caching через `flowise_prediction_run`?
+
+Нет — Flowise 3.1.2 ChatAnthropic node (version=8) не поддерживает `cache_control: { type: "ephemeral" }` блоки. Подтверждено source-scan'ом (`/usr/local/lib/node_modules/flowise/node_modules/flowise-components/dist/nodes/chatmodels/ChatAnthropic/ChatAnthropic.js` — нет упоминаний `cache_control`/`cacheControl`/`ephemeral`). Upstream issue [#4289](https://github.com/FlowiseAI/Flowise/issues/4289) (Apr 2025) и [#4634](https://github.com/FlowiseAI/Flowise/issues/4634) (Jun 2025) — open без движения.
+
+`overrideConfig` в `flowise_prediction_run` принимает произвольный `Record<string, unknown>`, но Flowise не пропускает unknown ключи дальше в Anthropic SDK без node-side mapping'а.
+
+**Workaround'ы для slovo:**
+1. **Гибрид через `libs/llm`** — retrieval через `flowise_docstore_query` (без LLM, ~300ms) → генерация через прямой Anthropic SDK с native `cache_control`. План в `docs/features/knowledge-base.md`.
+2. **Transparent proxy** — [montevive/autocache](https://github.com/montevive/autocache) (Go, MIT, ~70 ⭐ apr 2026) встаёт между Flowise и Anthropic API, инжектит `cache_control` автоматически. Drop-in без переписывания libs/llm. Точно поддерживает Flowise по их README. Не тестировано в slovo — оценка в tech-debt.
+
 ## Reference
 
 - **Flowise REST endpoints** — `/usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js` внутри Flowise контейнера. Через `docker exec slovo-flowise sh -c "cat ..."`.
@@ -485,7 +497,7 @@ npm run build             # → dist/
 
 См. `docs/architecture/tech-debt.md` секция **C. MCP-сервер Flowise**:
 
-- ✅ Полное покрытие 54 tools (commit `ba3b555` + follow-up)
+- ✅ Полное покрытие 66 tools (commit `ba3b555` + follow-up'ы)
 - ✅ 100% unit-test coverage
 - ✅ publish-ready package (build, prepublishOnly, MIT, repository, bin)
 - ⏳ CI smoke против реального Flowise dev-инстанса (cron weekly)
