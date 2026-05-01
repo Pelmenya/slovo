@@ -8,11 +8,14 @@ import { Logger as PinoLogger } from 'nestjs-pino';
 import { parseCorsOrigin, type TAppEnv } from '@slovo/common';
 import { AppModule } from './app.module';
 
-// Лимит body согласован с MAX_TEXT_SOURCE_LENGTH (500KB) в knowledge-модуле.
-// 600KB — 500KB payload + запас под JSON-обёртку + metadata в будущем.
-// Без явного лимита Express defaulted бы на 100KB — и крупные text-source
+// Лимит body согласован с самым крупным payload'ом среди endpoint'ов:
+// /catalog/search/image принимает 5MB декодированной картинки в base64
+// (≈6.7MB raw string) + JSON-обёртка → 10MB ceiling. Knowledge text-source
+// (500KB) и catalog text-search (500 chars) укладываются с большим запасом.
+//
+// Без явного лимита Express defaulted бы на 100KB — даже text-source
 // получали бы 413 до ValidationPipe, без понятной ошибки валидации.
-const BODY_PARSER_LIMIT = '600kb';
+const BODY_PARSER_LIMIT = '10mb';
 
 async function bootstrap() {
     const app = await NestFactory.create<NestExpressApplication>(AppModule, {

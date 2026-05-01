@@ -5,6 +5,8 @@ import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client'
 import type { TAppEnv } from '@slovo/common';
 import { StorageModule } from '@slovo/storage';
 import { FLOWISE_CLIENT_TOKEN, REDIS_CLIENT_TOKEN } from './catalog.constants';
+import { ImageSearchController } from './search/image.controller';
+import { ImageSearchService } from './search/image.service';
 import { TextSearchController } from './search/text.controller';
 import { TextSearchService } from './search/text.service';
 
@@ -72,11 +74,12 @@ const redisClientProvider: Provider = {
 // в одной NestJS-app.
 @Module({
     imports: [StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' })],
-    controllers: [TextSearchController],
+    controllers: [TextSearchController, ImageSearchController],
     providers: [
         flowiseClientProvider,
         redisClientProvider,
         TextSearchService,
+        ImageSearchService,
     ],
 })
 export class CatalogModule {}

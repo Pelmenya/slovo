@@ -53,3 +53,39 @@ export const CATALOG_MAX_QUERY_LENGTH = 500;
 export const CATALOG_PRESIGNED_URL_TTL_SEC = 3600;
 export const CATALOG_PRESIGNED_CACHE_TTL_SEC = 3000;
 export const CATALOG_PRESIGNED_CACHE_KEY_PREFIX = 'slovo:catalog:presigned:';
+
+// =============================================================================
+// PR8 — image search constants
+// =============================================================================
+
+// Имя Flowise chatflow для vision-describer (Claude Vision → JSON описание).
+// Создан в Phase 0 (см. lab journal day 1, validated на 6 фото).
+// chatflowId резолвится lazy + single-flight (паттерн из text.service:resolveStoreId).
+//
+// TODO(multi-tenant): когда появятся пользователи — per-tenant chatflow
+// (разные prompt'ы / модели).
+export const VISION_CHATFLOW_NAME = 'vision-catalog-describer-v1';
+
+// Mime whitelist для image upload — что Claude Vision принимает + чем
+// феедер легитимно может прислать. avif/heic/svg / jpegxl исключены —
+// edge format'ы которые Vision не всегда обрабатывает + svg attack vector.
+export const VISION_ALLOWED_MIME_TYPES: ReadonlySet<string> = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+]);
+
+// Max декодированный размер картинки = 5MB. Anthropic Vision принимает до
+// 100 images × 1568 tokens caps. С 5MB JPEG получаем достаточно деталей
+// для product photo. Base64 encoded length ≈ size × 4/3, так что MaxLength
+// на DTO (raw base64 string) = ceil(5MB × 4/3) ≈ 7MB.
+export const VISION_MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+export const VISION_MAX_BASE64_LENGTH = Math.ceil(VISION_MAX_IMAGE_SIZE_BYTES * 1.34);
+
+// Vision-search это **дорогая** операция — ~$0.005-0.007 за вызов
+// (Claude Sonnet 4.6 Vision). Throttle 5/min/IP vs 30/min для text:
+// (1) cost cap — 5 × 60 = 300 vision/час max от 1 IP = $1.5/час,
+// (2) Vision response 2-4 sec — slow, чтобы не подвешивать pool API.
+// Anonymous limit. Authenticated пользователи получат больше после auth.
+export const VISION_SEARCH_THROTTLE_LIMIT = 5;
+export const VISION_SEARCH_THROTTLE_TTL_MS = 60_000;
