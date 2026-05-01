@@ -120,21 +120,45 @@
 - 54 tools в стиле `mcp-moysklad`: zod schema + handler + унифицированный `TToolResult<T>`. Все типы `T<Resource><Action>{Input,Data}` экспортируются — consumers могут импортировать строго.
 - TypeScript clean (`npx tsc --noEmit` + `npm run build` в `apps/mcp-flowise/`), ESLint clean. Live smoke через MCP подтвердил все 54 tools на slovo Flowise dev-инстансе.
 
-**План extract в `Pelmenya/mcp-flowise` + `Pelmenya/flowise-flowdata`** (два пакета — transport и domain):
+**План extract в три пакета — `Pelmenya/flowise-client` (foundation) + `Pelmenya/mcp-flowise` (transport) + `Pelmenya/flowise-flowdata` (chatflow domain):**
 
-1. `git filter-repo --path apps/mcp-flowise/ --path-rename apps/mcp-flowise/:` для transport-пакета и `--path libs/flowise-flowdata/ --path-rename libs/flowise-flowdata/:` для domain-либы. История сохраняется отдельно для каждого.
-2. **`flowise-flowdata` (domain)** переезжает первым — это foundation:
-   - Переименовать `@slovo/flowise-flowdata` → `@pelmenya/flowise-flowdata`.
-   - Добавить **build-step**: `tsup` или `tsc --project tsconfig.build.json` → `dist/`. Сейчас `package.json:main` указывает на `src/index.ts` (in-monorepo via TS path-aliases) — для npm-publish нужен скомпилированный JS + `.d.ts`, иначе потребители без TS-компилятора на Node не смогут require.
+После создания `libs/flowise-client/` (commit `52ef613`, PR6 prerequisite) реальная архитектура — три уровня:
+- **`flowise-client`** — REST-клиент (fetch + bearer + retry). Используется и mcp-flowise, и slovo runtime (apps/worker, apps/api).
+- **`mcp-flowise`** — MCP transport-обёртка над flowise-client (66 tools).
+- **`flowise-flowdata`** — typed builder для chatflow flowData JSON.
+
+Extract — поэтапный, в правильном порядке dependencies:
+
+**Шаг 0 — `flowise-client` (foundation, переезжает первым):**
+
+1. `git filter-repo --path libs/flowise-client/ --path-rename libs/flowise-client/:`.
+2. Переименовать `@slovo/flowise-client` → `@pelmenya/flowise-client`.
+3. Добавить **build-step** в `tsconfig.lib.json` или новый `tsconfig.build.json`:
+   - `outDir: dist/`, `declaration: true`, `declarationMap: true`, `sourceMap: true`.
    - `package.json`: `main: dist/index.js`, `types: dist/index.d.ts`, `files: [dist, README, LICENSE]`, `prepublishOnly: tsc + tests`.
-   - Перенести `zod` в локальный deps.
-3. **`mcp-flowise` (transport)** — после публикации flowise-flowdata:
-   - Переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise`.
-   - Заменить путь `../../node_modules/tsx` в `scripts.dev` на локальный `tsx` (devDep).
-   - Перенести deps `@modelcontextprotocol/sdk`, `zod` из root slovo `package.json` в локальный.
-   - **`peerDependencies`** на `@pelmenya/flowise-flowdata` (transport → domain однонаправленно, аналогично паре `@nestjs/microservices` → `@nestjs/common`).
-4. Для каждого пакета — `.github/workflows/{test,publish}.yml` (CI test+lint, publish on tag).
-5. `npm publish --access public` (scoped public) или Smithery submit.
+4. Перенести `zod` в локальный deps (используется в `t-config.ts`? — нет, только в apps. lib работает без zod).
+5. `npm publish --access public`.
+
+**Шаг 1 — `flowise-flowdata` (domain):**
+
+1. `git filter-repo --path libs/flowise-flowdata/ --path-rename libs/flowise-flowdata/:`.
+2. Переименовать `@slovo/flowise-flowdata` → `@pelmenya/flowise-flowdata`.
+3. `dependencies: { "@pelmenya/flowise-client": "^0.1.0" }` (peer от flowise-client для типов).
+4. Build-step как в Шаге 0.
+5. `npm publish --access public`.
+
+**Шаг 2 — `mcp-flowise` (transport):**
+
+1. `git filter-repo --path apps/mcp-flowise/ --path-rename apps/mcp-flowise/:`.
+2. Переименовать `@slovo/mcp-flowise` → `@pelmenya/mcp-flowise`.
+3. `dependencies: { "@modelcontextprotocol/sdk": ..., "zod": ..., "@pelmenya/flowise-client": "^0.1.0" }`.
+4. Заменить путь `../../node_modules/tsx` в `scripts.dev` на локальный `tsx` (devDep).
+5. **`peerDependencies`** на `@pelmenya/flowise-flowdata` если bundler-сервер хочет давать advice flowdata builder (опционально).
+6. `npm publish --access public` или Smithery submit.
+
+**Для каждого пакета** — `.github/workflows/{test,publish}.yml` (CI test+lint, publish on tag).
+
+Direction зависимостей строго однонаправленный (Шаг 0 → Шаг 1 → Шаг 2), аналогично паре `@nestjs/microservices` → `@nestjs/common`. Никаких циклов между пакетами.
 
 **Триггер extract** — любой из:
 - Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).

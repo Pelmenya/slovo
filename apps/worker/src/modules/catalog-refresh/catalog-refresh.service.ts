@@ -1,39 +1,46 @@
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import Redis from 'ioredis';
-import { FlowiseClient, ENDPOINTS, formatFlowiseError } from '@slovo/flowise-client';
-import type { TFlowiseDocumentStore } from '@slovo/flowise-client';
+import {
+    ENDPOINTS,
+    FlowiseClient,
+    formatFlowiseError,
+    type TFlowiseDocumentStore,
+    type TFlowiseRefreshResponse,
+} from '@slovo/flowise-client';
 import {
     CATALOG_AQUAPHOR_STORE_NAME,
     CATALOG_REFRESH_CRON,
     CATALOG_REFRESH_LOCK_KEY,
+    CATALOG_REFRESH_LOCK_RELEASE_LUA,
     CATALOG_REFRESH_LOCK_TTL_SEC,
+    FLOWISE_CLIENT_TOKEN,
+    REDIS_CLIENT_TOKEN,
 } from './catalog-refresh.constants';
-import type { TCatalogRefreshResult, TFindStoreResult } from './t-catalog-refresh';
-
-export const FLOWISE_CLIENT_TOKEN = 'FLOWISE_CLIENT';
-export const REDIS_CLIENT_TOKEN = 'REDIS_CLIENT';
+import type {
+    TCatalogRefreshResult,
+    TFindStoreResult,
+} from './t-catalog-refresh';
 
 // =============================================================================
 // CatalogRefreshService — cron каждые 4ч триггерит flowise_docstore_refresh
-// для catalog-aquaphor. Защищён distributed lock через Redis (SET NX EX) —
-// если предыдущий refresh ещё работает (refresh синхронный, может занимать
-// минуты на 1000+ items), новый запуск пропускается.
+// для catalog-aquaphor. Защищён distributed lock через Redis с fence-token
+// (uuid per acquire) — release через Lua-CAS чтобы не снять чужой lock после
+// истечения TTL первого процесса.
 //
-// Логика проста (PR6 Phase 1):
-// 1. Acquire Redis lock — если занят, skip ('lock-held').
-// 2. Find store by name — если не нашли, skip ('store-not-found') + warn.
-// 3. POST /document-store/refresh/<id> с replaceExisting=true (без него
-//    старые chunks остаются — см. dist/services/documentstore/index.js:1364).
-// 4. Release lock в finally.
-//
-// Не использует mcp-flowise (он для Claude Code). Дёргает Flowise REST
-// напрямую через @slovo/flowise-client (чистый REST-клиент с retry).
+// Логика:
+// 1. Acquire lock: SET NX EX 1800 с value = randomUUID(). Если занят → skip.
+// 2. Find store by name — если нет, skip + warn.
+// 3. POST /document-store/refresh/<id> с replaceExisting=true.
+// 4. Release lock через Lua-script (atomic CAS by uuid).
+// 5. onModuleDestroy: если lock наш — release; redis.quit() в try/catch.
 // =============================================================================
 
 @Injectable()
 export class CatalogRefreshService implements OnModuleDestroy {
     private readonly logger = new Logger(CatalogRefreshService.name);
+    private currentLockToken: string | null = null;
 
     constructor(
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
@@ -41,18 +48,35 @@ export class CatalogRefreshService implements OnModuleDestroy {
     ) {}
 
     async onModuleDestroy(): Promise<void> {
-        await this.redis.quit();
+        // Если текущий процесс держит lock (refresh in-flight при SIGTERM) —
+        // освобождаем чтобы k8s rolling deploy не пропускал cron tick'и до TTL.
+        if (this.currentLockToken !== null) {
+            try {
+                await this.releaseLock(this.currentLockToken);
+            } catch (error) {
+                this.logger.warn(
+                    `failed to release lock on shutdown: ${formatFlowiseError(error)}`,
+                );
+            }
+        }
+        try {
+            await this.redis.quit();
+        } catch (error) {
+            this.logger.warn(`redis.quit() failed (degraded shutdown): ${formatFlowiseError(error)}`);
+        }
     }
 
     @Cron(CATALOG_REFRESH_CRON, { name: 'catalog-refresh' })
     async runScheduled(): Promise<void> {
         const result = await this.refresh();
-        if (result.success) {
+        if (result.kind === 'success') {
             this.logger.log(
                 `catalog-refresh completed: store=${result.storeName} elapsed=${result.elapsedMs}ms`,
             );
-        } else if (result.skipped) {
-            this.logger.warn(`catalog-refresh skipped: reason=${result.skipped}`);
+        } else if (result.kind === 'skipped') {
+            this.logger.warn(
+                `catalog-refresh skipped: reason=${result.reason}${result.error ? ` error=${result.error}` : ''}`,
+            );
         } else {
             this.logger.error(
                 `catalog-refresh failed: store=${result.storeName} error=${result.error}`,
@@ -64,33 +88,32 @@ export class CatalogRefreshService implements OnModuleDestroy {
         const start = Date.now();
         const storeName = CATALOG_AQUAPHOR_STORE_NAME;
 
-        const lockAcquired = await this.acquireLock();
-        if (!lockAcquired) {
+        const lockToken = await this.acquireLock();
+        if (lockToken === null) {
             return {
-                storeId: '',
+                kind: 'skipped',
+                reason: 'lock-held',
                 storeName,
-                success: false,
                 elapsedMs: Date.now() - start,
-                skipped: 'lock-held',
             };
         }
+        this.currentLockToken = lockToken;
 
         try {
             const findResult = await this.findStoreByName(storeName);
             if (!findResult.found) {
                 return {
-                    storeId: '',
+                    kind: 'skipped',
+                    reason: 'store-not-found',
                     storeName,
-                    success: false,
                     elapsedMs: Date.now() - start,
-                    skipped: 'store-not-found',
                     error: findResult.error,
                 };
             }
 
             const storeId = findResult.store.id;
             try {
-                const flowiseResponse = await this.flowise.request<Record<string, unknown>>(
+                const flowiseResponse = await this.flowise.request<TFlowiseRefreshResponse>(
                     ENDPOINTS.documentStoreRefresh(storeId),
                     {
                         method: 'POST',
@@ -98,39 +121,49 @@ export class CatalogRefreshService implements OnModuleDestroy {
                     },
                 );
                 return {
+                    kind: 'success',
                     storeId,
                     storeName,
-                    success: true,
                     elapsedMs: Date.now() - start,
                     flowiseResponse,
                 };
             } catch (error) {
                 return {
+                    kind: 'failure',
                     storeId,
                     storeName,
-                    success: false,
                     elapsedMs: Date.now() - start,
                     error: formatFlowiseError(error),
                 };
             }
         } finally {
-            await this.releaseLock();
+            await this.releaseLock(lockToken);
+            this.currentLockToken = null;
         }
     }
 
-    private async acquireLock(): Promise<boolean> {
+    private async acquireLock(): Promise<string | null> {
+        const token = randomUUID();
         const result = await this.redis.set(
             CATALOG_REFRESH_LOCK_KEY,
-            '1',
+            token,
             'EX',
             CATALOG_REFRESH_LOCK_TTL_SEC,
             'NX',
         );
-        return result === 'OK';
+        return result === 'OK' ? token : null;
     }
 
-    private async releaseLock(): Promise<void> {
-        await this.redis.del(CATALOG_REFRESH_LOCK_KEY);
+    private async releaseLock(token: string): Promise<void> {
+        // Atomic CAS-release через Lua: удаляем lock только если value == token.
+        // Защищает от снятия чужого lock'а если наш TTL истёк и другой
+        // процесс уже acquire'нул свой.
+        await this.redis.eval(
+            CATALOG_REFRESH_LOCK_RELEASE_LUA,
+            1,
+            CATALOG_REFRESH_LOCK_KEY,
+            token,
+        );
     }
 
     private async findStoreByName(name: string): Promise<TFindStoreResult> {

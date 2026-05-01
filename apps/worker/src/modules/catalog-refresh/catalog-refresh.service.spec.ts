@@ -1,12 +1,16 @@
+import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type Redis from 'ioredis';
 import type { FlowiseClient } from '@slovo/flowise-client';
 import { FlowiseError } from '@slovo/flowise-client';
 import {
-    CatalogRefreshService,
+    CATALOG_REFRESH_LOCK_KEY,
+    CATALOG_REFRESH_LOCK_RELEASE_LUA,
+    CATALOG_REFRESH_LOCK_TTL_SEC,
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
-} from './catalog-refresh.service';
+} from './catalog-refresh.constants';
+import { CatalogRefreshService } from './catalog-refresh.service';
 
 type TFlowiseClientMock = {
     request: jest.Mock;
@@ -14,7 +18,7 @@ type TFlowiseClientMock = {
 
 type TRedisClientMock = {
     set: jest.Mock;
-    del: jest.Mock;
+    eval: jest.Mock;
     quit: jest.Mock;
 };
 
@@ -32,18 +36,26 @@ const SAMPLE_STORE = {
     totalChars: 772232,
 };
 
+function createFlowiseClientMock(): TFlowiseClientMock {
+    return { request: jest.fn() };
+}
+
+function createRedisMock(): TRedisClientMock {
+    return {
+        set: jest.fn(),
+        eval: jest.fn().mockResolvedValue(1),
+        quit: jest.fn().mockResolvedValue('OK'),
+    };
+}
+
 describe('CatalogRefreshService', () => {
     let service: CatalogRefreshService;
     let flowise: TFlowiseClientMock;
     let redis: TRedisClientMock;
 
     beforeEach(async () => {
-        flowise = { request: jest.fn() };
-        redis = {
-            set: jest.fn(),
-            del: jest.fn().mockResolvedValue(1),
-            quit: jest.fn().mockResolvedValue('OK'),
-        };
+        flowise = createFlowiseClientMock();
+        redis = createRedisMock();
 
         const moduleRef = await Test.createTestingModule({
             providers: [
@@ -60,32 +72,44 @@ describe('CatalogRefreshService', () => {
         it('lock acquired → store найден → refresh успешен', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
-                .mockResolvedValueOnce([SAMPLE_STORE]) // GET /document-store/store
-                .mockResolvedValueOnce({ status: 'ok', processed: 912 }); // POST refresh
+                .mockResolvedValueOnce([SAMPLE_STORE])
+                .mockResolvedValueOnce({ status: 'ok', processed: 912 });
 
             const result = await service.refresh();
 
-            expect(result.success).toBe(true);
-            expect(result.storeId).toBe('aec6b741');
-            expect(result.storeName).toBe('catalog-aquaphor');
-            expect(result.flowiseResponse).toEqual({ status: 'ok', processed: 912 });
-            expect(typeof result.elapsedMs).toBe('number');
+            expect(result.kind).toBe('success');
+            if (result.kind === 'success') {
+                expect(result.storeId).toBe('aec6b741');
+                expect(result.storeName).toBe('catalog-aquaphor');
+                expect(result.flowiseResponse).toEqual({ status: 'ok', processed: 912 });
+                expect(typeof result.elapsedMs).toBe('number');
+            }
 
             // refresh должен пройти с replaceExisting=true
-            const refreshCall = flowise.request.mock.calls[1] as [string, { method: string; body: { replaceExisting: boolean } }];
-            expect(refreshCall[0]).toContain('/refresh/aec6b741');
-            expect(refreshCall[1].method).toBe('POST');
-            expect(refreshCall[1].body.replaceExisting).toBe(true);
-
-            // lock acquire + release
-            expect(redis.set).toHaveBeenCalledWith(
-                'slovo:catalog-refresh:lock',
-                '1',
-                'EX',
-                1800,
-                'NX',
+            expect(flowise.request).toHaveBeenNthCalledWith(
+                2,
+                expect.stringContaining('/refresh/aec6b741'),
+                expect.objectContaining({
+                    method: 'POST',
+                    body: { replaceExisting: true },
+                }),
             );
-            expect(redis.del).toHaveBeenCalledWith('slovo:catalog-refresh:lock');
+
+            // lock acquire с uuid value (не '1')
+            const setCall = redis.set.mock.calls[0] as [string, string, string, number, string];
+            expect(setCall[0]).toBe(CATALOG_REFRESH_LOCK_KEY);
+            expect(setCall[1]).toMatch(/^[0-9a-f-]+$/); // uuid format
+            expect(setCall[2]).toBe('EX');
+            expect(setCall[3]).toBe(CATALOG_REFRESH_LOCK_TTL_SEC);
+            expect(setCall[4]).toBe('NX');
+
+            // release через Lua-CAS с тем же uuid
+            expect(redis.eval).toHaveBeenCalledWith(
+                CATALOG_REFRESH_LOCK_RELEASE_LUA,
+                1,
+                CATALOG_REFRESH_LOCK_KEY,
+                setCall[1], // тот же uuid что был в set
+            );
         });
     });
 
@@ -95,42 +119,47 @@ describe('CatalogRefreshService', () => {
 
             const result = await service.refresh();
 
-            expect(result.success).toBe(false);
-            expect(result.skipped).toBe('lock-held');
+            expect(result.kind).toBe('skipped');
+            if (result.kind === 'skipped') {
+                expect(result.reason).toBe('lock-held');
+            }
             expect(flowise.request).not.toHaveBeenCalled();
-            // del НЕ вызывается — мы не держим lock, не должны удалять
-            expect(redis.del).not.toHaveBeenCalled();
+            // eval НЕ вызывается — lock не наш, не должны делать release
+            expect(redis.eval).not.toHaveBeenCalled();
         });
     });
 
     describe('store-not-found', () => {
-        it('Flowise вернул empty list → skipped store-not-found, lock освобождён', async () => {
+        it('Flowise вернул empty list → skipped, lock освобождён через CAS', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request.mockResolvedValueOnce([]);
 
             const result = await service.refresh();
 
-            expect(result.success).toBe(false);
-            expect(result.skipped).toBe('store-not-found');
-            expect(result.error).toContain('catalog-aquaphor');
-            expect(redis.del).toHaveBeenCalled(); // lock освобождён
+            expect(result.kind).toBe('skipped');
+            if (result.kind === 'skipped') {
+                expect(result.reason).toBe('store-not-found');
+                expect(result.error).toContain('catalog-aquaphor');
+            }
+            expect(redis.eval).toHaveBeenCalled();
         });
 
-        it('GET /store вернул error → store-not-found с error message', async () => {
+        it('GET /store вернул error → skipped с error message', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request.mockRejectedValueOnce(new FlowiseError('Unauthorized', 401));
 
             const result = await service.refresh();
 
-            expect(result.success).toBe(false);
-            expect(result.skipped).toBe('store-not-found');
-            expect(result.error).toContain('Unauthorized');
-            expect(redis.del).toHaveBeenCalled();
+            expect(result.kind).toBe('skipped');
+            if (result.kind === 'skipped') {
+                expect(result.error).toContain('Unauthorized');
+            }
+            expect(redis.eval).toHaveBeenCalled();
         });
     });
 
     describe('refresh failure', () => {
-        it('POST refresh упал → success=false с error, lock освобождён', async () => {
+        it('POST refresh упал → kind=failure, lock освобождён', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
                 .mockResolvedValueOnce([SAMPLE_STORE])
@@ -138,42 +167,133 @@ describe('CatalogRefreshService', () => {
 
             const result = await service.refresh();
 
-            expect(result.success).toBe(false);
-            expect(result.skipped).toBeUndefined();
-            expect(result.error).toContain('Internal Server Error');
-            expect(result.storeId).toBe('aec6b741'); // store найден, error на refresh шаге
-            expect(redis.del).toHaveBeenCalled();
+            expect(result.kind).toBe('failure');
+            if (result.kind === 'failure') {
+                expect(result.error).toContain('Internal Server Error');
+                expect(result.storeId).toBe('aec6b741');
+            }
+            expect(redis.eval).toHaveBeenCalled();
         });
     });
 
-    describe('runScheduled — cron entry point', () => {
-        it('успешный refresh → success log', async () => {
+    describe('lock fencing — release через Lua CAS не снимает чужой lock', () => {
+        it('каждый acquire генерирует новый uuid (fence-token)', async () => {
+            redis.set.mockResolvedValue(null); // оба вызова видят занятый lock — но проверяем uuid'ы
+            await service.refresh();
+            await service.refresh();
+
+            const firstToken = (redis.set.mock.calls[0] as [string, string, ...unknown[]])[1];
+            const secondToken = (redis.set.mock.calls[1] as [string, string, ...unknown[]])[1];
+            expect(firstToken).not.toBe(secondToken);
+            expect(firstToken).toMatch(/^[0-9a-f-]+$/);
+            expect(secondToken).toMatch(/^[0-9a-f-]+$/);
+        });
+
+        it('release передаёт ровно тот uuid что использовал acquire', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
                 .mockResolvedValueOnce([SAMPLE_STORE])
                 .mockResolvedValueOnce({ status: 'ok' });
 
-            await expect(service.runScheduled()).resolves.toBeUndefined();
+            await service.refresh();
+
+            const acquireToken = (redis.set.mock.calls[0] as [string, string, ...unknown[]])[1];
+            const evalCall = redis.eval.mock.calls[0] as [string, number, string, string];
+            expect(evalCall[3]).toBe(acquireToken);
+        });
+    });
+
+    describe('runScheduled — cron entry point', () => {
+        let logSpy: jest.SpyInstance;
+        let warnSpy: jest.SpyInstance;
+        let errorSpy: jest.SpyInstance;
+
+        beforeEach(() => {
+            logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+            warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
         });
 
-        it('lock-held → warn log', async () => {
+        afterEach(() => {
+            logSpy.mockRestore();
+            warnSpy.mockRestore();
+            errorSpy.mockRestore();
+        });
+
+        it('успешный refresh → logger.log с completed', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            flowise.request
+                .mockResolvedValueOnce([SAMPLE_STORE])
+                .mockResolvedValueOnce({ status: 'ok' });
+
+            await service.runScheduled();
+
+            expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('completed'));
+            expect(warnSpy).not.toHaveBeenCalled();
+            expect(errorSpy).not.toHaveBeenCalled();
+        });
+
+        it('lock-held → logger.warn с skipped', async () => {
             redis.set.mockResolvedValueOnce(null);
-            await expect(service.runScheduled()).resolves.toBeUndefined();
+
+            await service.runScheduled();
+
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('skipped'));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('lock-held'));
+            expect(logSpy).not.toHaveBeenCalled();
+            expect(errorSpy).not.toHaveBeenCalled();
         });
 
-        it('failure → error log (не throw, иначе крашит scheduler)', async () => {
+        it('failure → logger.error (не throw, иначе крашит scheduler)', async () => {
             redis.set.mockResolvedValueOnce('OK');
             flowise.request
                 .mockResolvedValueOnce([SAMPLE_STORE])
                 .mockRejectedValueOnce(new FlowiseError('Server error', 500));
+
             await expect(service.runScheduled()).resolves.toBeUndefined();
+            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('failed'));
+            expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Server error'));
         });
     });
 
-    describe('onModuleDestroy', () => {
-        it('закрывает Redis connection', async () => {
+    describe('onModuleDestroy — graceful shutdown', () => {
+        it('без активного lock → только redis.quit()', async () => {
             await service.onModuleDestroy();
+            expect(redis.eval).not.toHaveBeenCalled(); // не было release
             expect(redis.quit).toHaveBeenCalled();
+        });
+
+        it('с активным lock (refresh in-flight при SIGTERM) → release + quit', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            // Симулируем зависший findStoreByName — lock ещё не released
+            let resolveStore: (v: unknown) => void;
+            const storesPromise = new Promise((r) => {
+                resolveStore = r;
+            });
+            flowise.request.mockReturnValueOnce(storesPromise);
+
+            const refreshPromise = service.refresh();
+            // Дать event-loop'у пройти SET и записать currentLockToken
+            await new Promise((r) => setImmediate(r));
+
+            // SIGTERM пришёл во время refresh
+            await service.onModuleDestroy();
+
+            expect(redis.eval).toHaveBeenCalled(); // lock освобождён в onModuleDestroy
+            expect(redis.quit).toHaveBeenCalled();
+
+            // Доразрешаем refresh чтобы Promise не висел
+            resolveStore!([]);
+            await refreshPromise;
+        });
+
+        it('redis.quit() упал (degraded shutdown) → warn, не throw', async () => {
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            redis.quit.mockRejectedValueOnce(new Error('Connection lost'));
+
+            await expect(service.onModuleDestroy()).resolves.toBeUndefined();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('redis.quit'));
+            warnSpy.mockRestore();
         });
     });
 });

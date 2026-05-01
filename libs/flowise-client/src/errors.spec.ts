@@ -19,7 +19,17 @@ describe('formatFlowiseError', () => {
         expect(formatFlowiseError('plain string')).toBe('plain string');
     });
 
-    it('неизвестный объект — String(...)', () => {
-        expect(formatFlowiseError({ x: 1 })).toBe('[object Object]');
+    it('plain object — JSON.stringify (читаемое сообщение в логах)', () => {
+        expect(formatFlowiseError({ x: 1 })).toBe('{"x":1}');
+    });
+
+    it('объект с циклической ссылкой — fallback на [unserializable error]', () => {
+        const cyclic: { self?: unknown } = {};
+        cyclic.self = cyclic;
+        expect(formatFlowiseError(cyclic)).toBe('[unserializable error]');
+    });
+
+    it('null — String(null) = "null"', () => {
+        expect(formatFlowiseError(null)).toBe('null');
     });
 });

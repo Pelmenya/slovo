@@ -233,14 +233,24 @@ Prisma 7 требует `PRISMA_USER_CONSENT_FOR_DANGEROUS_AI_ACTION=1` для r
 
 4. **Streaming prediction** — skip. SSE не работает через MCP stdio — для streaming использовать прямой HTTP к Flowise. Зафиксировано в README (`prediction.ts:streaming` исключён из schema, всегда `false` в body).
 
-5. **Extract в `Pelmenya/mcp-flowise` + `Pelmenya/flowise-flowdata` + npm/Smithery publish** — план готов в ADR-008 amendment. Два пакета (transport + domain), peerDeps как у `@nestjs/microservices` → `@nestjs/common`. Триггеры:
+5. **Catalog-refresh observability** — `apps/worker/src/modules/catalog-refresh/` сейчас логирует `elapsedMs` через NestJS Logger, но не идёт в Langfuse/prom-метрики. Когда подключится observability (отдельный tech-debt пункт):
+   - `catalog_refresh_elapsed_ms` (histogram) — для p99 latency tracking.
+   - `catalog_refresh_skipped_total{reason}` — counter с labels `lock-held` / `store-not-found`.
+   - `catalog_refresh_failed_total` — counter.
+   - **Alert**: `elapsedMs > LOCK_TTL_SEC * 1000 * 0.8` — приближение к истечению lock'а, потенциально cron tick'и пропускаются.
+
+6. **Verify `replaceExisting=true` semantics через Flowise источник** — реальный recipe для lab journal: триггернуть `flowise_docstore_refresh` с `replaceExisting=true`, прибить Flowise через `docker stop` в середине, проверить `vector_store_metadata.totalChunks`. Если drop-then-insert и не транзакционно — окно с пустыми результатами для `/catalog/search` (несколько минут). Альтернатива: `replaceExisting=false` + отдельный cleanup job по `loaderId` + timestamp. Сейчас принято `replaceExisting=true` — закроем после первой prod-выкатки.
+
+7. **Concurrent refresh test** — `service.refresh()` дважды одновременно через `Promise.all`. Lock SET NX должен корректно skip второй вызов. Сейчас тестируется sequential, не concurrent. Не критично, но добавит уверенности.
+
+8. **Extract в `Pelmenya/flowise-client` + `Pelmenya/mcp-flowise` + `Pelmenya/flowise-flowdata` + npm/Smithery publish** — план готов в ADR-008 amendment. Два пакета (transport + domain), peerDeps как у `@nestjs/microservices` → `@nestjs/common`. Триггеры:
    - Появится 2-й внешний потребитель (другой проект Дмитрия / community ask на GitHub Issues).
    - Stabilization period (2 месяца без breaking changes в API tools).
    - Smithery официально откроется для submission и появится экосистема.
 
    Шаги: `git filter-repo` для каждого пакета → переименование namespace → flowise-flowdata публикуется первым (с build-step через tsup/tsc, нужен `dist/` для npm) → mcp-flowise публикуется вторым с peerDeps → `.github/workflows/{test,publish}.yml` → `npm publish --access public` или Smithery submit.
 
-Решить: пункт 1 — после первой prod-выкатки slovo-runtime; **пункт 2 — pre-PR6 prerequisite**; пункты 3-4 — реактивно; пункт 5 — по триггерам.
+Решить: пункт 1 — после первой prod-выкатки slovo-runtime; **пункт 2 — pre-PR6 prerequisite (закрыто 2026-05-01 commit `8e7134b`)**; пункты 3-4 — реактивно; пункт 5 — после первой prod-выкатки worker'а; пункт 6 — после первого боевого refresh с большим каталогом; пункт 7 — при следующем рефакторинге catalog-refresh; пункт 8 — по триггерам.
 
 ### D. Авто-генерация DTO через декораторы / zod-first
 

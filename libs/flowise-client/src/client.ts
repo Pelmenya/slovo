@@ -6,7 +6,7 @@ import {
 } from './t-config';
 import { FlowiseError } from './errors';
 
-type TRequestOptions = {
+export type TRequestOptions = {
     method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     body?: unknown;
     query?: Record<string, string | number | boolean | undefined>;

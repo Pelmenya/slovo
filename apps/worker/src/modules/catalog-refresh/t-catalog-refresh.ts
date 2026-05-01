@@ -1,18 +1,38 @@
-import type { TFlowiseDocumentStore } from '@slovo/flowise-client';
+import type { TFlowiseDocumentStore, TFlowiseRefreshResponse } from '@slovo/flowise-client';
 
 // =============================================================================
-// catalog-refresh result shape для логирования и телеметрии.
+// catalog-refresh result shape — discriminated union на kind.
+// TypeScript narrow'ит ветки автоматически, нельзя забыть проверить флаг.
 // =============================================================================
 
-export type TCatalogRefreshResult = {
+export type TCatalogRefreshSuccess = {
+    kind: 'success';
     storeId: string;
     storeName: string;
-    success: boolean;
     elapsedMs: number;
-    skipped?: 'lock-held' | 'store-not-found';
-    error?: string;
-    flowiseResponse?: Record<string, unknown>;
+    flowiseResponse: TFlowiseRefreshResponse;
 };
+
+export type TCatalogRefreshSkipped = {
+    kind: 'skipped';
+    reason: 'lock-held' | 'store-not-found';
+    storeName: string;
+    elapsedMs: number;
+    error?: string;
+};
+
+export type TCatalogRefreshFailure = {
+    kind: 'failure';
+    storeId: string;
+    storeName: string;
+    elapsedMs: number;
+    error: string;
+};
+
+export type TCatalogRefreshResult =
+    | TCatalogRefreshSuccess
+    | TCatalogRefreshSkipped
+    | TCatalogRefreshFailure;
 
 export type TFindStoreResult =
     | { found: true; store: TFlowiseDocumentStore }
