@@ -167,7 +167,31 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 
 **Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно нюансы механики chain-нод и API override. При непонятном поведении — **сразу лезь в исходник** через `docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"` или `node_modules/flowise-components/nodes/<category>/<name>/`. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут.
 
-### MCP-арсенал для работы с Flowise (главное правило)
+### Правило использования MCP-инструментов (главное)
+
+В slovo и связанных проектах подключены MCP-серверы — они дают мне typed tools для частых операций. **Если задача попадает в зону покрытия MCP-сервера — используй его, не bash/curl/REST по памяти.** Каждый ритуал «curl с bearer-token, parse JSON, retry на 429, format error» уже вшит в tool с happy-path + error case покрытием. Меньше boilerplate в моих ответах, меньше шансов забыть `--noproxy '*'` или нагадить с escape'ами.
+
+**Доступные MCP-серверы:**
+
+| Сервер | Префикс tools | Область | Когда использовать |
+|---|---|---|---|
+| `flowise-slovo` | `mcp__flowise-slovo__*` | 66 tools — Document Stores / Chatflows / Predictions / Credentials / Variables / Custom Tools / Assistants / Composite helpers | Любая работа с Flowise REST. См. ниже подсекцию «MCP-арсенал для работы с Flowise». |
+| `playwright` | `mcp__playwright__*` | browser automation — navigate / click / type / screenshot / evaluate / network | UI debugging (Flowise / Swagger / pgAdmin / Redis Commander / Langfuse / прод-сайты), скрейпинг docs/npm/Docker Hub, визуальные баги. См. ниже подсекцию «Playwright MCP». |
+| `pencil` | `mcp__pencil__*` | редактор `.pen` design-файлов | Только если разработчик упомянул `.pen` файл или явно попросил работу с Pencil. |
+
+**Decision tree при выборе подхода:**
+
+1. Есть ли MCP-tool на эту задачу? → используй его.
+2. Нет, но это **повторяющаяся** ритуальная операция (≥2 раза за сессию)? → проверь `flowise_introspect` / explore Flowise REST source, если оправдано — добавь tool в `apps/mcp-flowise/` (gate-критерии в подсекции ниже).
+3. Нет, и это разовая разведка (один curl чтобы посмотреть headers) → bash / `fetch` в `experiments/` ОК.
+4. UI-задача, Swagger/Flowise dialog, прод-сайт → Playwright MCP.
+
+**Когда МЕНЬШЕ предпочитать MCP:**
+
+- Tool заметно медленнее эквивалентной команды (Playwright: navigate→click→fill это секунды, ровно тот же result через `fetch` — 200ms). Для тестирования endpoint'а — direct fetch.
+- В `experiments/` где скрипт сам пишется и runtime контролируется — direct fetch / pg-client ок (как в `run-orchestrate.mjs`).
+
+### MCP-арсенал для работы с Flowise
 
 **Используй `mcp__flowise-slovo__*` tools, не curl/bash.** Любой ручной curl-ритуал к Flowise REST (`--noproxy '*' -X POST -H "Authorization: Bearer..."`) — **антипаттерн**. Все операции есть готовыми типизированными tools.
 
@@ -232,19 +256,28 @@ const flowData = serializeFlowData(buildChatflow({
 - `apps/mcp-flowise/README.md` — полные примеры по каждой группе tools.
 - Lab journal: `docs/experiments/vision-catalog/2026-04-29-document-store-vector-pipeline.md` — reproducible recipe всех ритуалов которые этот MCP заменяет.
 
-### Playwright MCP — UI debugging для Flowise / Swagger / dev-консолей
+### Playwright MCP — браузер для всех задач где нужен браузер
 
-Глобально установленный (`scope=user`, `~/.claude.json`) MCP-сервер для работы с браузером — позволяет Claude видеть Flowise UI (3130), Swagger UI (3101/api/docs), pgAdmin (5050), Redis Commander (8081), Langfuse (3100), MinIO Console (9011) без скриншот-loop'а от пользователя.
+Глобально установленный (`scope=user`, `~/.claude.json`) MCP-сервер для работы с браузером — изолированный chromium instance (не твоя живая сессия). Использую вместо просьбы скриншотов от разработчика, для всех задач где требуется браузер.
 
-**Когда использовать:**
-- Flowise UI debugging — отладка нод chatflow, проверка credentials, осмотр Document Store через UI (не всё покрывается MCP-арсеналом, особенно кнопки/dialog'и).
-- Swagger UI — быстро тестнуть endpoint руками, увидеть response shape, проверить что новый DTO правильно отрендерился.
-- Прод-проверка `aquaphor-pro.store` или внешних сервисов в которых что-то отлаживаем.
-- Скрейпинг docs / npm / Docker Hub — вместо полагания на память про версии (см. правило «всегда проверяй актуальные версии»).
+**Когда использовать (broad-usage):**
+
+- **UI debugging** — Flowise UI (3130) для нод chatflow / credentials, Swagger UI (3101/api/docs) для проверки эндпоинтов и DTO, pgAdmin (5050), Redis Commander (8081), Langfuse (3100), MinIO Console (9011). Закрывает gap «не всё покрывается mcp__flowise-slovo__* — особенно кнопки/dialog'и/визуальный layout».
+- **Live smoke endpoints** — открыть Swagger UI, отправить POST через `browser_evaluate` с `fetch()`, увидеть response. Так нашли broken metadata в PR7 → решение PR6.5 (slovo-orchestrate). Mocked unit-тесты не ловят такие интеграционные баги.
+- **Скрейпинг docs / npm / Docker Hub / GitHub Issues** — вместо полагания на память про версии или fix dates. См. правило «всегда проверяй актуальные версии».
+- **Прод-проверка** `aquaphor-pro.store`, внешних API-консолей, чужих демо-инсталляций.
+- **Визуальные баги фронта** — рендеринг карточек товаров, layout breakpoints, console errors. Когда `prostor-app` подключится — Playwright станет основным debug-tool.
 
 **Когда НЕ использовать:**
-- Если есть MCP-tool на ту же задачу — предпочитай его (Flowise → `mcp__flowise-slovo__*`, не Playwright). UI всегда медленнее API.
-- Тестовые сценарии — это `apps/api/test/*.e2e-spec.ts` через supertest, не браузер.
+
+- Если есть MCP-tool на ту же задачу — предпочитай его. Flowise REST → `mcp__flowise-slovo__*`, не Playwright (UI всегда медленнее API на порядок).
+- Тестовые сценарии для CI — это `apps/api/test/*.e2e-spec.ts` через supertest, не браузер. Playwright — для разовых проверок в dev.
+- Простые `fetch` вызовы которые легко проверить через `experiments/*.mjs` — direct fetch ок (как `run-orchestrate.mjs`).
+
+**Известные нюансы:**
+
+- Browser session иногда дисконнектится между tool-call'ами — после `Target page has been closed` сделай `mcp__playwright__browser_close` + `browser_navigate` заново. Не паника, перезапуск стабилен.
+- Snapshot'ы (`browser_snapshot`) сохраняются в `.playwright-mcp/` — gitignored, локальные временные. Не пушим.
 
 **Установка** (один раз, scope=user — глобально для Claude Code):
 
