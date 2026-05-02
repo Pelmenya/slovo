@@ -30,6 +30,7 @@ type TRedisClientMock = {
 };
 type TStorageServiceMock = { getObjectStream: jest.Mock };
 type TAugmenterMock = {
+    beginRefreshCycle: jest.Mock;
     augmentItem: jest.Mock;
     removeStaleAugmentations: jest.Mock;
 };
@@ -150,6 +151,7 @@ describe('CatalogRefreshService', () => {
         // Default: augmentation возвращает null — все existing тесты работают
         // как раньше (без обогащения visualDescription'ом).
         augmenter = {
+            beginRefreshCycle: jest.fn(),
             augmentItem: jest.fn().mockResolvedValue(null),
             removeStaleAugmentations: jest.fn().mockResolvedValue(0),
         };
@@ -940,6 +942,116 @@ describe('CatalogRefreshService', () => {
 
             await expect(service.onModuleDestroy()).resolves.toBeUndefined();
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('redis.quit'));
+            warnSpy.mockRestore();
+        });
+    });
+
+    describe('Vision augmentation integration (#70 + #71)', () => {
+        it('augmenter вернул description → text расширяется "Визуальный вид: ..."', async () => {
+            setupHappyPathMocks(flowise, redis, storage);
+            // augmenter возвращает description для первого item
+            augmenter.augmentItem
+                .mockResolvedValueOnce('Синий компактный фильтр под мойку')
+                .mockResolvedValueOnce(null); // 2-й товар без augment
+
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
+
+            await service.refresh();
+
+            // 1-й upsert call body — text расширен
+            const firstUpsertCall = flowise.request.mock.calls[1];
+            const firstBody = firstUpsertCall[1].body as { loader: { config: { text: string } } };
+            expect(firstBody.loader.config.text).toContain('Товар: Аквафор DWM-101S');
+            expect(firstBody.loader.config.text).toContain('\n\nВизуальный вид: Синий компактный фильтр под мойку');
+
+            // 2-й upsert call — без augment, text оригинальный
+            const secondUpsertCall = flowise.request.mock.calls[2];
+            const secondBody = secondUpsertCall[1].body as { loader: { config: { text: string } } };
+            expect(secondBody.loader.config.text).toBe('Товар: Картридж K1-07');
+            expect(secondBody.loader.config.text).not.toContain('Визуальный вид');
+        });
+
+        it('augmenter вернул null → text неизменный, без trailing newlines', async () => {
+            setupHappyPathMocks(flowise, redis, storage);
+            // augmenter default → null (см. beforeEach)
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
+
+            await service.refresh();
+
+            const firstUpsertCall = flowise.request.mock.calls[1];
+            const firstBody = firstUpsertCall[1].body as { loader: { config: { text: string } } };
+            expect(firstBody.loader.config.text).toBe('Товар: Аквафор DWM-101S\nОписание: Обратный осмос');
+            expect(firstBody.loader.config.text).not.toMatch(/\n\n$/);
+        });
+
+        it('beginRefreshCycle() вызывается ровно один раз перед циклом upsert', async () => {
+            setupHappyPathMocks(flowise, redis, storage);
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 1, docId: 'doc-mu-002' });
+
+            await service.refresh();
+
+            expect(augmenter.beginRefreshCycle).toHaveBeenCalledTimes(1);
+            // Должен быть вызван ДО первого augmentItem
+            const beginInvokeOrder = augmenter.beginRefreshCycle.mock.invocationCallOrder[0];
+            const firstAugmentInvokeOrder = augmenter.augmentItem.mock.invocationCallOrder[0];
+            expect(beginInvokeOrder).toBeLessThan(firstAugmentInvokeOrder);
+        });
+
+        it('removeStaleAugmentations вызывается с removedExternalIds', async () => {
+            redis.set.mockResolvedValueOnce('OK');
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+                'mu-stale': 'doc-mu-stale',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-002' })
+                .mockResolvedValueOnce({ success: true }); // DELETE loader response
+
+            await service.refresh();
+
+            expect(augmenter.removeStaleAugmentations).toHaveBeenCalledWith(['mu-stale']);
+        });
+
+        it('removeStaleAugmentations упал → warn, refresh.kind=success', async () => {
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            redis.set.mockResolvedValueOnce('OK');
+            redis.hgetall.mockResolvedValueOnce({
+                'mu-001': 'doc-mu-001',
+                'mu-002': 'doc-mu-002',
+                'mu-stale': 'doc-mu-stale',
+            });
+            flowise.request.mockResolvedValueOnce([SAMPLE_STORE]);
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(SAMPLE_PAYLOAD)),
+                contentType: 'application/json',
+            });
+            flowise.request
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-001' })
+                .mockResolvedValueOnce({ numAdded: 0, numSkipped: 1, docId: 'doc-mu-002' })
+                .mockResolvedValueOnce({ success: true }); // DELETE loader response
+            augmenter.removeStaleAugmentations.mockRejectedValueOnce(new Error('Redis OOM'));
+
+            const result = await service.refresh();
+
+            expect(result.kind).toBe('success'); // refresh всё равно success
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining('vision-augment REMOVED-sweep'),
+            );
             warnSpy.mockRestore();
         });
     });

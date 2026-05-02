@@ -127,7 +127,49 @@ export const VISION_AUGMENT_MAX_IMAGES = 5;
 // Cost per Vision call (claude-haiku-4-5 conservative). На 5 изображений
 // + system prompt ~600 tokens = 8100 input × $1/1M (haiku) = $0.008, +
 // 200 output × $5/1M = $0.001. Total ~$0.009. Conservative до $0.01.
+// Реальный billing 2 мая показал $0.0026/item — Haiku в 4× дешевле.
 export const VISION_AUGMENT_COST_PER_CALL_USD = 0.01;
+
+// Vision call timeout — safety belt поверх FlowiseClient timeout'а
+// (REFRESH_FLOWISE_TIMEOUT_MS=5min в catalog-refresh.module.ts).
+// 60 сек выбраны не как throttle а как страховка: legitimate multi-image
+// Vision на 5 фото может занимать 10-30 сек (Anthropic API jitter), 60s
+// = ×2 запас от observed worst-case. Если FlowiseClient timeout сломан
+// (config error / future change) — этот local timeout срабатывает раньше
+// чем lock-TTL (30 мин) истечёт. Очередь (RMQ-consumer для async augment)
+// — правильное long-term решение, но overkill для Phase 2.
+export const VISION_AUGMENT_CALL_TIMEOUT_MS = 60_000;
+
+// Per-refresh batch cap на Vision-вызовы. Защита от financial DoS:
+// если CRM feeder выкатит 10K items с changed-hash (например EXIF jitter
+// сломал idempotency), augmentation сожрёт 10K × $0.01 = $100/cron.
+// Cap 500 = $5/refresh worst-case = $30/день при 6 cron'ах. После cap'а
+// `augmentItem` возвращает null с warn, refresh продолжается без augment
+// для остатка. Item получит augmentation в следующем cron'е.
+export const VISION_AUGMENT_MAX_CALLS_PER_REFRESH = 500;
+
+// Hard length cap на augmented description (после Vision call). Защита:
+// 1) prompt injection через текст на товарных фото — злоумышленник не
+//    может протолкнуть длинный токсичный текст в search response;
+// 2) cost — output >300 tokens на простой augment задаче = LLM
+//    overflow'нул prompt instruction, лучше обрезать.
+export const VISION_AUGMENT_MAX_DESCRIPTION_LENGTH = 500;
+
+// MIME whitelist для Vision input. Anthropic API строго принимает только
+// эти 4 формата. SVG/octet-stream/heic/etc → API возвращает 400, тратится
+// chatflow_list call + downloaded bytes.
+export const VISION_AUGMENT_ALLOWED_MIMES: ReadonlySet<string> = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'image/webp',
+]);
+
+// Версия модели для augment mapping. При смене модели (Haiku 4.5 → 5.x)
+// bump версии → cache miss всех закешированных описаний → re-augment с
+// новой моделью. Hash bytes остаётся стабильным, но modelVersion mismatch
+// триггерит refresh без необходимости bump'ить весь VISION_AUGMENT_REDIS_KEY.
+export const VISION_AUGMENT_MODEL_VERSION = 'haiku-4-5';
 
 // =============================================================================
 // Защитные ограничения от malicious / broken feeder (PR6.5 security follow-up)

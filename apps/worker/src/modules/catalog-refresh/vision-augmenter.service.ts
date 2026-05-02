@@ -13,8 +13,13 @@ import { StorageService } from '@slovo/storage';
 import {
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
+    VISION_AUGMENT_ALLOWED_MIMES,
+    VISION_AUGMENT_CALL_TIMEOUT_MS,
+    VISION_AUGMENT_MAX_CALLS_PER_REFRESH,
+    VISION_AUGMENT_MAX_DESCRIPTION_LENGTH,
     VISION_AUGMENT_MAX_IMAGE_BYTES,
     VISION_AUGMENT_MAX_IMAGES,
+    VISION_AUGMENT_MODEL_VERSION,
     VISION_AUGMENT_REDIS_KEY,
 } from './catalog-refresh.constants';
 
@@ -23,13 +28,26 @@ import {
 // визуальным описанием от Claude Vision (#70 / #71).
 //
 // Архитектура:
-// - Download images товара из MinIO (StorageService)
+// - Download images товара из MinIO (StorageService) с mime whitelist
 // - SHA256 hash от sorted concat(image bytes) — stable fingerprint
 // - Redis HASH `slovo:catalog:vision-augment:<externalId>` →
-//   `{imageHash, visualDescription}`
-// - Hash совпал с stored → reuse cached visualDescription (skip Vision)
-// - Hash отличается / нет записи → Flowise predict → save → return
+//   `{imageHash, visualDescription, modelVersion}`
+// - Hash совпал И modelVersion match → reuse cached (skip Vision)
+// - Hash отличается / modelVersion bumped → Flowise predict → save → return
 // - REMOVED-sweep делает CatalogRefreshService по аналогии с loader mapping
+//
+// Защитные меры (после security ревью Phase 2):
+// - Per-refresh batch cap (VISION_AUGMENT_MAX_CALLS_PER_REFRESH=500) защищает
+//   от financial DoS при сломанной idempotency feeder'а. Cap превышен →
+//   augmentItem возвращает null + warn, refresh продолжается без augment.
+//   Cycle counter сбрасывается через beginRefreshCycle() перед каждым
+//   refresh'ем (вызывается из CatalogRefreshService.runOrchestrate).
+// - Per-call timeout (15 сек) защищает от зависшего Vision call'а съедающего
+//   refresh-lock TTL (30 мин).
+// - Length cap (500 chars) на description — защита от prompt injection
+//   через текст на товарных фото.
+// - Mime whitelist — только image/{jpeg,png,gif,webp}. Anything else skip'ается
+//   до Vision call (экономит chatflow_list lookup + bytes).
 //
 // Любая ошибка → return null + warn (refresh продолжается без augmentation
 // для этого товара — graceful degradation, не валит pipeline).
@@ -42,12 +60,25 @@ import {
 type TAugmentMappingEntry = {
     imageHash: string;
     visualDescription: string;
+    // Опциональный для backward-compat. Старые записи без modelVersion
+    // считаются "stale" (cache miss) — будут перегенерены при следующем
+    // refresh с актуальной моделью. Новые записи всегда имеют modelVersion.
+    modelVersion?: string;
 };
 
 @Injectable()
 export class VisionAugmenterService {
     private readonly logger = new Logger(VisionAugmenterService.name);
     private chatflowIdPromise: Promise<string> | null = null;
+    // Per-refresh batch cap counter. Сбрасывается через beginRefreshCycle().
+    // Без сброса между cron'ами счётчик растёт и через ~83 цикла достигнет
+    // cap'а — но это правильно: значит что-то вне ожиданий, refresh останавливает
+    // augmentation до перезапуска worker'а.
+    private callsThisRefresh = 0;
+    // Признак misconfiguration: chatflow не найден. Логируется как error
+    // один раз, дальше остальные items получают warn без stack trace
+    // (защита от лог-спама на 155 items).
+    private chatflowMissingErrorLogged = false;
 
     constructor(
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
@@ -56,13 +87,16 @@ export class VisionAugmenterService {
         private readonly config: ConfigService<TAppEnv, true>,
     ) {}
 
-    // Главный API. Возвращает visual description или null если:
-    // - imageUrls пуст (нечего augment'ить)
-    // - не удалось скачать картинки (MinIO fail)
-    // - Vision call упал
-    // - chatflow не найден в Flowise
-    //
-    // Не throw'ит — refresh должен идти даже если augmentation сломалось.
+    // Сбрасывает per-refresh batch counter. Вызывается перед каждым refresh-
+    // циклом из CatalogRefreshService.runOrchestrate. Без вызова счётчик
+    // продолжает копить calls с предыдущего refresh — это safety, не bug
+    // (defaults to "stop early" а не "spam Vision calls").
+    beginRefreshCycle(): void {
+        this.callsThisRefresh = 0;
+        this.chatflowMissingErrorLogged = false;
+    }
+
+    // Главный API. Возвращает visual description или null при graceful fail.
     async augmentItem(
         externalId: string,
         imageUrls: ReadonlyArray<string>,
@@ -72,46 +106,63 @@ export class VisionAugmenterService {
         }
 
         try {
-            // 1. Download images (cap MAX_IMAGES, MAX_IMAGE_BYTES per file)
+            // 1. Download images (cap MAX_IMAGES, MAX_IMAGE_BYTES, mime whitelist)
             const downloaded = await this.downloadImages(imageUrls);
             if (downloaded.length === 0) {
-                this.logger.warn(
-                    `augmentItem: externalId=${externalId} — все картинки skip'нуты (size cap / download fail)`,
-                );
-                return null;
+                return null; // Все skip'нуты — лог уже из downloadImages
             }
 
-            // 2. Compute hash для idempotency (от raw bytes, без mime —
-            // mime может варьироваться, но bytes детерминированы).
+            // 2. Compute hash для idempotency (от raw bytes)
             const imageHash = computeImageHash(downloaded.map((d) => d.buffer));
 
-            // 3. Check Redis mapping
+            // 3. Check Redis mapping — hash + modelVersion должны совпасть
             const cached = await this.getCachedAugmentation(externalId);
-            if (cached !== null && cached.imageHash === imageHash) {
+            if (
+                cached !== null &&
+                cached.imageHash === imageHash &&
+                cached.modelVersion === VISION_AUGMENT_MODEL_VERSION
+            ) {
                 this.logger.debug(
                     `augmentItem: externalId=${externalId} cache HIT (hash=${imageHash.slice(0, 12)}…)`,
                 );
                 return cached.visualDescription;
             }
 
-            // 4. Cache miss → Flowise Vision augmenter
-            const description = await this.callVisionAugmenter(downloaded);
-            if (description === null) {
-                return null; // Vision fail logged внутри
+            // 4. Per-refresh batch cap — защита от financial DoS
+            if (this.callsThisRefresh >= VISION_AUGMENT_MAX_CALLS_PER_REFRESH) {
+                this.logger.warn(
+                    `augmentItem: per-refresh cap (${VISION_AUGMENT_MAX_CALLS_PER_REFRESH}) ` +
+                        `достигнут — externalId=${externalId} skip Vision call. ` +
+                        `Возможен баг feeder idempotency или massive content update.`,
+                );
+                return null;
             }
 
-            // 5. Save mapping (новый hash + description)
+            // 5. Cache miss → Flowise Vision augmenter (с timeout)
+            this.callsThisRefresh++;
+            const description = await this.callVisionAugmenter(downloaded);
+            if (description === null) {
+                return null;
+            }
+
+            // 6. Length cap (защита от prompt injection через текст на фото)
+            const cappedDescription =
+                description.length > VISION_AUGMENT_MAX_DESCRIPTION_LENGTH
+                    ? description.slice(0, VISION_AUGMENT_MAX_DESCRIPTION_LENGTH).trimEnd() + '…'
+                    : description;
+
+            // 7. Save mapping (новый hash + description + modelVersion)
             await this.setCachedAugmentation(externalId, {
                 imageHash,
-                visualDescription: description,
+                visualDescription: cappedDescription,
+                modelVersion: VISION_AUGMENT_MODEL_VERSION,
             });
             this.logger.debug(
-                `augmentItem: externalId=${externalId} cache MISS → Vision call → saved (${description.length} chars)`,
+                `augmentItem: externalId=${externalId} cache MISS → Vision call → saved (${cappedDescription.length} chars)`,
             );
 
-            return description;
+            return cappedDescription;
         } catch (error) {
-            // Любая неожиданная ошибка — graceful, refresh не валится.
             this.logger.warn(
                 `augmentItem failed: externalId=${externalId} error=${sanitizeError(error)}`,
             );
@@ -119,8 +170,7 @@ export class VisionAugmenterService {
         }
     }
 
-    // REMOVED-sweep API — вызывается из CatalogRefreshService при удалении
-    // товаров из payload. Возвращает количество удалённых entries.
+    // REMOVED-sweep API.
     async removeStaleAugmentations(externalIds: ReadonlyArray<string>): Promise<number> {
         if (externalIds.length === 0) return 0;
         try {
@@ -143,16 +193,22 @@ export class VisionAugmenterService {
     ): Promise<Array<{ buffer: Buffer; mime: string }>> {
         const limited = imageUrls.slice(0, VISION_AUGMENT_MAX_IMAGES);
         const results: Array<{ buffer: Buffer; mime: string }> = [];
+        const skips: string[] = [];
         for (const key of limited) {
             try {
                 const downloaded = await this.downloadOneImage(key);
-                if (downloaded !== null) results.push(downloaded);
+                if (downloaded === null) {
+                    skips.push(`${key}: skipped (size cap / unsupported mime)`);
+                    continue;
+                }
+                results.push(downloaded);
             } catch (error) {
-                // Per-image fail не валит остальные — продолжаем с тем что есть
-                this.logger.warn(
-                    `downloadImages: skip ${key} — ${sanitizeError(error)}`,
-                );
+                skips.push(`${key}: ${sanitizeError(error)}`);
             }
+        }
+        // Aggregate warn — одна строка вместо лог-спама на 5 фото
+        if (skips.length > 0) {
+            this.logger.warn(`downloadImages: ${skips.length} skipped — ${skips.join('; ')}`);
         }
         return results;
     }
@@ -172,23 +228,21 @@ export class VisionAugmenterService {
             } else if (chunk instanceof Uint8Array) {
                 buf = Buffer.from(chunk);
             } else {
-                this.logger.warn(`downloadOneImage: unexpected stream chunk type for ${key}`);
                 return null;
             }
             totalBytes += buf.length;
             if (totalBytes > VISION_AUGMENT_MAX_IMAGE_BYTES) {
-                this.logger.warn(
-                    `downloadOneImage: ${key} exceeds ${VISION_AUGMENT_MAX_IMAGE_BYTES} bytes — skip`,
-                );
                 return null;
             }
             chunks.push(buf);
         }
         const buffer = Buffer.concat(chunks);
-        // MIME-type: приоритет contentType от MinIO, fallback на extension,
-        // фоллбэк-fallback на jpeg. Anthropic API строго проверяет соответствие
-        // mime declared vs actual bytes — неверный mime → 400.
         const mime = stream.contentType ?? mimeFromKey(key);
+        // Mime whitelist — Anthropic API принимает только image/{jpeg,png,gif,webp}.
+        // SVG/octet-stream/heic skip'аются до Vision call.
+        if (!VISION_AUGMENT_ALLOWED_MIMES.has(mime)) {
+            return null;
+        }
         return { buffer, mime };
     }
 
@@ -199,9 +253,15 @@ export class VisionAugmenterService {
         try {
             chatflowId = await this.resolveChatflowId();
         } catch (error) {
-            this.logger.warn(
-                `callVisionAugmenter: cannot resolve chatflow — ${sanitizeError(error)}`,
-            );
+            // Misconfiguration — логируем error один раз, далее silent
+            // (защита от лог-спама на 155 items × stack trace).
+            if (!this.chatflowMissingErrorLogged) {
+                this.logger.error(
+                    `callVisionAugmenter: chatflow resolve failed — Vision augmentation отключена ` +
+                        `до восстановления Flowise. ${sanitizeError(error)}`,
+                );
+                this.chatflowMissingErrorLogged = true;
+            }
             return null;
         }
 
@@ -216,21 +276,19 @@ export class VisionAugmenterService {
         });
 
         try {
-            const response = await this.flowise.request<TFlowisePredictionResponse>(
+            // Promise.race с timeout — защита от зависшего Vision call'а
+            // (один зависший = съедает весь refresh lock-TTL).
+            const predictPromise = this.flowise.request<TFlowisePredictionResponse>(
                 ENDPOINTS.prediction(chatflowId),
-                {
-                    method: 'POST',
-                    body: { question: '', uploads },
-                },
+                { method: 'POST', body: { question: '', uploads } },
             );
+            const response = await raceWithTimeout(predictPromise, VISION_AUGMENT_CALL_TIMEOUT_MS);
+
             const text = (response.text ?? '').trim();
             if (text.length === 0) {
                 this.logger.warn('callVisionAugmenter: empty Vision response');
                 return null;
             }
-            // Augmenter chatflow возвращает plain text. Если LLM завернёт в markdown
-            // (```text...```) — strip wrapper. JSON-обёртку не ожидаем (промпт это
-            // запрещает), но на всякий случай очистим тройные кавычки если попадутся.
             return stripMarkdownWrapper(text);
         } catch (error) {
             this.logger.warn(
@@ -258,7 +316,7 @@ export class VisionAugmenterService {
         if (!match) {
             throw new Error(
                 `Vision augmenter chatflow "${targetName}" не найден в Flowise. ` +
-                    `Создай через experiments/create-augmenter-chatflow.mjs.`,
+                    `Создай через apps/worker/scripts/provision-augmenter-chatflow.ts.`,
             );
         }
         this.logger.debug(`vision augmenter chatflow "${targetName}" → id=${match.id}`);
@@ -271,7 +329,6 @@ export class VisionAugmenterService {
             if (raw === null) return null;
             return JSON.parse(raw) as TAugmentMappingEntry;
         } catch (error) {
-            // Corrupt JSON / Redis fail — cache miss, не throw
             this.logger.warn(
                 `getCachedAugmentation: externalId=${externalId} — ${sanitizeError(error)}`,
             );
@@ -290,7 +347,6 @@ export class VisionAugmenterService {
                 JSON.stringify(entry),
             );
         } catch (error) {
-            // Cache write fail не валит pipeline — следующий refresh повторит
             this.logger.warn(
                 `setCachedAugmentation: externalId=${externalId} — ${sanitizeError(error)}`,
             );
@@ -299,29 +355,32 @@ export class VisionAugmenterService {
 }
 
 // =============================================================================
-// Helpers (pure)
+// Helpers (pure, exported для unit-тестов)
 // =============================================================================
 
 // Stable hash от content всех картинок товара. Order-independent через sort.
 // Per-image: sha256(bytes). Затем sort(hex strings) + join → final sha256.
 // Один и тот же набор картинок (в любом порядке в imageUrls) → один hash.
-function computeImageHash(buffers: ReadonlyArray<Buffer>): string {
+export function computeImageHash(buffers: ReadonlyArray<Buffer>): string {
     const perImageHashes = buffers
         .map((buf) => createHash('sha256').update(buf).digest('hex'))
         .sort();
     return createHash('sha256').update(perImageHashes.join(':')).digest('hex');
 }
 
-function stripMarkdownWrapper(text: string): string {
+export function stripMarkdownWrapper(text: string): string {
     const trimmed = text.trim();
     const fenceMatch = trimmed.match(/^```(?:[a-z]+)?\s*\n?([\s\S]*?)\n?```$/);
-    return fenceMatch ? fenceMatch[1].trim() : trimmed;
+    return fenceMatch && fenceMatch[1] !== undefined ? fenceMatch[1].trim() : trimmed;
 }
 
-// MIME-fallback по расширению S3-key. Аnthropic API принимает только
-// image/jpeg, image/png, image/gif, image/webp. Если расширение неизвестно —
-// jpeg conservative default (большинство товарных фото в каталоге).
-function mimeFromKey(key: string): string {
+// MIME-fallback по расширению S3-key. Anthropic API принимает только
+// image/{jpeg,png,gif,webp}. Если расширение не распознано — image/jpeg
+// conservative default (большинство товарных фото в каталоге).
+// Реальное использование: после mimeFromKey() результат проверяется
+// против VISION_AUGMENT_ALLOWED_MIMES whitelist, неподдерживаемые форматы
+// skip'аются до Vision call.
+export function mimeFromKey(key: string): string {
     const ext = key.split('.').pop()?.toLowerCase() ?? '';
     switch (ext) {
         case 'png':
@@ -335,5 +394,19 @@ function mimeFromKey(key: string): string {
             return 'image/jpeg';
         default:
             return 'image/jpeg';
+    }
+}
+
+// Promise.race с timeout — кидает Error('timeout') если promise не завершён
+// за `ms`. Используется для защиты Vision call от зависания.
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timeoutId: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`Vision augment timeout after ${ms}ms`)), ms);
+    });
+    try {
+        return await Promise.race([promise, timeoutPromise]);
+    } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
 }

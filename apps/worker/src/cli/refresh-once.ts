@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Logger as PinoLogger } from 'nestjs-pino';
-import { validateEnv } from '@slovo/common';
+import { sanitizeError, validateEnv } from '@slovo/common';
 import { CatalogRefreshService } from '../modules/catalog-refresh/catalog-refresh.service';
 import { WorkerModule } from '../worker.module';
 
@@ -33,13 +33,28 @@ import { WorkerModule } from '../worker.module';
 // pino-logger тоже. Используем canonical Node.js stderr вместо console
 // (eslint позволяет, но process.stderr — более явно про "это критическая
 // ошибка инициализации, не runtime лог").
+//
+// `sanitizeError` обязательно — error.stack может содержать
+// `postgres://user:password@host` фрагменты от ioredis/pg-driver, Bearer-
+// токены от undici. В CI/syslog stderr попадает в job-output → audit trail.
 function writeBootstrapError(prefix: string, error: unknown): void {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    process.stderr.write(`[refresh-once] ${prefix}: ${message}\n`);
+    process.stderr.write(`[refresh-once] ${prefix}: ${sanitizeError(error)}\n`);
 }
 
 async function main(): Promise<number> {
     const logger = new Logger('RefreshOnce');
+
+    // CI guard: если запуск в CI без явного NODE_ENV=production —
+    // отказываемся, чтобы не залить production-БД refresh'ем с staging
+    // credentials (validateEnv не блокирует weak passwords в development).
+    // В local dev (CI=undefined) этот guard не срабатывает.
+    if (process.env.CI === 'true' && process.env.NODE_ENV !== 'production') {
+        process.stderr.write(
+            `[refresh-once] CI run without NODE_ENV=production — refusing to start. ` +
+                `Set NODE_ENV=production in CI workflow if intended.\n`,
+        );
+        return 2;
+    }
 
     try {
         validateEnv(process.env);

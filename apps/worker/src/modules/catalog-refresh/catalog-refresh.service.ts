@@ -281,6 +281,9 @@ export class CatalogRefreshService implements OnModuleDestroy {
 
         // Step 5 — per-item upsert. RecordManager делает skip-if-unchanged
         // когда we передаём stored docId (metadata.docId stable → hash stable).
+        // Reset augmenter batch counter — защита от financial DoS если cache
+        // невалиден / feeder сломал idempotency. См. VisionAugmenterService.
+        this.augmenter.beginRefreshCycle();
         const outcomes = await this.upsertItems(storeId, configs, payload.items, loaderMapping);
 
         // Step 6 — REMOVED-sweep. Items в mapping но не в payload — товар

@@ -437,13 +437,14 @@ TRUNCATE удалён вместе с PR9.5 RecordManager refactor. Race conditi
 Redis lock fairness — два cron'а одновременно дёрнут SET NX, один
 выиграет, второй вернёт `lock-held` (это OK, refresh идемпотентен).
 
-### 29. FlowiseNameResolver helper — extract single-flight name lookup
+### 29. FlowiseNameResolver helper — extract single-flight name lookup ⚠️ **ТРИГГЕР СРАБОТАЛ (2 мая 2026)**
 
-`TextSearchService.resolveStoreId/lookupStoreId` (PR7 follow-up C) и
-`ImageSearchService.resolveChatflowId/lookupChatflowId` (PR8) — почти
-точные копии single-flight + retry-on-failure pattern с разницей только
-в endpoint и nameField. Третий (Phase 2: VisionDescriberService с per-tenant
-chatflows) сделает 3 копии — кандидат на extraction в reusable helper.
+`TextSearchService.resolveStoreId/lookupStoreId` (PR7 follow-up C),
+`ImageSearchService.resolveChatflowId/lookupChatflowId` (PR8) и теперь
+**`VisionAugmenterService.resolveChatflowId/lookupChatflowId`** (Phase 2,
+коммит `69dd5d2`) — три почти точные копии single-flight + retry-on-failure
+pattern с разницей только в endpoint и nameField. **Третий потребитель
+сработал триггер extract**.
 
 Pattern:
 ```ts
@@ -451,14 +452,20 @@ const resolver = new FlowiseNameResolver(flowise, {
     listEndpoint: ENDPOINTS.chatflows,
     name: VISION_CHATFLOW_NAME,
     label: 'vision chatflow',
+    cacheTtlMs: 5 * 60_000, // защита от stale id после Flowise recovery
 });
-const id = await resolver.resolve(); // lazy, single-flight, retry
+const id = await resolver.resolve(); // lazy, single-flight, retry, TTL
 ```
 
-Размер extract: ~40 LOC новый helper в `libs/flowise-client/`, ~30 LOC
-сокращение в каждом потребителе.
+Размер extract: ~50 LOC новый helper в `libs/flowise-client/`, ~30 LOC
+сокращение в каждом потребителе. Бонус: добавить TTL на cached promise
+(5-10 минут) — текущая мемоизация навсегда означает stale id если chatflow
+пересоздан с новым id.
 
-Триггер: при появлении 3-го name-lookup потребителя.
+**Когда делать:** в составе следующего PR в зону `libs/flowise-client/` или
+любой из 3 потребителей. Не блокирует прод-релиз — текущие копии работают,
+но drift неизбежен (например, сейчас augmenter имеет специфичный
+`chatflowMissingErrorLogged` flag для anti-spam — должен мигрировать в helper).
 
 ### 31. Multi-image Vision — prompt v2 ✅ **ЗАКРЫТО (1 мая 2026)**
 
@@ -746,6 +753,48 @@ contentForEmbedding после augmentation:
 - A/B test на real query log первой недели
 
 **Альтернатива:** trigram similarity (`pg_trgm` extension) для fuzzy match на артикулы. Дешевле ts_vector, ловит опечатки.
+
+### 41. Vision-augment recovery plan — после Redis FLUSHDB / data-loss
+
+**Контекст:** state ingest pipeline теперь распределён по 4 хранилищам:
+- `catalog_chunks` (Flowise pgvector)
+- `catalog_record_manager` (Flowise PR9.5)
+- `slovo:catalog:loaders` Redis HASH (PR9.5)
+- `slovo:catalog:vision-augment` Redis HASH (Phase 2, #70+#71)
+
+#32 описывает recovery для loaders. Для **vision-augment recovery плана нет** — а это `$0.40 регрессия один раз` (на текущем 155-item каталоге) или `$4 / 1500-item / $40 / 15K-item` при росте.
+
+**Сценарий риска:** Redis FLUSHDB / replica-fail / persist failure → augment-mapping пуст → next refresh re-Vision'ит все 155 items. На текущем масштабе $0.40 — не критично, при росте до 15K items = $40/инцидент.
+
+**Решение (когда нужно):** при detection пустого vision-augment mapping AND non-empty `catalog_chunks` → попытаться восстановить description из существующих chunks. Augmented `pageContent` содержит секцию `Визуальный вид: ...` — парсим её regex'ом, восстанавливаем mapping без Vision call:
+
+```ts
+async reconcileFromChunks(): Promise<number> {
+    const chunks = await this.flowise.queryAllChunks(storeId);
+    const reconciled: Record<string, TAugmentMappingEntry> = {};
+    for (const chunk of chunks) {
+        const match = chunk.pageContent.match(/Визуальный вид: ([^\n]+)/);
+        if (!match) continue;
+        const externalId = chunk.metadata?.externalId;
+        if (!externalId) continue;
+        // imageHash recompute из текущих картинок (тот же хеш-функция)
+        const imageBytes = await this.downloadAllForExternalId(externalId);
+        const imageHash = computeImageHash(imageBytes);
+        reconciled[externalId] = {
+            imageHash,
+            visualDescription: match[1].trim(),
+            modelVersion: VISION_AUGMENT_MODEL_VERSION,
+        };
+    }
+    return await this.redis.hset(VISION_AUGMENT_REDIS_KEY, reconciled);
+}
+```
+
+**Security caveat:** при reconcile из chunks `externalId` валидируется через regex `[a-zA-Z0-9_-]+` (тот же что для docId в #66). Если в chunks попало мусорное значение (Flowise compromised) — не пишем в Redis.
+
+**Триггер:** после первого инцидента Redis data-loss / при росте каталога ×10 (когда $40/инцидент станет заметным).
+
+**Альтернатива:** `pg_dump` Redis (через AOF / RDB снапшоты) — стандартный disaster recovery. Без рекомпиляции мапы.
 
 ---
 
