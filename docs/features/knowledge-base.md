@@ -1,17 +1,21 @@
 # Knowledge Base — план разработки
 
 > **Автор:** Дмитрий Ляпин
-> **Дата:** 2026-04-22 (план), амендмент 2026-05-02 (приоритет пересмотрен)
-> **Статус:** 🟡 **ОТЛОЖЕНА** — черновик-roadmap, в активной работе НЕ находится. Реактивация — по появлению конкретного потребителя (см. ADR-006 амендмент 2026-05-02).
+> **Дата:** 2026-04-22 (план), амендмент 2026-05-02 (Phase 1 закрыта, Phase 2+ отложена)
+> **Статус:** 🟢 **Phase 1 (text-only MVP) закрыта** / 🟡 **Phase 2+ отложена** — фундамент готов (Prisma модель, миграции, KnowledgeService/Controller, синхронный text-ingestion, тесты). Дальнейшие фазы (video/audio/PDF адаптеры, Flowise upsert, retrieval) — реактивация по триггеру (см. ADR-006 амендмент 2026-05-02).
 > **Цель документа:** зафиксировать видение knowledge base как **core-capability slovo**, разбить на фазы, выделить открытые вопросы для ответа до старта кода.
 
 > ### ⚠️ Важный контекст (2026-05-02)
 >
-> Этот документ описывает **knowledge-base** — отложенную фичу. **Первой реализованной фичей slovo стала [vision-catalog-search](./vision-catalog-search.md)** (Phase 1 + Phase 2 закрыты 2 мая 2026), построенная **standalone**, БЕЗ knowledge-base слоя.
+> Этот документ изначально (2026-04-22) описывал knowledge-base как **первую и основную фичу slovo**. Состояние на 2 мая 2026:
 >
-> Vision-catalog использует Flowise Document Store напрямую через `apps/mcp-flowise` + `libs/flowise-client`. Таблицы `knowledge_sources` / `knowledge_chunks` из плана ниже **не созданы**, `libs/knowledge/` / `libs/ingest/` **не реализованы**.
+> **✅ Phase 1 закрыта** — `prisma/schema/knowledge-base.prisma`, миграции `20260423133427_add_knowledge_sources` + `20260423145407_add_knowledge_sources_check_constraints`, модуль `apps/api/src/modules/knowledge/` (Controller + Service + DTO + unit + e2e тесты), синхронный text-ingestion endpoint. Phase 1 PR4 hardening пройдено через ревью 4 агентов.
 >
-> Это не отменяет долгосрочное видение knowledge-base как core capability для polymorphic ingestion (видео + PDF + текст) — оно остаётся валидным для notes-rag, water-analysis и любой будущей domain-фичи с разнородными источниками. Подробности — в [ADR-006 амендмент 2026-05-02](../architecture/decisions/006-knowledge-base-as-first-feature.md#амендмент-2026-05-02--vision-catalog-как-фактическая-первая-фича).
+> **🟡 Phase 2+ отложены** — video/audio/PDF/YouTube/web адаптеры, RMQ worker для async ingestion, Flowise upsert pipeline, `knowledge_chunks` таблица (Flowise-managed, появится при первом upsert), retrieval API.
+>
+> **Параллельно реализована [vision-catalog-search](./vision-catalog-search.md)** (Phase 1 + Phase 2 закрыты 2 мая 2026) — фактически первая полностью закрытая product-фича slovo. Построена **standalone**, без использования knowledge-модуля. Использует Flowise Document Store напрямую через `apps/mcp-flowise` + `libs/flowise-client`. Это сосуществующие пайплайны, не «vision-catalog поверх knowledge-base».
+>
+> Долгосрочное видение knowledge-base как core capability для polymorphic ingestion (видео + PDF + текст) остаётся валидным — оно вернётся в работу при появлении потребителя video/PDF-источников. Подробности — в [ADR-006 амендмент 2026-05-02](../architecture/decisions/006-knowledge-base-as-first-feature.md#амендмент-2026-05-02--vision-catalog-как-фактическая-первая-закрытая-фича).
 
 ---
 

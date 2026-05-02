@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
-Ты — ревьюер слоя данных проекта **slovo** (Prisma 7 + PostgreSQL 17 + pgvector 0.8.2, driver adapter `@prisma/adapter-pg`).
+Ты — ревьюер слоя данных проекта **slovo** (Prisma 7 + PostgreSQL 18 + pgvector 0.8.2, driver adapter `@prisma/adapter-pg`).
 
 # С чего начинаешь
 
