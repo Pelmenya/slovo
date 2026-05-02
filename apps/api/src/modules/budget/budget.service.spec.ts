@@ -10,6 +10,7 @@ type TRedisMock = {
     incrbyfloat: jest.Mock;
     expire: jest.Mock;
     quit: jest.Mock;
+    set: jest.Mock;
 };
 
 type TConfigMock = { get: jest.Mock };
@@ -25,11 +26,15 @@ describe('BudgetService', () => {
             incrbyfloat: jest.fn().mockResolvedValue('0'),
             expire: jest.fn().mockResolvedValue(1),
             quit: jest.fn().mockResolvedValue('OK'),
+            set: jest.fn().mockResolvedValue('OK'),
         };
         config = {
             get: jest.fn((key: string) => {
                 if (key === 'VISION_BUDGET_DAILY_USD') return 5;
                 if (key === 'EMBEDDING_BUDGET_DAILY_USD') return 1;
+                if (key === 'TELEGRAM_ALERTS_ENABLED') return false;
+                if (key === 'TELEGRAM_BOT_TOKEN') return '';
+                if (key === 'TELEGRAM_ALERT_CHAT_IDS') return '';
                 return undefined;
             }),
         };
@@ -171,6 +176,236 @@ describe('BudgetService', () => {
 
             await expect(service.onModuleDestroy()).resolves.toBeUndefined();
             expect(warnSpy).toHaveBeenCalled();
+            warnSpy.mockRestore();
+        });
+    });
+
+    describe('Telegram alert на budget-cap exhaustion (#36)', () => {
+        let fetchMock: jest.SpyInstance;
+
+        beforeEach(() => {
+            // Mock global fetch — Telegram API HTTP call.
+            fetchMock = jest
+                .spyOn(globalThis, 'fetch')
+                .mockResolvedValue(
+                    new Response('{"ok":true}', {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    }),
+                );
+        });
+
+        afterEach(() => {
+            fetchMock.mockRestore();
+        });
+
+        function configureAlertsEnabled(): void {
+            config.get.mockImplementation((key: string) => {
+                if (key === 'VISION_BUDGET_DAILY_USD') return 5;
+                if (key === 'EMBEDDING_BUDGET_DAILY_USD') return 1;
+                if (key === 'TELEGRAM_ALERTS_ENABLED') return true;
+                if (key === 'TELEGRAM_BOT_TOKEN') return 'test-bot-token';
+                if (key === 'TELEGRAM_ALERT_CHAT_IDS') return '111__222__333';
+                return undefined;
+            });
+        }
+
+        // Helper для дожидания fire-and-forget void promise — sleep одного
+        // event-loop tick'а через `await Promise.resolve()` достаточно для
+        // микро-task'ов (наш notifyExhausted использует только awaits, не
+        // setTimeout).
+        async function flushMicrotasks(): Promise<void> {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+
+        it('budget OK → Telegram не дёргается', async () => {
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('2.5'); // под cap
+
+            await service.assertVisionBudget();
+
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(redis.set).not.toHaveBeenCalled();
+        });
+
+        it('budget exceeded → SET NX flag + Telegram POST для каждого chat_id', async () => {
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('5.5');
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            // SET NX с alerted-key, EX 90000
+            expect(redis.set).toHaveBeenCalledWith(
+                expect.stringMatching(/^slovo:budget:alerted:vision:\d{8}$/),
+                '1',
+                'EX',
+                90000,
+                'NX',
+            );
+
+            // Telegram fetch для всех 3 chat_id
+            expect(fetchMock).toHaveBeenCalledTimes(3);
+            const calls = fetchMock.mock.calls;
+            expect(calls[0][0]).toBe('https://api.telegram.org/bottest-bot-token/sendMessage');
+            const body = JSON.parse(calls[0][1].body as string) as Record<string, unknown>;
+            expect(['111', '222', '333']).toContain(body.chat_id);
+            expect(body.parse_mode).toBe('HTML');
+            expect(body.text).toContain('budget exceeded');
+            expect(body.text).toContain('Claude Vision');
+            expect(body.text).toContain('$5.5');
+        });
+
+        it('SET NX вернул null (уже алертили) → Telegram не дёргается', async () => {
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('5.5');
+            redis.set.mockResolvedValueOnce(null); // flag уже стоит
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(redis.set).toHaveBeenCalled();
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it('TELEGRAM_ALERTS_ENABLED=false → 503 бросается, fetch не вызывается', async () => {
+            // Default config из beforeEach уже имеет ALERTS_ENABLED=false
+            redis.get.mockResolvedValueOnce('5.5');
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(redis.set).not.toHaveBeenCalled();
+        });
+
+        it('TOKEN пустой → fetch не вызывается даже при ENABLED=true', async () => {
+            config.get.mockImplementation((key: string) => {
+                if (key === 'VISION_BUDGET_DAILY_USD') return 5;
+                if (key === 'TELEGRAM_ALERTS_ENABLED') return true;
+                if (key === 'TELEGRAM_BOT_TOKEN') return ''; // пустой
+                if (key === 'TELEGRAM_ALERT_CHAT_IDS') return '111';
+                return undefined;
+            });
+            redis.get.mockResolvedValueOnce('5.5');
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it('CHAT_IDS пустой → fetch не вызывается', async () => {
+            config.get.mockImplementation((key: string) => {
+                if (key === 'VISION_BUDGET_DAILY_USD') return 5;
+                if (key === 'TELEGRAM_ALERTS_ENABLED') return true;
+                if (key === 'TELEGRAM_BOT_TOKEN') return 'token';
+                if (key === 'TELEGRAM_ALERT_CHAT_IDS') return ''; // пустой
+                return undefined;
+            });
+            redis.get.mockResolvedValueOnce('5.5');
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(fetchMock).not.toHaveBeenCalled();
+        });
+
+        it('fetch упал network error → 503 всё равно бросается, ошибка логируется', async () => {
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('5.5');
+            fetchMock.mockRejectedValue(new Error('ETIMEDOUT'));
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Telegram alert network error'),
+            );
+            warnSpy.mockRestore();
+        });
+
+        it('Telegram вернул не-200 → warn, не throw', async () => {
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('5.5');
+            fetchMock.mockResolvedValue(
+                new Response('{"ok":false,"error":"forbidden"}', { status: 403 }),
+            );
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining('Telegram alert HTTP 403'),
+            );
+            warnSpy.mockRestore();
+        });
+
+        it('embedding category — message содержит "OpenAI Embeddings"', async () => {
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('1.5');
+
+            await expect(service.assertEmbeddingBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
+                string,
+                unknown
+            >;
+            expect(body.text).toContain('OpenAI Embeddings');
+        });
+
+        it('chat_ids с пробелами и пустыми элементами — фильтруются', async () => {
+            config.get.mockImplementation((key: string) => {
+                if (key === 'VISION_BUDGET_DAILY_USD') return 5;
+                if (key === 'TELEGRAM_ALERTS_ENABLED') return true;
+                if (key === 'TELEGRAM_BOT_TOKEN') return 'token';
+                if (key === 'TELEGRAM_ALERT_CHAT_IDS') return '111__  __222__';
+                return undefined;
+            });
+            redis.get.mockResolvedValueOnce('5.5');
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            // 111 и 222 — fetch только для них
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+        });
+
+        it('redis.set throws → notifyExhausted swallow + 503 throws', async () => {
+            const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+            configureAlertsEnabled();
+            redis.get.mockResolvedValueOnce('5.5');
+            redis.set.mockRejectedValueOnce(new Error('Redis OOM'));
+
+            await expect(service.assertVisionBudget()).rejects.toBeInstanceOf(
+                ServiceUnavailableException,
+            );
+            await flushMicrotasks();
+
+            expect(warnSpy).toHaveBeenCalledWith(
+                expect.stringContaining('notifyExhausted failed'),
+            );
             warnSpy.mockRestore();
         });
     });

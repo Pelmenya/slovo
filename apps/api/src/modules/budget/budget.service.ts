@@ -9,11 +9,16 @@ import { ConfigService } from '@nestjs/config';
 import { sanitizeError, type TAppEnv } from '@slovo/common';
 import type Redis from 'ioredis';
 import {
+    BUDGET_ALERT_FLAG_TTL_SEC,
+    BUDGET_ALERT_KEY_INFIX,
     BUDGET_KEY_PREFIX,
     BUDGET_KEY_TTL_SEC,
     BUDGET_REDIS_TOKEN,
     EMBEDDING_AVG_CHARS_PER_TOKEN,
     EMBEDDING_COST_PER_1M_TOKENS_USD,
+    TELEGRAM_API_BASE,
+    TELEGRAM_CHAT_IDS_SEPARATOR,
+    TELEGRAM_REQUEST_TIMEOUT_MS,
 } from './budget.constants';
 
 // =============================================================================
@@ -94,12 +99,93 @@ export class BudgetService implements OnModuleDestroy {
             return;
         }
         if (spent >= dailyCapUsd) {
+            // Fire-and-forget Telegram alert (race-safe через SET NX).
+            // Не await — клиент получает 503 быстро, alert отправляется
+            // параллельно. Ошибки доставки только лог-warn'ятся.
+            void this.notifyExhausted(category, spent, dailyCapUsd);
             throw new ServiceUnavailableException({
                 message: `Daily ${category} budget exceeded`,
                 spent_usd: round4(spent),
                 budget_usd: dailyCapUsd,
                 resets_at: nextUtcMidnightIso(),
             });
+        }
+    }
+
+    // Telegram alert при первом превышении budget-cap в день.
+    // Race-safe: SET NX гарантирует ровно один success среди параллельных
+    // call'ов assertBudget. Все no-op-условия (alerts disabled, нет токена,
+    // нет chat_ids, alert уже был сегодня) — silent return без побочек.
+    private async notifyExhausted(
+        category: TBudgetCategory,
+        spent: number,
+        dailyCapUsd: number,
+    ): Promise<void> {
+        try {
+            const enabled = this.config.get('TELEGRAM_ALERTS_ENABLED', { infer: true });
+            if (!enabled) return;
+
+            const token = this.config.get('TELEGRAM_BOT_TOKEN', { infer: true });
+            const chatIdsRaw = this.config.get('TELEGRAM_ALERT_CHAT_IDS', { infer: true });
+            if (!token || !chatIdsRaw) return;
+
+            const chatIds = chatIdsRaw
+                .split(TELEGRAM_CHAT_IDS_SEPARATOR)
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0);
+            if (chatIds.length === 0) return;
+
+            // SET NX: только первый caller среди параллельных assertBudget
+            // call'ов получит OK. Остальные — null, no-op.
+            const flagKey = `${BUDGET_KEY_PREFIX}:${BUDGET_ALERT_KEY_INFIX}:${category}:${todayUtcKey()}`;
+            const acquired = await this.redis.set(
+                flagKey,
+                '1',
+                'EX',
+                BUDGET_ALERT_FLAG_TTL_SEC,
+                'NX',
+            );
+            if (acquired !== 'OK') return;
+
+            const text = formatAlertText(category, spent, dailyCapUsd);
+            await Promise.allSettled(
+                chatIds.map((chatId) => this.sendTelegram(token, chatId, text)),
+            );
+        } catch (error) {
+            // Любая неожиданная ошибка (config, Redis SET, etc.) — не валит
+            // основной flow. assertBudget уже бросил 503 callerу, alert это
+            // observability, не критичный путь.
+            this.logger.warn(`notifyExhausted failed: ${sanitizeError(error)}`);
+        }
+    }
+
+    private async sendTelegram(token: string, chatId: string, text: string): Promise<void> {
+        const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), TELEGRAM_REQUEST_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: chatId,
+                    text,
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true,
+                }),
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                this.logger.warn(
+                    `Telegram alert HTTP ${response.status} chat=${chatId}`,
+                );
+            }
+        } catch (error) {
+            this.logger.warn(
+                `Telegram alert network error chat=${chatId}: ${sanitizeError(error)}`,
+            );
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
@@ -139,4 +225,21 @@ function nextUtcMidnightIso(): string {
 
 function round4(value: number): number {
     return Math.round(value * 10000) / 10000;
+}
+
+function formatAlertText(category: TBudgetCategory, spent: number, dailyCapUsd: number): string {
+    const categoryLabel = category === 'vision' ? 'Claude Vision' : 'OpenAI Embeddings';
+    const overshoot = spent - dailyCapUsd;
+    const overshootPercent = ((overshoot / dailyCapUsd) * 100).toFixed(0);
+    return [
+        `<b>⚠️ slovo budget exceeded</b>`,
+        ``,
+        `<b>Category:</b> ${categoryLabel}`,
+        `<b>Spent:</b> $${round4(spent)} (cap $${dailyCapUsd}, +${overshootPercent}%)`,
+        `<b>Resets:</b> ${nextUtcMidnightIso()}`,
+        ``,
+        `Endpoint возвращает 503 анонимам. Проверь причину:`,
+        `1. Реальный рост traffic'а на prostor-app → расширь cap`,
+        `2. Abuse / botnet → проверь throttle и логи (per-IP throttle)`,
+    ].join('\n');
 }

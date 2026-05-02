@@ -96,6 +96,16 @@ export const envSchema = z
         // масштаба — cap для симметрии и future-proofing).
         VISION_BUDGET_DAILY_USD: z.coerce.number().positive().default(5),
         EMBEDDING_BUDGET_DAILY_USD: z.coerce.number().positive().default(1),
+
+        // Telegram alerts (#36) — уведомление админу при первом превышении
+        // budget-cap в день. Дев-бот общий с CRM (AquaphorBot_bot), prod-бот
+        // отдельный (см. CLAUDE.md). Без креденшелов фича отключена тихо
+        // (BudgetService.notifyExhausted no-op'ит).
+        TELEGRAM_BOT_TOKEN: z.string().optional().default(''),
+        // Список Telegram user_id через `__`. Пустой = алерты отправлять некому.
+        TELEGRAM_ALERT_CHAT_IDS: z.string().optional().default(''),
+        // Master switch — false для dev (тесты не спамят), true для prod.
+        TELEGRAM_ALERTS_ENABLED: booleanFromString.default(false),
     })
     .superRefine((env, ctx) => {
         if (env.NODE_ENV !== 'production') {

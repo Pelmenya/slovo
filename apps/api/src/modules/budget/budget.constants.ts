@@ -26,3 +26,22 @@ export const VISION_COST_PER_IMAGE_USD = 0.007;
 // count приближаем как `query.length / 4` (avg chars-per-token для en/ru).
 export const EMBEDDING_COST_PER_1M_TOKENS_USD = 0.02;
 export const EMBEDDING_AVG_CHARS_PER_TOKEN = 4;
+
+// =============================================================================
+// Telegram alert (#36) — уведомление админу при первом превышении budget-cap
+// в день. Race-safe через SET NX: только один процесс среди параллельных
+// assertXxxBudget()-вызовов отправит алерт.
+// =============================================================================
+
+// Redis key для idempotency: `slovo:budget:alerted:{category}:{YYYYMMDD}`.
+// TTL 25h — гарантированно перекрывает UTC-день для всех таймзон.
+export const BUDGET_ALERT_FLAG_TTL_SEC = 90000;
+export const BUDGET_ALERT_KEY_INFIX = 'alerted';
+
+// Telegram Bot API. Без API-key fallback / без retries — fire-and-forget,
+// сетевая ошибка только лог-warn'ится.
+export const TELEGRAM_API_BASE = 'https://api.telegram.org';
+export const TELEGRAM_REQUEST_TIMEOUT_MS = 5000;
+
+// Разделитель множественных chat_ids в env (как в CRM-проекте `__`).
+export const TELEGRAM_CHAT_IDS_SEPARATOR = '__';
