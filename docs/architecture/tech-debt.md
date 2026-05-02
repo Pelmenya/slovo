@@ -672,6 +672,81 @@ if (mappingWasPopulated && skipRate < 0.5) {
 
 **Risk если не сделать:** клиенты видят неактуальные данные (изменения в CRM до 4ч) — UX-проблема, не безопасность. Можно жить с cron'ом первую неделю в prod, потом выкатить webhook когда соберём метрики реальной частоты обновлений каталога.
 
+### 38. Vision augmentation на ingest — обогащение `contentForEmbedding` визуальным описанием
+
+**Контекст (ревизия 2026-05-02):** текущий `/catalog/search/image` pipeline:
+```
+Клиент шлёт фото → Vision text → embedding → match against contentForEmbedding (CRM-описание)
+```
+**Проблема:** `contentForEmbedding` описывает товар **функционально** (характеристики, услуги, картриджи), не **визуально** (форма, цвет, корпус). Vision клиентского фото возвращает «синий цилиндрический корпус с двумя картриджами» — этих слов нет в CRM-описании. Embeddings в разных частях семантического пространства.
+
+**Решение:** на catalog-refresh для каждого товара с `imageUrls` дёргаем Claude Vision → получаем визуальное описание → дописываем в `contentForEmbedding` как новую секцию.
+
+```
+contentForEmbedding после augmentation:
+  Название: ...
+  Описание: ...
+  ...
+  [существующие секции от feeder'а]
+  ...
+  Визуальный вид: синий цилиндрический корпус, под мойку, две картриджные чаши с прозрачными колбами
+```
+
+**Cost (актуальные данные 2026-05-02 на 155-item каталоге):**
+- 155 items × $0.007 multi-image Vision (до 5 фото в одном call) = **$1.09 ≈ 87 ₽** один раз для всего каталога
+- На refresh — только товары с изменёнными фото (см. #39 hash-cache) → копейки/мес
+- Реалистичный refresh: 5-10 товаров с changed photo/мес × $0.007 = $0.07/мес ≈ 5,6 ₽/мес
+
+**Где реализовать:**
+- В `apps/worker/catalog-refresh.service.ts:upsertItem` — перед сборкой `contentForEmbedding` дёрнуть Vision (если есть imageUrls) → обогатить text перед передачей в Flowise upsert
+- Альтернатива: в feeder `crm-aqua-kinetics-back` на сборке `latest.json` — но тогда feeder нужен Anthropic SDK и cost-cap. **Лучше в slovo** — единый бюджет-cap, единая observability.
+
+**Важно: услуги/компоненты УЖЕ агрегируются feeder'ом ✅** (проверено 2026-05-02 на live payload — все relatedServices/Components присутствуют в `contentForEmbedding`). Augmentation добавляет **только** визуальный слой, не дублирует услуги.
+
+**Триггер:** Phase 2 enhancement, после первой недели real traffic'а — замерить baseline image-search точность, потом A/B на augmented vs non-augmented chunks.
+
+### 39. Image-hash cache для Vision augmentation (RecordManager-style)
+
+**Контекст:** при включении #38 — каждый catalog-refresh (cron 4ч + webhook) будет дёргать Vision на каждом товаре, даже если фото не менялись. Это $1/refresh × 6 cron/день = $6/день = ~14 400 ₽/мес впустую.
+
+**Решение:** аналог нашего PR9.5 RecordManager pattern, но для image content:
+- Redis HASH `slovo:catalog:vision-augment:<externalId>` → `{ imageHash, visualDescription }`
+- `imageHash = sha256(concat(sorted(imageUrls.map(getImageBytes))))` — стабильный hash от content всех фото
+- На refresh: вычислить новый imageHash → если совпал → reuse visualDescription из mapping (skip Vision call); не совпал → re-Vision → update mapping
+- REMOVED-sweep как в PR9.5: товар удалён → HDEL запись
+
+**Cost после оптимизации:**
+- Стабильный каталог (фото не меняются): ~5-10 товаров с new photo/мес × $0.007 = $0.07/мес ≈ 5,6 ₽/мес
+- Reload всего каталога (например, ребрендинг — все фото поменяли): worst case 155 × $0.007 = $1.09 = 87 ₽ один раз
+
+**Стоимость реализации:** ~80 LOC (helper `computeImageHash` + Redis HASH ops + integration в `upsertItem`) + 8-10 spec'ов (hit/miss/REMOVED-sweep/corrupt entry).
+
+**Зависит от:** #38 (без augmentation cache не нужен).
+
+### 40. Hybrid search ts_vector + embeddings — отложить
+
+**Контекст:** ts_vector PostgreSQL работает на точные совпадения (артикулы, бренды, фиксированные категории) бесплатно и быстро (~10-50ms на 155 items). Embeddings ловят семантику и описательные запросы. Production RAG-pattern — RRF (Reciprocal Rank Fusion) или взвешенный ансамбль.
+
+**Зачем теоретически:**
+- Запрос с артикулом «B520 PRO» — ts_vector точное совпадение, не нужно embedding round-trip ($0)
+- Семантический запрос «фильтр от ржавой воды» — embeddings найдут обезжелезиватель
+
+**Зачем не делаем сейчас:**
+- При 155 items + ~$0.0000004/text-search = микро-копейки. ts_vector не даст экономии.
+- ~150-200 LOC + миграция Prisma (GIN index на `to_tsvector`) + RRF логика на slovo стороне → сложность не оправдана для малого каталога.
+- Без real query log за неделю в prod не знаем какая доля запросов «точная» (ts_vector хватит) vs «семантическая» (нужны embeddings).
+
+**Триггер:** одно из двух:
+1. Каталог вырастет ×10+ (1500+ items) И запросов станет 1000+/день → экономия на ts_vector становится заметной
+2. Real query log покажет что embeddings промахивают на запросах с артикулами/брендами (точные совпадения), что критично для UX
+
+**Подход когда пойдёт в работу:**
+- Prisma migration: `ALTER TABLE catalog_chunks ADD COLUMN content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('russian', page_content)) STORED; CREATE INDEX catalog_chunks_tsv_idx ON catalog_chunks USING GIN (content_tsv);`
+- В `text.service.ts` параллельно: text query → embedding pgvector search + ts_vector ранжирование → RRF fusion top-K
+- A/B test на real query log первой недели
+
+**Альтернатива:** trigram similarity (`pg_trgm` extension) для fuzzy match на артикулы. Дешевле ts_vector, ловит опечатки.
+
 ---
 
 ## До первого prod-деплоя миграций
