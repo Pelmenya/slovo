@@ -421,7 +421,7 @@ apps/mcp-flowise/
     │   └── errors.ts                  # FlowiseError + formatErrorForMcp
     └── tools/
         ├── _helpers.ts                # withErrorHandling + общие маперы
-        ├── index.ts                   # реестр 54 tools (satisfies TToolDefinition<TIn, TOut>)
+        ├── index.ts                   # реестр 66 tools (satisfies TToolDefinition<TIn, TOut>)
         ├── t-tool.ts                  # типы TToolResult, TToolDefinition
         ├── ping.ts
         ├── credentials.ts             # 5 tools
@@ -453,7 +453,7 @@ npm test -- apps/mcp-flowise
 npm test
 ```
 
-Покрытие — 100% tools имеют unit-тесты (mock fetch + happy + 4xx/5xx error cases). Все 54 tools покрыты.
+Покрытие — 100% tools имеют unit-тесты (mock fetch + happy + 4xx/5xx error cases). Все 66 tools покрыты.
 
 ### Линтер
 
@@ -511,7 +511,7 @@ npm run build             # → dist/
 - **MINOR** — новый tool / новое поле в схеме / non-breaking фикс
 - **PATCH** — bug fix, документация, refactor
 
-Текущая версия — `0.1.0` (после расширения до 54 tools, готовность к extract).
+Текущая версия — `0.1.0` (после расширения до 66 tools, готовность к extract).
 
 ## Лицензия
 

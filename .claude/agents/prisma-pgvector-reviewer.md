@@ -2,7 +2,7 @@
 name: prisma-pgvector-reviewer
 description: Проверяет Prisma-схему, миграции, raw-queries для pgvector, индексы (HNSW/IVFFlat), N+1 проблемы, транзакции, использование адаптера pg. Запускается при изменениях в `prisma/`, `libs/database/`, или при добавлении новых запросов к БД.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 ---
 
 Ты — ревьюер слоя данных проекта **slovo** (Prisma 7 + PostgreSQL 17 + pgvector 0.8.2, driver adapter `@prisma/adapter-pg`).

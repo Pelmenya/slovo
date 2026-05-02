@@ -1,19 +1,29 @@
 # Knowledge Base — план разработки
 
 > **Автор:** Дмитрий Ляпин
-> **Дата:** 2026-04-22
-> **Статус:** Черновик, готов к обсуждению
+> **Дата:** 2026-04-22 (план), амендмент 2026-05-02 (приоритет пересмотрен)
+> **Статус:** 🟡 **ОТЛОЖЕНА** — черновик-roadmap, в активной работе НЕ находится. Реактивация — по появлению конкретного потребителя (см. ADR-006 амендмент 2026-05-02).
 > **Цель документа:** зафиксировать видение knowledge base как **core-capability slovo**, разбить на фазы, выделить открытые вопросы для ответа до старта кода.
+
+> ### ⚠️ Важный контекст (2026-05-02)
+>
+> Этот документ описывает **knowledge-base** — отложенную фичу. **Первой реализованной фичей slovo стала [vision-catalog-search](./vision-catalog-search.md)** (Phase 1 + Phase 2 закрыты 2 мая 2026), построенная **standalone**, БЕЗ knowledge-base слоя.
+>
+> Vision-catalog использует Flowise Document Store напрямую через `apps/mcp-flowise` + `libs/flowise-client`. Таблицы `knowledge_sources` / `knowledge_chunks` из плана ниже **не созданы**, `libs/knowledge/` / `libs/ingest/` **не реализованы**.
+>
+> Это не отменяет долгосрочное видение knowledge-base как core capability для polymorphic ingestion (видео + PDF + текст) — оно остаётся валидным для notes-rag, water-analysis и любой будущей domain-фичи с разнородными источниками. Подробности — в [ADR-006 амендмент 2026-05-02](../architecture/decisions/006-knowledge-base-as-first-feature.md#амендмент-2026-05-02--vision-catalog-как-фактическая-первая-фича).
 
 ---
 
 ## 1. Что мы строим (одной фразой)
 
-**Knowledge Base — первая и основная фича slovo.** Пользователь грузит сюда свои источники (видео-вебинары, заметки, методички), задаёт по ним вопросы, получает ответы с цитатами. Аналог NotebookLM, но self-hosted + API-first.
+**Knowledge Base — изначально планировалась как первая и основная фича slovo.** Пользователь грузит сюда свои источники (видео-вебинары, заметки, методички), задаёт по ним вопросы, получает ответы с цитатами. Аналог NotebookLM, но self-hosted + API-first.
 
-**Одновременно это и core capability платформы.** Те же самые ingestion + chunking + embeddings + retrieval будут reuse'иться всеми будущими domain-фичами (seo-generator, water-analysis) — они станут тонкими обёртками, которые подмешивают retrieval к своему промпту.
+**Одновременно core capability платформы.** Те же самые ingestion + chunking + embeddings + retrieval будут reuse'иться всеми будущими domain-фичами (notes-rag, water-analysis) — они станут тонкими обёртками, которые подмешивают retrieval к своему промпту.
 
 Два назначения — один слой. "Feature + platform" в одном лице, как Firebase Auth.
+
+> **2026-05-02:** позиционирование «первая фича» снято — приоритет получил vision-catalog. «Core capability для polymorphic ingestion» — сохраняется как долгосрочное видение.
 
 ---
 

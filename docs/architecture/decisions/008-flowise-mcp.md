@@ -104,21 +104,21 @@
 ### Отрицательные
 
 - **Maintenance load.** При апгрейде Flowise (3.1 → 3.2) нужно проверять REST-совместимость (~1 час раз в месяц). Mitigated CI smoke-тестами против реального dev-инстанса (см. tech-debt).
-- **На старте не покрывал 100% Flowise REST.** В MVP-коммите (`dfd14bf`) было 4 tools. Расширили до 54 в коммите `ba3b555` (см. amendment ниже).
+- **На старте не покрывал 100% Flowise REST.** В MVP-коммите (`dfd14bf`) было 4 tools. Расширили до 54 в коммите `ba3b555`, далее до 66 (см. amendment ниже).
 
-## 2026-04-30 — амендмент: scope расширен до 54 tools, цель — npm/Smithery publish
+## 2026-04-30 — амендмент: scope расширен до 66 tools, цель — npm/Smithery publish
 
-В коммите `ba3b555` пересмотрен scope: **полное зеркало Flowise REST API** (54 tools — Document Stores 22, Chatflows 6, Nodes 2, Predictions 1, Credentials 5, Variables 4, Custom Tools 5, Assistants 5, chatmessage_list, upsert_history_list, ping, и т.д.). Решение мотивировано:
+В коммите `ba3b555` пересмотрен scope: **полное зеркало Flowise REST API** (стартово 54 tools, далее расширено до **66** — Document Stores 22, Chatflows 6, Nodes discovery 2, Predictions 1, Vector 1, Credentials 5, Variables 4, Custom Tools 5, Assistants 5, Composite helpers 3, DX helpers 3, Misc 4 — chatmessage_list/abort/delete_all, upsert_history_list/patch_delete, ping, attachments_create). Решение мотивировано:
 
-1. **REST-обёртка — копипаст по schema, не "speculative architecture".** Все 54 endpoint'а реальны, payload-формы взяты из исходника Flowise (`dist/services/<feature>/`). Стоимость удаления неиспользуемого позже = `git rm`. Стоимость написать на месте = +30 LOC × N контекст-переключений.
+1. **REST-обёртка — копипаст по schema, не "speculative architecture".** Все 66 endpoint'ов реальны, payload-формы взяты из исходника Flowise (`dist/services/<feature>/`). Стоимость удаления неиспользуемого позже = `git rm`. Стоимость написать на месте = +30 LOC × N контекст-переключений.
 2. **Phase 1 (PR6) и Phase 2 (chatflow autogen) используют разные subsets.** PR6: `prediction_run` (uploads), `docstore_upsert`, `docstore_refresh`. Phase 2: `chatflow_create`, `chatflow_update`, `nodes_list`, `nodes_get`. Делать по требованию = три захода по 1-2 вечера каждый, против один заход.
 3. **Готовность к extract в `Pelmenya/mcp-flowise` + публикацию в npm/Smithery** — теперь это реальная цель, не «когда-нибудь».
 
-**Текущее состояние (после `ba3b555` + follow-up):**
+**Текущее состояние (после `ba3b555` + follow-up'ов до 2026-05-02):**
 
 - `apps/mcp-flowise/` — изолированный package: own `package.json` (publish-ready: `description`, `keywords`, `bin`, `main: dist/index.js`, `repository`, `homepage`, `license: MIT`, `prepublishOnly`), `tsconfig.build.json` (declarations + source maps + outDir `dist/`), `LICENSE` (MIT, Copyright 2026 Dmitry Lyapin).
-- 54 tools в стиле `mcp-moysklad`: zod schema + handler + унифицированный `TToolResult<T>`. Все типы `T<Resource><Action>{Input,Data}` экспортируются — consumers могут импортировать строго.
-- TypeScript clean (`npx tsc --noEmit` + `npm run build` в `apps/mcp-flowise/`), ESLint clean. Live smoke через MCP подтвердил все 54 tools на slovo Flowise dev-инстансе.
+- **66 tools** в стиле `mcp-moysklad`: zod schema + handler + унифицированный `TToolResult<T>`. Все типы `T<Resource><Action>{Input,Data}` экспортируются — consumers могут импортировать строго.
+- TypeScript clean (`npx tsc --noEmit` + `npm run build` в `apps/mcp-flowise/`), ESLint clean. Live smoke через MCP подтвердил все 66 tools на slovo Flowise dev-инстансе.
 
 **План extract в три пакета — `Pelmenya/flowise-client` (foundation) + `Pelmenya/mcp-flowise` (transport) + `Pelmenya/flowise-flowdata` (chatflow domain):**
 

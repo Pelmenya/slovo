@@ -1,7 +1,7 @@
 {
     "name": "@slovo/mcp-flowise",
     "version": "0.1.0",
-    "description": "MCP-сервер для управления Flowise REST API из Claude Code и любого другого MCP-клиента. 54 tools: Document Stores, Chatflows, Nodes, Predictions, Credentials, Variables, Custom Tools, Assistants.",
+    "description": "MCP-сервер для управления Flowise REST API из Claude Code и любого другого MCP-клиента. 66 tools: Document Stores, Chatflows, Nodes discovery, Predictions, Vector, Credentials, Variables, Custom Tools, Assistants, Composite helpers, DX helpers.",
     "keywords": [
         "mcp",
         "model-context-protocol",

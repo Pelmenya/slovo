@@ -2,6 +2,7 @@
 
 ## Статус
 ✅ Принято — 2026-04-23 (финализировано после экспериментов A, B, C в Flowise 3.1.2 + чтения исходника)
+🟡 **Амендмент 2026-05-02 — приоритет пересмотрен:** knowledge-base отложена. См. секцию «Амендмент 2026-05-02 — vision-catalog как фактическая первая фича» внизу ADR.
 
 ## Контекст
 
@@ -176,3 +177,47 @@ async deleteSource(sourceId: string) {
 - Если после Phase 1 retrieval recall на русском < 70% → пересмотреть выбор embedder.
 - Если Groq Whisper не выдерживает объём на Phase 2 → переключиться на OpenAI Whisper или self-hosted.
 - Если domain-фича в Phase 3 покажет что нужен hybrid search (vector + BM25) → добавить в knowledge base, обновить retriever.
+
+---
+
+## Амендмент 2026-05-02 — vision-catalog как фактическая первая фича
+
+**Что произошло между 2026-04-23 и 2026-05-02:**
+
+Knowledge-base **не стартовала**. Вместо неё за 9 дней реализована и закрыта в продакшен `vision-catalog-search` (Phase 1 + Phase 2):
+
+- `POST /catalog/search` — universal endpoint (text / до 5 фото / комбо)
+- Catalog ingest pipeline через MinIO bucket → Flowise Document Store с RecordManager skip-if-unchanged
+- Vision augmentation на ingest (Phase 2): 155 товаров обогащены AI-описанием через Haiku 4.5
+- Pre-launch hardening (per-IP/IPv6-/64 throttle, SHA256 image-cache, budget cap + Telegram alert)
+- 591 unit-тест, фактический billing $0.49 ≈ 39 ₽ за всю разработку
+
+**Архитектурное последствие:** vision-catalog построен **standalone**, БЕЗ слоя `libs/knowledge/` / `libs/ingest/`. Использует Flowise Document Store напрямую через `apps/mcp-flowise` + `libs/flowise-client`. Таблицы `knowledge_sources` / `knowledge_chunks` **не созданы** (Prisma модель из секции «Дизайн таблиц» этого ADR — не материализована).
+
+**Почему так получилось:**
+
+1. **Бизнес-приоритет.** У разработчика появился реальный заказчик (Aquaphor Pro CRM + клиентский фронт `prostor-app`) с нуждой в каталог-поиске. Knowledge-base как первая фича — продуктово оправдана как платформа, но без конкретного потребителя сначала.
+2. **Vision-catalog не нуждается в polymorphic ingestion.** Источник один (MinIO bucket с CSV из CRM), формат фиксированный, обновление по cron. Полный slate `TSourceAdapter` + chunking + retrieval-абстракции — overkill.
+3. **Flowise Document Store + Vision augmenter** покрывает retrieval для catalog-кейса нативно. Прямое использование `flowise_docstore_query` через MCP оказалось проще чем строить knowledge-base слой как промежуточный.
+
+**Что это значит для ADR-006:**
+
+- **Решение «knowledge-base = core capability»** остаётся валидным как **долгосрочное** видение. Для notes-rag, water-analysis и любой будущей domain-фичи с polymorphic ingestion (видео + PDF + текст) этот слой будет оправдан.
+- **Решение «knowledge-base = первая фича»** — **устарело по факту**. Первая фича — vision-catalog (Phase 1+2 закрыты 2 мая 2026). Knowledge-base сдвигается в Phase 3+ или позже.
+- **Дизайн таблиц (две таблицы, Flowise-managed `knowledge_chunks`)** — остаётся актуальным как guidance для будущей реализации. Подтверждён работающим на vision-catalog (Document Store работает по этой схеме под капотом).
+
+**Roadmap пересмотр:**
+
+Knowledge-base реактивируется когда появится конкретный потребитель:
+- запрос на Q&A по экспертным вебинарам / методичкам,
+- запрос на water-analysis с retrieval из лабораторных guidelines,
+- внешний клиент slovo как платформы со своими источниками.
+
+Пока этого нет — `docs/features/knowledge-base.md` остаётся черновиком-roadmap'ом, не задачей в работе.
+
+**Связанные документы:**
+
+- `docs/features/vision-catalog-search.md` — реализованная фича
+- `docs/features/knowledge-base.md` — отложенный план (статус обновлён 2026-05-02)
+- `docs/architecture/decisions/007-catalog-ingest-via-minio.md` — ingest contract который заменил knowledge-base ingestion для catalog-кейса
+- `docs/architecture/decisions/008-flowise-mcp.md` — инфраструктура которая позволила обойтись без knowledge-base слоя
