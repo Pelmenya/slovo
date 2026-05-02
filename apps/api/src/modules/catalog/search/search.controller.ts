@@ -23,10 +23,11 @@ import { CatalogSearchService } from './search.service';
 // (PR8). Один контракт для фронта, три режима внутри (text-only / image-only
 // / combined). См. search.service.ts для логики orchestration.
 //
-// Throttle 5/min/IP — conservative cap: даже при text-only режиме (cheap)
-// ставим vision-rate, потому что endpoint один и нельзя статически знать
-// будет ли image. Soft throttle через budget cap (#21) даёт более точное
-// разделение по cost.
+// Throttle 10/min на /64-prefix IPv6 (#65 / pre-launch blocker A). Один
+// путь для всех режимов — точная защита через layered defense: budget
+// cap #21 (cost ceiling), Vision SHA256-cache #66 (повторные image
+// бесплатно), Vision is_relevant (не-каталожные фото возвращают 400).
+// Tracker через IpThrottlerGuard — глобальный, см. app.module.ts.
 @ApiTags('catalog')
 @Controller('catalog')
 export class CatalogSearchController {

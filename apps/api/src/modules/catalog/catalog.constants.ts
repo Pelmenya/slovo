@@ -92,10 +92,24 @@ export const VISION_MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 //     5MB per image, body parser limit поднимем до 40MB на этом route.
 export const VISION_MAX_IMAGES_PER_REQUEST = 5;
 
-// Vision-search это **дорогая** операция — ~$0.005-0.007 за вызов
-// (Claude Sonnet 4.6 Vision). Throttle 5/min/IP vs 30/min для text:
-// (1) cost cap — 5 × 60 = 300 vision/час max от 1 IP = $1.5/час,
-// (2) Vision response 2-4 sec — slow, чтобы не подвешивать pool API.
-// Anonymous limit. Authenticated пользователи получат больше после auth.
-export const VISION_SEARCH_THROTTLE_LIMIT = 5;
-export const VISION_SEARCH_THROTTLE_TTL_MS = 60_000;
+// Universal /catalog/search endpoint — один путь для text/image/combined,
+// поэтому throttle ставим conservative (text user не должен ждать, image
+// abuse защищён layered defense через budget cap #21 + image-cache #66).
+//
+// 10/min/IPv6-/64 anonymous: legitimate клиент/менеджер делает 1-2 поиска
+// в минуту (вводит запрос → читает результаты ~30 сек → новый запрос).
+// 10/min даёт 5× запас для нормального usage. Bot-flood (>10/min из одного
+// /64-блока) → 429 Too Many Requests.
+//
+// IPv6-/64 prefix через IpThrottlerGuard (см. `throttle/extract-ip-tracker.ts`)
+// — без этого один провайдер раздаёт 2^64 адресов и throttle bypass'ится.
+//
+// Authenticated пользователи получат повышенный лимит после auth-модуля
+// (#17 в tech-debt). Sketch: × 3 для зарегистрированных, × 10 для дилеров.
+export const CATALOG_SEARCH_THROTTLE_LIMIT = 10;
+export const CATALOG_SEARCH_THROTTLE_TTL_MS = 60_000;
+
+// Backward-compat alias (PR8 → PR9 rename) — search.controller импортирует
+// VISION_SEARCH_THROTTLE_LIMIT, оставляем алиас чтобы не править много мест.
+export const VISION_SEARCH_THROTTLE_LIMIT = CATALOG_SEARCH_THROTTLE_LIMIT;
+export const VISION_SEARCH_THROTTLE_TTL_MS = CATALOG_SEARCH_THROTTLE_TTL_MS;
