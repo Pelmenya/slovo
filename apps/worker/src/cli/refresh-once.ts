@@ -29,13 +29,22 @@ import { WorkerModule } from '../worker.module';
 //   2 — bootstrap error (config/Nest module init)
 // =============================================================================
 
+// Bootstrap-time stderr writer — NestJS Logger ещё не инициализирован,
+// pino-logger тоже. Используем canonical Node.js stderr вместо console
+// (eslint позволяет, но process.stderr — более явно про "это критическая
+// ошибка инициализации, не runtime лог").
+function writeBootstrapError(prefix: string, error: unknown): void {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    process.stderr.write(`[refresh-once] ${prefix}: ${message}\n`);
+}
+
 async function main(): Promise<number> {
     const logger = new Logger('RefreshOnce');
 
     try {
         validateEnv(process.env);
     } catch (error) {
-        console.error('env validation failed:', error);
+        writeBootstrapError('env validation failed', error);
         return 2;
     }
 
@@ -76,6 +85,6 @@ async function main(): Promise<number> {
 void main()
     .then((code) => process.exit(code))
     .catch((err: unknown) => {
-        console.error('fatal:', err);
+        writeBootstrapError('fatal', err);
         process.exit(2);
     });
