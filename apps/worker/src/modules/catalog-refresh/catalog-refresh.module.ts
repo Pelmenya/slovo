@@ -6,6 +6,7 @@ import type { TAppEnv } from '@slovo/common';
 import { StorageModule } from '@slovo/storage';
 import { FLOWISE_CLIENT_TOKEN, REDIS_CLIENT_TOKEN } from './catalog-refresh.constants';
 import { CatalogRefreshService } from './catalog-refresh.service';
+import { VisionAugmenterService } from './vision-augmenter.service';
 
 // Defensive guard для useFactory — env.schema.ts уже валидирует
 // FLOWISE_API_KEY условно (когда FLOWISE_API_URL задан в production), но в
@@ -36,6 +37,7 @@ const REFRESH_FLOWISE_TIMEOUT_MS = 300_000;
     ],
     providers: [
         CatalogRefreshService,
+        VisionAugmenterService,
         {
             provide: FLOWISE_CLIENT_TOKEN,
             useFactory: (config: ConfigService<TAppEnv>): FlowiseClient => {

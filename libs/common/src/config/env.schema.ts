@@ -103,6 +103,12 @@ export const envSchema = z
         VISION_BUDGET_DAILY_USD: z.coerce.number().positive().default(5),
         EMBEDDING_BUDGET_DAILY_USD: z.coerce.number().positive().default(1),
 
+        // Vision augmenter chatflow (#70 / Phase 2 ingest improvement) —
+        // обогащает товарный contentForEmbedding визуальным описанием через
+        // Claude Vision на catalog-refresh. Создаётся через
+        // experiments/create-augmenter-chatflow.mjs (one-shot setup).
+        VISION_AUGMENTER_CHATFLOW_NAME: z.string().default('catalog-vision-augmenter-v1'),
+
         // Telegram alerts (#36) — уведомление админу при первом превышении
         // budget-cap в день. Дев-бот общий с CRM (AquaphorBot_bot), prod-бот
         // отдельный (см. CLAUDE.md). Без креденшелов фича отключена тихо

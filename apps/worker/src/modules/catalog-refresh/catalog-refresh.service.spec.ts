@@ -17,6 +17,7 @@ import {
 } from './catalog-refresh.constants';
 import { CatalogRefreshService } from './catalog-refresh.service';
 import type { TBulkIngestPayload } from './t-bulk-ingest-payload';
+import { VisionAugmenterService } from './vision-augmenter.service';
 
 type TFlowiseClientMock = { request: jest.Mock };
 type TRedisClientMock = {
@@ -28,6 +29,10 @@ type TRedisClientMock = {
     hdel: jest.Mock;
 };
 type TStorageServiceMock = { getObjectStream: jest.Mock };
+type TAugmenterMock = {
+    augmentItem: jest.Mock;
+    removeStaleAugmentations: jest.Mock;
+};
 
 const SAMPLE_STORE = {
     id: 'aec6b741',
@@ -136,11 +141,18 @@ describe('CatalogRefreshService', () => {
     let flowise: TFlowiseClientMock;
     let redis: TRedisClientMock;
     let storage: TStorageServiceMock;
+    let augmenter: TAugmenterMock;
 
     beforeEach(async () => {
         flowise = createFlowiseClientMock();
         redis = createRedisMock();
         storage = createStorageMock();
+        // Default: augmentation возвращает null — все existing тесты работают
+        // как раньше (без обогащения visualDescription'ом).
+        augmenter = {
+            augmentItem: jest.fn().mockResolvedValue(null),
+            removeStaleAugmentations: jest.fn().mockResolvedValue(0),
+        };
 
         const moduleRef = await Test.createTestingModule({
             providers: [
@@ -148,6 +160,10 @@ describe('CatalogRefreshService', () => {
                 { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise as unknown as FlowiseClient },
                 { provide: REDIS_CLIENT_TOKEN, useValue: redis as unknown as Redis },
                 { provide: StorageService, useValue: storage as unknown as StorageService },
+                {
+                    provide: VisionAugmenterService,
+                    useValue: augmenter as unknown as VisionAugmenterService,
+                },
             ],
         }).compile();
 

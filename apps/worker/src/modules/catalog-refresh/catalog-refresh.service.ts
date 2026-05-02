@@ -36,6 +36,7 @@ import type {
     TCatalogRefreshResult,
     TFindStoreResult,
 } from './t-catalog-refresh';
+import { VisionAugmenterService } from './vision-augmenter.service';
 
 // =============================================================================
 // CatalogRefreshService — slovo-orchestrate ingest pipeline (PR9.5
@@ -110,6 +111,7 @@ export class CatalogRefreshService implements OnModuleDestroy {
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
         @Inject(REDIS_CLIENT_TOKEN) private readonly redis: Redis,
         private readonly storage: StorageService,
+        private readonly augmenter: VisionAugmenterService,
     ) {}
 
     async onModuleDestroy(): Promise<void> {
@@ -295,6 +297,18 @@ export class CatalogRefreshService implements OnModuleDestroy {
             // Логируем, считаем как partial success.
             this.logger.warn(
                 `REMOVED-sweep partial failure: ${sanitizeError(error)}. Items может остаться stale до next refresh.`,
+            );
+        }
+
+        // Step 6.5 — Vision augmentation REMOVED-sweep. Удаляем кешированные
+        // visual descriptions для исчезнувших items. Graceful: ошибка не валит
+        // refresh, при следующем cycle removed items уже не будет в payload
+        // и попытка повторится.
+        try {
+            await this.augmenter.removeStaleAugmentations(removedExternalIds);
+        } catch (error) {
+            this.logger.warn(
+                `vision-augment REMOVED-sweep failed: ${sanitizeError(error)}`,
             );
         }
 
@@ -507,11 +521,23 @@ export class CatalogRefreshService implements OnModuleDestroy {
         existingDocId: string | undefined,
     ): Promise<TUpsertOutcome> {
         try {
+            // Vision augmentation (#70) — обогащаем contentForEmbedding
+            // визуальным описанием товара через Claude Vision. Hash-cache
+            // (#71) внутри augmenter'а: при unchanged photos → reuse cached.
+            // Graceful: null = нет augmentation, embedding идёт без визуала.
+            const visualDescription = await this.augmenter.augmentItem(
+                item.externalId,
+                item.imageUrls,
+            );
+            const augmentedText = visualDescription !== null
+                ? `${item.contentForEmbedding}\n\nВизуальный вид: ${visualDescription}`
+                : item.contentForEmbedding;
+
             const body: Record<string, unknown> = {
                 loader: {
                     name: 'plainText',
                     config: {
-                        text: item.contentForEmbedding,
+                        text: augmentedText,
                         // PlainText loader ожидает metadata как **JSON-string**,
                         // не как object. Flowise делает `JSON.parse(config.metadata)`.
                         metadata: JSON.stringify(buildItemMetadata(item)),

@@ -92,6 +92,44 @@ export const CATALOG_SPLITTER_CHUNK_SIZE = 1000;
 export const CATALOG_SPLITTER_CHUNK_OVERLAP = 200;
 
 // =============================================================================
+// Vision augmentation (#70 / #71 Phase 2 ingest improvement)
+//
+// Catalog-refresh обогащает товарный contentForEmbedding визуальным описанием
+// от Claude Vision. Без этого текстовый caption (функциональные характеристики
+// из CRM) не пересекается с Vision-output клиентского фото (визуальные
+// характеристики), embeddings лежат в разных частях семантического пространства.
+//
+// Pipeline: download images from MinIO → sha256 hash → Redis mapping check →
+// hit return cached / miss call Flowise augmenter chatflow → save mapping.
+//
+// Cost projection (155 items × $0.01 augmentation на haiku-4-5 multi-image):
+// - Первый refresh: ~$1.55 ≈ 124 ₽ один раз
+// - Повторные с hash-cache: 5-10 changed items/мес = ~$0.05/мес = ~4 ₽/мес
+// =============================================================================
+
+// Redis HASH `slovo:catalog:vision-augment:<externalId>` → JSON-string с
+// {imageHash, visualDescription}. Hash считается от sorted concat(image bytes)
+// — стабильный fingerprint для одного и того же набора фото товара.
+// REMOVED-sweep дополняется в catalog-refresh: item в mapping но не в payload
+// → HDEL (по аналогии с loaderMapping в PR9.5).
+export const VISION_AUGMENT_REDIS_KEY = 'slovo:catalog:vision-augment';
+
+// Cap размер одного изображения для augmentation. Реальные товарные фото в
+// каталоге Аквафор-Pro — 100-500KB. 5MB — запас ×10. Превышение → skip image
+// (продолжаем augmentation с остальными фото; если все skip'нуты → null).
+export const VISION_AUGMENT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+// Сколько изображений отправляется в один Vision call. Anthropic API supports
+// больше, но: (1) cost линейный, (2) на >5 фото вырастает hallucination rate
+// (Anthropic docs). Multi-image товаров в нашем каталоге ≤10, режем до 5 первых.
+export const VISION_AUGMENT_MAX_IMAGES = 5;
+
+// Cost per Vision call (claude-haiku-4-5 conservative). На 5 изображений
+// + system prompt ~600 tokens = 8100 input × $1/1M (haiku) = $0.008, +
+// 200 output × $5/1M = $0.001. Total ~$0.009. Conservative до $0.01.
+export const VISION_AUGMENT_COST_PER_CALL_USD = 0.01;
+
+// =============================================================================
 // Защитные ограничения от malicious / broken feeder (PR6.5 security follow-up)
 // =============================================================================
 
