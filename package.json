@@ -20,6 +20,7 @@
         "start": "nest start api",
         "start:dev": "node scripts/ensure-utf8.cjs && nest start api --watch",
         "start:worker:dev": "node scripts/ensure-utf8.cjs && nest start worker --watch",
+        "refresh:once": "ts-node -P apps/worker/tsconfig.app.json -r tsconfig-paths/register apps/worker/src/cli/refresh-once.ts",
         "start:prod": "node dist/apps/api/main",
         "lint": "eslint \"{apps,libs}/**/*.ts\" --fix",
         "test": "jest --passWithNoTests",
