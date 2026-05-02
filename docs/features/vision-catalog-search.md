@@ -1,9 +1,14 @@
 # Vision Catalog Search
 
-> **Статус:** ✅ Phase 1 закрыта (PR6.5 + PR7 + PR8 + PR9), 1 мая 2026
+> **Статус:** ✅ Phase 1 + Phase 2 закрыты (PR6.5 + PR7 + PR8 + PR9 + #65/66/67/70/71), 2 мая 2026
 > **Связи:** [knowledge-base.md](knowledge-base.md), [ADR-007 catalog ingest contract](../architecture/decisions/007-catalog-ingest-via-minio.md), [ADR-006](../architecture/decisions/006-knowledge-base-as-first-feature.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md)
 
-Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**. Встраивается в `crm-aqua-kinetics` (собственный продукт разработчика) — пользователь CRM (менеджер / инженер) присылает фото сломанного узла, за пару секунд видит подходящую замену из каталога ~500 товаров MoySklad.
+Фича: **поиск товара/услуги в каталоге Аквафор-Pro по фото или тексту**.
+**Главный пользователь — клиенты на prostor-app** (замена закрытого Telegram
+mini-app), которые ищут оборудование по фото или описанию проблемы обычными
+словами. Вторично — менеджеры `crm-aqua-kinetics-front` используют тот же
+endpoint для подбора товаров клиентам в WhatsApp и оформления заказов.
+Каталог сейчас — 155 товаров Аквафор-Pro из MoySklad.
 
 ## API endpoint (актуальный — после PR9 universal refactor)
 
@@ -26,11 +31,31 @@ type TSearchRequest = {
 
 Response shape — `{ count, docs, timeTakenMs, visionOutput? }`. `visionOutput` присутствует только когда был передан `images`.
 
-**Throttle** 5/min/IP (vision-rate). **Budget cap** $5 vision/day + $1 embedding/day → 503 ServiceUnavailable.
+**Throttle** 10/min/IPv6-/64-prefix (после pre-launch follow-up #65 —
+правильная маска для anti-rotation IPv6 botnet'ов). **Budget cap**
+$5 vision/day + $1 embedding/day → 503 ServiceUnavailable + Telegram alert
+админу при первом превышении в день (#67).
 
-**Multi-image статус:** ✅ работает. PR9 e2e обнаружил что prompt v1 возвращал массив описаний для 2+ фото (502 BadGateway). 1 мая 2026 prompt обновлён до v2 с явной инструкцией «одно или несколько фото ОДНОГО товара → один JSON-объект». Verified: 2 фото → 200 OK с combined description ~6s end-to-end. См. tech-debt #31 (закрыто).
+**Multi-image статус:** ✅ работает. PR9 e2e обнаружил что prompt v1
+возвращал массив описаний для 2+ фото (502 BadGateway). 1 мая 2026
+prompt обновлён до v2 с явной инструкцией «одно или несколько фото
+ОДНОГО товара → один JSON-объект». Verified: 2 фото → 200 OK с combined
+description ~6s end-to-end. См. tech-debt #31 (закрыто).
 
-**Исторический контекст:** в PR7 был `/catalog/search/text`, в PR8 — `/catalog/search/image`, в PR9 они объединены в universal `/catalog/search`. Старые endpoints удалены — клиенты пилотного периода ещё не интегрированы, breaking change без последствий.
+**Phase 2 augmentation на ingest** (#70 + #71, 2 мая 2026): на каждом
+catalog-refresh каждый товар обогащается визуальным описанием через
+Claude Haiku 4.5 (chatflow `catalog-vision-augmenter-v1`). Описание
+дописывается в `contentForEmbedding` секцией «Визуальный вид: ...» —
+embedding теперь содержит и функциональные характеристики (CRM-описание),
+и визуальные ключевые слова. Image-hash cache (RecordManager-style для
+фото): SHA256 от sorted concat image bytes → Redis HASH `slovo:catalog:
+vision-augment:<externalId>`. Idempotent: повторный refresh без changes
+в фото = 0 ₽ Vision. Cost первой полной augmentation 155 товаров: $0.40 ≈ 32 ₽.
+
+**Исторический контекст:** в PR7 был `/catalog/search/text`, в PR8 —
+`/catalog/search/image`, в PR9 они объединены в universal `/catalog/search`.
+Старые endpoints удалены — клиенты пилотного периода ещё не интегрированы,
+breaking change без последствий.
 
 ---
 
@@ -59,7 +84,7 @@ Response shape — `{ count, docs, timeTakenMs, visionOutput? }`. `visionOutput`
 
 ### Развёртывание
 
-**slovo — standalone сервис.** Отдельный репо, отдельный Docker deploy. **HTTP API наружу — только query endpoints** (`/catalog/search/text`, `/catalog/search/image`). Ingest идёт через **shared MinIO bucket** `slovo-datasets` по контракту ADR-007 — feeder пишет, slovo cron читает. `crm-aqua-kinetics-back` — первый feeder.
+**slovo — standalone сервис.** Отдельный репо, отдельный Docker deploy. **HTTP API наружу — только universal query endpoint** `POST /catalog/search` (PR9 unified, бывшие `/text` и `/image` удалены). Ingest идёт через **shared MinIO bucket** `slovo-datasets` по контракту ADR-007 — feeder пишет, slovo cron читает. `crm-aqua-kinetics-back` — первый feeder.
 
 **Долгосрочный путь (когда усложнится):** выделить pure logic в `slovo/libs/catalog/` + публиковать как `@slovo/catalog` в private npm registry. Domain-фичи получат выбор — HTTP search или прямой импорт lib. Сейчас YAGNI.
 

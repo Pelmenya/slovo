@@ -18,16 +18,16 @@ AI-платформа на NestJS для быстрого прототипиро
 
 ## Статус
 
-**Active development. Phase 1 vision-catalog закрыта (1 мая 2026).**
+**Active development. Phase 1 + Phase 2 vision-catalog закрыты (2 мая 2026).**
 
-- ✅ `/catalog/search/text` — semantic search по 155 товарам Аквафор-Pro (~462ms)
-- ✅ `/catalog/search/image` — поиск по фото через Claude Vision (~6-7s)
-- ✅ `/catalog/search` — universal endpoint (text / image / combined, до 5 фото)
+- ✅ `POST /catalog/search` — universal endpoint (text / image / combined, до 5 фото на запрос)
 - ✅ Catalog ingest pipeline с RecordManager skip-if-unchanged (95× cost reduction, ~$0/refresh при unchanged)
-- ⏳ Phase 2: pre-launch hardening (per-IP throttle, image-cache, webhook-trigger) → запуск на prostor-app
+- ✅ Vision augmentation на ingest (Phase 2): каждый из 155 товаров обогащён AI-описанием фото через Haiku 4.5 — клиенты могут искать визуальными словами
+- ✅ Pre-launch hardening: per-IP/IPv6-/64 throttle (anti-rotation), SHA256 image-cache (повторные фото 0 ₽), budget cap + Telegram alert на превышение
 - ⏳ Phase 3: water-analysis (анализ лабораторных результатов воды через Vision)
+- ⏳ Опционально: webhook-trigger от CRM для мгновенной переиндексации (вместо cron 4ч)
 
-Реальные расходы за 8 дней Phase 1: $0.18 ≈ 14,4 ₽ (фактический billing OpenAI + Anthropic).
+**Реальные расходы за всю разработку (Phase 1 + Phase 2, 9 дней):** $0.49 ≈ 39 ₽ (фактический billing OpenAI + Anthropic).
 
 ---
 
