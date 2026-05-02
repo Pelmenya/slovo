@@ -21,10 +21,12 @@ import { extractIpTracker } from './extract-ip-tracker';
 @Injectable()
 export class IpThrottlerGuard extends ThrottlerGuard {
     // Override базовой реализации (которая просто `return req.ip`).
-    // Express/Fastify req.ip приходит после `trustProxy` middleware — для
-    // production за nginx/CloudFront надо настроить trust hop count.
+    // Express req.ip приходит после `app.set('trust proxy', N)` middleware
+    // (см. apps/api/src/main.ts + TRUSTED_PROXY_HOPS env). Без trust proxy
+    // в production все IP'шки = nginx-pod, throttle обнуляется.
+    //
+    // extractIpTracker принимает unknown — narrow внутри.
     protected getTracker(req: Record<string, unknown>): Promise<string> {
-        const rawIp = req.ip;
-        return Promise.resolve(extractIpTracker(typeof rawIp === 'string' ? rawIp : ''));
+        return Promise.resolve(extractIpTracker(req.ip));
     }
 }

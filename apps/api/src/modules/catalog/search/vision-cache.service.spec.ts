@@ -95,7 +95,7 @@ describe('VisionCacheService', () => {
             const result = await service.get('abc123');
 
             expect(result).toEqual(SAMPLE_OUTPUT);
-            expect(redis.get).toHaveBeenCalledWith('slovo:vision:cache:abc123');
+            expect(redis.get).toHaveBeenCalledWith('slovo:vision:cache:v1:abc123');
         });
 
         it('Redis вернул null → null (cache miss)', async () => {
@@ -147,7 +147,7 @@ describe('VisionCacheService', () => {
             await service.set('abc123', SAMPLE_OUTPUT);
 
             expect(redis.setex).toHaveBeenCalledWith(
-                'slovo:vision:cache:abc123',
+                'slovo:vision:cache:v1:abc123',
                 86400,
                 JSON.stringify(SAMPLE_OUTPUT),
             );

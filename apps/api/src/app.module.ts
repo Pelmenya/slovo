@@ -2,11 +2,10 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { createAppConfigModule, createAppLoggerModule } from '@slovo/common';
+import { createAppConfigModule, createAppLoggerModule, IpThrottlerGuard } from '@slovo/common';
 import type { TAppEnv } from '@slovo/common';
 import { BudgetModule } from './modules/budget/budget.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
-import { IpThrottlerGuard } from './modules/catalog/throttle/ip-throttler.guard';
 import { HealthModule } from './modules/health/health.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 
@@ -33,7 +32,8 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
     // IpThrottlerGuard — кастомный throttler с IPv6-/64 prefix extraction.
     // Без этого distributed botnet bypass'ит throttle через IPv6 rotation
     // (один провайдер раздаёт 2^64 адресов на клиента). См.
-    // `apps/api/src/modules/catalog/throttle/extract-ip-tracker.ts` (#65).
+    // `libs/common/src/http/ip-throttler/extract-ip-tracker.ts` (#65).
+    // Требует `app.set('trust proxy', N)` в main.ts для работы за nginx.
     providers: [{ provide: APP_GUARD, useClass: IpThrottlerGuard }],
 })
 export class AppModule {}

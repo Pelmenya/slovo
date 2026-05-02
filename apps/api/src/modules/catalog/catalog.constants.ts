@@ -108,8 +108,3 @@ export const VISION_MAX_IMAGES_PER_REQUEST = 5;
 // (#17 в tech-debt). Sketch: × 3 для зарегистрированных, × 10 для дилеров.
 export const CATALOG_SEARCH_THROTTLE_LIMIT = 10;
 export const CATALOG_SEARCH_THROTTLE_TTL_MS = 60_000;
-
-// Backward-compat alias (PR8 → PR9 rename) — search.controller импортирует
-// VISION_SEARCH_THROTTLE_LIMIT, оставляем алиас чтобы не править много мест.
-export const VISION_SEARCH_THROTTLE_LIMIT = CATALOG_SEARCH_THROTTLE_LIMIT;
-export const VISION_SEARCH_THROTTLE_TTL_MS = CATALOG_SEARCH_THROTTLE_TTL_MS;

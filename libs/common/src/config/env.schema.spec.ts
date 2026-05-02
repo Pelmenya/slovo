@@ -92,7 +92,15 @@ describe('validateEnv', () => {
     });
 
     describe('production-валидация', () => {
-        const PROD_BASE = { ...BASE_ENV, NODE_ENV: 'production' };
+        // PROD_BASE — корректный production env с правильно заданными
+        // hardening-полями (REDIS_PASSWORD ≥16, TRUSTED_PROXY_HOPS≥1).
+        // В тестах ниже override'им конкретное поле под nature теста.
+        const PROD_BASE = {
+            ...BASE_ENV,
+            NODE_ENV: 'production',
+            REDIS_PASSWORD: 'test-only-strong-redis-password-32-chars',
+            TRUSTED_PROXY_HOPS: '1',
+        };
 
         it('падает если JWT_SECRET = dev-дефолт', () => {
             expect(() =>
@@ -233,6 +241,68 @@ describe('validateEnv', () => {
                 FLOWISE_API_KEY: 'test-only-dev-flowise-key',
             });
             expect(parsed.FLOWISE_API_KEY).toBe('test-only-dev-flowise-key');
+        });
+    });
+
+    describe('Pre-launch hardening (#65 + #66)', () => {
+        const PROD_BASE_HARDENED = {
+            ...BASE_ENV,
+            NODE_ENV: 'production',
+            REDIS_PASSWORD: 'test-only-strong-redis-password-32-chars',
+            TRUSTED_PROXY_HOPS: '1',
+        };
+
+        it('production: пустой REDIS_PASSWORD → ошибка', () => {
+            expect(() =>
+                validateEnv({ ...PROD_BASE_HARDENED, REDIS_PASSWORD: '' }),
+            ).toThrow(/REDIS_PASSWORD/);
+        });
+
+        it('production: REDIS_PASSWORD < 16 chars → ошибка', () => {
+            expect(() =>
+                validateEnv({ ...PROD_BASE_HARDENED, REDIS_PASSWORD: 'short' }),
+            ).toThrow(/REDIS_PASSWORD/);
+        });
+
+        it('production: REDIS_PASSWORD ≥ 16 chars → ОК', () => {
+            const parsed = validateEnv({
+                ...PROD_BASE_HARDENED,
+                REDIS_PASSWORD: 'sixteen-chars-yes',
+            });
+            expect(parsed.REDIS_PASSWORD).toBe('sixteen-chars-yes');
+        });
+
+        it('production: TRUSTED_PROXY_HOPS=0 → ошибка (надо явно задать)', () => {
+            expect(() =>
+                validateEnv({ ...PROD_BASE_HARDENED, TRUSTED_PROXY_HOPS: '0' }),
+            ).toThrow(/TRUSTED_PROXY_HOPS/);
+        });
+
+        it('production: TRUSTED_PROXY_HOPS=1 (одиночный nginx) → ОК', () => {
+            const parsed = validateEnv({
+                ...PROD_BASE_HARDENED,
+                TRUSTED_PROXY_HOPS: '1',
+            });
+            expect(parsed.TRUSTED_PROXY_HOPS).toBe(1);
+        });
+
+        it('production: TRUSTED_PROXY_HOPS=2 (CF→nginx) → ОК', () => {
+            const parsed = validateEnv({
+                ...PROD_BASE_HARDENED,
+                TRUSTED_PROXY_HOPS: '2',
+            });
+            expect(parsed.TRUSTED_PROXY_HOPS).toBe(2);
+        });
+
+        it('TRUSTED_PROXY_HOPS > 10 — отклоняем (нереалистичный setup)', () => {
+            expect(() =>
+                validateEnv({ ...BASE_ENV, TRUSTED_PROXY_HOPS: '50' }),
+            ).toThrow(/TRUSTED_PROXY_HOPS/);
+        });
+
+        it('dev: TRUSTED_PROXY_HOPS=0 (default) — ОК (нет проверки)', () => {
+            const parsed = validateEnv(BASE_ENV);
+            expect(parsed.TRUSTED_PROXY_HOPS).toBe(0);
         });
     });
 });

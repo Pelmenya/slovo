@@ -6,6 +6,8 @@ export * from './validators/max-decoded-bytes.validator';
 export * from './errors/sanitize-ingestion-error';
 export * from './http/dev-only-header-auth.guard';
 export * from './http/headers';
+export * from './http/ip-throttler/extract-ip-tracker';
+export * from './http/ip-throttler/ip-throttler.guard';
 export * from './http/t-user-context';
 export * from './http/user-context.decorator';
 export * from './logger/app-logger.module';

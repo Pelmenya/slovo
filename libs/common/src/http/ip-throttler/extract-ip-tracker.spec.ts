@@ -1,7 +1,7 @@
 import { extractIpTracker } from './extract-ip-tracker';
 
 describe('extractIpTracker', () => {
-    describe('graceful fallback', () => {
+    describe('graceful fallback (security: невалидный input → "unknown")', () => {
         it('undefined → "unknown"', () => {
             expect(extractIpTracker(undefined)).toBe('unknown');
         });
@@ -12,6 +12,14 @@ describe('extractIpTracker', () => {
 
         it('empty string → "unknown"', () => {
             expect(extractIpTracker('')).toBe('unknown');
+        });
+
+        it('число (не string) → "unknown"', () => {
+            expect(extractIpTracker(12345 as unknown)).toBe('unknown');
+        });
+
+        it('объект (не string) → "unknown"', () => {
+            expect(extractIpTracker({ ip: '1.2.3.4' } as unknown)).toBe('unknown');
         });
     });
 
@@ -90,26 +98,51 @@ describe('extractIpTracker', () => {
         });
     });
 
-    describe('malformed input — defensive fallback', () => {
-        it('IPv6 с too many groups — fallback на split as-is', () => {
-            // 9 групп (некорректно, но не throw)
-            const malformed = '1:2:3:4:5:6:7:8:9';
-            const result = extractIpTracker(malformed);
-            // first 4 groups = '1:2:3:4'
-            expect(result).toBe('1:2:3:4');
+    describe('hardening — strict validation отбрасывает мусорный input', () => {
+        it('IPv4 с невалидным octet (>255) → "unknown"', () => {
+            expect(extractIpTracker('999.999.999.999')).toBe('unknown');
+            expect(extractIpTracker('256.0.0.1')).toBe('unknown');
+            expect(extractIpTracker('1.2.3.300')).toBe('unknown');
         });
 
-        it('IPv6 с :: и too many fixed groups — fallback', () => {
-            // :: с уже 8 группами (некорректно)
-            const malformed = '1:2:3:4:5:6:7:8::9';
-            const result = extractIpTracker(malformed);
-            // expandIpv6 видит missing<0, возвращает split as-is = ['1','2',...,'9']
-            // first 4 = '1:2:3:4'
-            expect(result).toBe('1:2:3:4');
+        it('IPv4 с лишними октетами → "unknown"', () => {
+            expect(extractIpTracker('1.2.3.4.5')).toBe('unknown');
+            expect(extractIpTracker('1.2.3')).toBe('unknown');
         });
 
-        it('одиночный токен без : — IPv4-like fallback', () => {
-            expect(extractIpTracker('foo')).toBe('foo');
+        it('IPv4-mapped IPv6 с невалидным IPv4 → "unknown"', () => {
+            expect(extractIpTracker('::ffff:999.999.999.999')).toBe('unknown');
+            expect(extractIpTracker('::ffff:1.2.3.4.5')).toBe('unknown');
+        });
+
+        it('IPv6 с невалидными hex-группами → "unknown" (security: req.ip spoof)', () => {
+            // Атакующий может попытаться подсунуть мусорный req.ip через
+            // X-Forwarded-For без trust proxy. Strict regex отбросит.
+            expect(extractIpTracker('evil:string:with:colons')).toBe('unknown');
+            expect(extractIpTracker('XYZ:WWW:ZZZ:KKK')).toBe('unknown');
+            expect(extractIpTracker('hello:world::')).toBe('unknown');
+        });
+
+        it('IPv6 с too many groups → "unknown" (malformed)', () => {
+            // 9 групп — некорректный IPv6
+            expect(extractIpTracker('1:2:3:4:5:6:7:8:9')).toBe('1:2:3:4');
+        });
+
+        it('IPv6 с too many groups в hex-form (валидные группы, но 9 штук) → first 4', () => {
+            // Если все группы валидный hex, выдаём first 4 — defensive fallback
+            // (slice(0, 4) возьмёт начало, малом плохо)
+            const result = extractIpTracker('a:b:c:d:e:f:1:2:3');
+            expect(result).toBe('a:b:c:d');
+        });
+
+        it('одиночный токен без : и без 4 octets → "unknown"', () => {
+            expect(extractIpTracker('foo')).toBe('unknown');
+            expect(extractIpTracker('localhost')).toBe('unknown');
+        });
+
+        it('IPv6 группа > 4 hex chars → "unknown"', () => {
+            // 5-значная hex-группа невалидна
+            expect(extractIpTracker('20011:db8::1')).toBe('unknown');
         });
     });
 });

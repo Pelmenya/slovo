@@ -89,6 +89,12 @@ export const envSchema = z
         THROTTLE_TTL: z.coerce.number().int().positive().default(60),
         THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
 
+        // Trust proxy hop count (#65). 0 = dev (no proxy), 1 = single nginx,
+        // 2 = CloudFront → nginx, etc. НЕ ставить `true`/`'*'` — это
+        // позволит spoof через X-Forwarded-For от любого источника, throttle
+        // обнулится. Default 0 для dev, в prod env обязательно 1+.
+        TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+
         // Budget cap (#21) — daily $-cap для LLM cross-cutting calls.
         // Превышение → 503 ServiceUnavailable. Reset на UTC midnight.
         // Vision $5/день ≈ 700 single-image searches (или 140 multi-5).
@@ -164,6 +170,29 @@ export const envSchema = z
                 path: ['FLOWISE_API_KEY'],
                 message:
                     'FLOWISE_API_KEY обязателен в production когда FLOWISE_API_URL задан — создай ключ в Flowise UI → API Keys',
+            });
+        }
+        // Cache-poisoning защита (#66). Vision-cache хранит JSON ответы Vision
+        // под публично-видимыми SHA256-ключами; без пароля в Redis злоумышленник
+        // с network access мог бы записать фейковый descriptionRu в кеш →
+        // клиент получит мусор в embedding-search. Минимум 16 символов.
+        if (env.REDIS_PASSWORD.length < 16) {
+            ctx.addIssue({
+                code: 'custom',
+                path: ['REDIS_PASSWORD'],
+                message: 'REDIS_PASSWORD обязателен в production (минимум 16 символов) — защита cache-poisoning',
+            });
+        }
+        // Trust proxy hops — без явного значения в production все запросы
+        // получат IP nginx'а, IPv6-/64 throttle (#65) обнулится, abuse-
+        // protection не работает. Если deploy без прокси — выставить 0
+        // явно (env-var) чтобы прошёл этот guard.
+        if (env.TRUSTED_PROXY_HOPS === 0) {
+            ctx.addIssue({
+                code: 'custom',
+                path: ['TRUSTED_PROXY_HOPS'],
+                message:
+                    'TRUSTED_PROXY_HOPS должен быть явно задан в production (1 для nginx, 2 для CF→nginx, 0 если без прокси)',
             });
         }
     });

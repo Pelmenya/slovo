@@ -31,14 +31,29 @@ async function bootstrap() {
 
     app.useLogger(app.get(PinoLogger));
 
+    const configService = app.get<ConfigService<TAppEnv, true>>(ConfigService);
+
+    // Trust proxy — критично для IpThrottlerGuard (#65). Без этого за nginx
+    // /CloudFront `req.ip` = IP прокси, throttle становится глобальным
+    // (один и тот же /64 для всех, abuse-protection обнуляется).
+    //
+    // `TRUSTED_PROXY_HOPS` — число доверенных hop'ов от Express до клиента.
+    // 0 = dev (нет прокси, req.ip = реальный socket peer)
+    // 1 = production за одним nginx
+    // 2 = production за CloudFront → nginx
+    // НЕ ставить `true` или `'*'` — это позволит spoof через X-Forwarded-For
+    // от любого источника.
+    const trustedProxyHops = configService.get('TRUSTED_PROXY_HOPS', { infer: true });
+    if (trustedProxyHops > 0) {
+        app.set('trust proxy', trustedProxyHops);
+    }
+
     // Per-route order matters: первый matching middleware парсит body
     // и заполняет req.body — последующие парсеры видят что body уже есть
     // и пропускают (no-op).
     app.use(CATALOG_SEARCH_ROUTE, json({ limit: BODY_PARSER_LIMIT_CATALOG_SEARCH }));
     app.use(json({ limit: BODY_PARSER_LIMIT_DEFAULT }));
     app.use(urlencoded({ extended: true, limit: BODY_PARSER_LIMIT_DEFAULT }));
-
-    const configService = app.get<ConfigService<TAppEnv, true>>(ConfigService);
     const logger = new Logger('Bootstrap');
 
     const corsOrigin = parseCorsOrigin(configService.get('CORS_ORIGIN', { infer: true }));

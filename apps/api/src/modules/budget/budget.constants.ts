@@ -22,10 +22,17 @@ export const VISION_COST_PER_CALL_USD_DEFAULT = 0.007;
 export const VISION_COST_PER_IMAGE_USD = 0.007;
 
 // EMBEDDING: OpenAI text-embedding-3-small $0.02/1M tokens. 1 search query
-// ≈ 30 tokens (включая Vision-extracted description при combined). Token
-// count приближаем как `query.length / 4` (avg chars-per-token для en/ru).
+// ≈ 30 tokens (включая Vision-extracted description при combined).
+//
+// Token count приближаем как `query.length / 3` — safety factor для ru-heavy
+// traffic. Реальный tiktoken cl100k_base даёт ~2-3 chars/token для cyrillic
+// (multi-byte UTF-8 split), ~4 для latin. Default 3 underestimate'ит
+// budget на ~25% для en и accurate для ru. Без safety мы могли бы пропустить
+// $1/день cap до фактического превышения.
+//
+// Для precise billing — `js-tiktoken` (~600KB), но для $1/день cap overkill.
 export const EMBEDDING_COST_PER_1M_TOKENS_USD = 0.02;
-export const EMBEDDING_AVG_CHARS_PER_TOKEN = 4;
+export const EMBEDDING_AVG_CHARS_PER_TOKEN = 3;
 
 // =============================================================================
 // Telegram alert (#36) — уведомление админу при первом превышении budget-cap

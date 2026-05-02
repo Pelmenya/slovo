@@ -78,10 +78,7 @@ describe('IpThrottlerGuard', () => {
             const tracker = await guard.exposeGetTracker({});
             expect(tracker).toBe('unknown');
         });
-
-        it('req.ip не string → "unknown"', async () => {
-            const tracker = await guard.exposeGetTracker({ ip: 12345 as unknown });
-            expect(tracker).toBe('unknown');
-        });
+        // Дополнительные не-string кейсы (number/object/null) покрыты в
+        // extract-ip-tracker.spec.ts — guard просто прокси к pure function.
     });
 });

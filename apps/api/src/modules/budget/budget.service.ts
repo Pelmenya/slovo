@@ -177,12 +177,12 @@ export class BudgetService implements OnModuleDestroy {
             });
             if (!response.ok) {
                 this.logger.warn(
-                    `Telegram alert HTTP ${response.status} chat=${chatId}`,
+                    `Telegram alert HTTP ${response.status} chat=…${maskChatId(chatId)}`,
                 );
             }
         } catch (error) {
             this.logger.warn(
-                `Telegram alert network error chat=${chatId}: ${sanitizeError(error)}`,
+                `Telegram alert network error chat=…${maskChatId(chatId)}: ${sanitizeError(error)}`,
             );
         } finally {
             clearTimeout(timeout);
@@ -225,6 +225,13 @@ function nextUtcMidnightIso(): string {
 
 function round4(value: number): number {
     return Math.round(value * 10000) / 10000;
+}
+
+// chat_id это admin Telegram user_id — слабая PII (можно DM-spam если
+// узнать @bot username). Маскируем в логах last 4: 7967181744 → 1744.
+function maskChatId(chatId: string): string {
+    if (chatId.length <= 4) return chatId;
+    return chatId.slice(-4);
 }
 
 function formatAlertText(category: TBudgetCategory, spent: number, dailyCapUsd: number): string {

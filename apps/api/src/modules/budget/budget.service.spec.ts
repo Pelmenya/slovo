@@ -157,9 +157,9 @@ describe('BudgetService', () => {
     });
 
     describe('approximateTokensFromText (static)', () => {
-        it('эмпирически 4 chars per token', () => {
-            expect(BudgetService.approximateTokensFromText('hello world!')).toBe(3); // 12 chars / 4 = 3
-            expect(BudgetService.approximateTokensFromText('a')).toBe(1); // ceil(1/4) = 1
+        it('эмпирически 3 chars per token (ru-safety factor)', () => {
+            expect(BudgetService.approximateTokensFromText('hello world!')).toBe(4); // ceil(12/3) = 4
+            expect(BudgetService.approximateTokensFromText('a')).toBe(1); // ceil(1/3) = 1
             expect(BudgetService.approximateTokensFromText('')).toBe(0);
         });
     });

@@ -8,8 +8,8 @@ import {
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import {
-    VISION_SEARCH_THROTTLE_LIMIT,
-    VISION_SEARCH_THROTTLE_TTL_MS,
+    CATALOG_SEARCH_THROTTLE_LIMIT,
+    CATALOG_SEARCH_THROTTLE_TTL_MS,
 } from '../catalog.constants';
 import { SearchRequestDto } from './dto/search.request.dto';
 import { SearchResponseDto } from './dto/search.response.dto';
@@ -37,8 +37,8 @@ export class CatalogSearchController {
     @HttpCode(HttpStatus.OK)
     @Throttle({
         default: {
-            limit: VISION_SEARCH_THROTTLE_LIMIT,
-            ttl: VISION_SEARCH_THROTTLE_TTL_MS,
+            limit: CATALOG_SEARCH_THROTTLE_LIMIT,
+            ttl: CATALOG_SEARCH_THROTTLE_TTL_MS,
         },
     })
     @ApiOperation({
@@ -57,7 +57,7 @@ export class CatalogSearchController {
             'или Vision is_relevant=false (фото не оборудование)',
     })
     @ApiTooManyRequestsResponse({
-        description: `Throttle ${VISION_SEARCH_THROTTLE_LIMIT}/min/IP превышен`,
+        description: `Throttle ${CATALOG_SEARCH_THROTTLE_LIMIT}/min/IP превышен`,
     })
     search(@Body() dto: SearchRequestDto): Promise<SearchResponseDto> {
         return this.service.search(dto);
