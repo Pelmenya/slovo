@@ -18,10 +18,11 @@
 
 ```typescript
 import { PrismaService } from '@slovo/database';
-import { LLMProvider } from '@slovo/llm';
+import { FlowiseClient } from '@slovo/flowise-client';
+import { buildChatflow } from '@slovo/flowise-flowdata';
 ```
 
-Пути настроены в `tsconfig.json`. Код `libs/` используется в `apps/api/` и `apps/worker/` без дублирования.
+Пути настроены в `tsconfig.json`. Код `libs/` используется в `apps/api/` и `apps/worker/` без дублирования. `@slovo/llm` зарезервирован под будущий `TLLMProvider` (на 2026-05-02 пуст, см. секцию `libs/llm` ниже).
 
 ### 4. Prisma как единый источник правды для типов
 
@@ -74,7 +75,7 @@ Standalone-executable, **не Nest-app и не часть runtime монолит
 
 66 typed tools-зеркал Flowise REST API: Document Stores / Chatflows / Predictions / Credentials / Variables / Custom Tools / Assistants / Nodes discovery / Composite helpers / DX helpers / Misc (chatmessage, upsert-history, attachments, ping). Используется для управления Flowise без curl-ритуалов. План extract в `Pelmenya/mcp-flowise` + npm/Smithery — см. [ADR-008](decisions/008-flowise-mcp.md).
 
-Slovo runtime (`apps/worker/catalog-refresh`, `apps/api/catalog/search`) при необходимости импортирует тонкий REST-клиент `@slovo/flowise-client` (не сам MCP-сервер) — он foundation-зависимость и для MCP, и для runtime.
+Slovo runtime (`apps/worker/src/modules/catalog-refresh/`, `apps/api/src/modules/catalog/search/`) при необходимости импортирует тонкий REST-клиент `@slovo/flowise-client` (не сам MCP-сервер) — он foundation-зависимость и для MCP, и для runtime. `apps/mcp-flowise` не разворачивается в shared deployment и не входит в API-monolith image.
 
 ---
 

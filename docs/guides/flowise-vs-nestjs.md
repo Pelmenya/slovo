@@ -227,7 +227,7 @@ flowchart TB
     upload --> worker --> text --> flowise_upsert --> flowise_pipe
 ```
 
-Соответствующий адаптер в нашем коде: `libs/ingest/adapters/video/` и `libs/ingest/transcription/groq-whisper.service.ts`.
+Планируемые пути (knowledge-base Phase 2+, **не реализовано на 2026-05-02**): `libs/ingest/adapters/video/` и `libs/ingest/transcription/groq-whisper.service.ts`. Phase 1 закрыта только text-адаптером (`apps/api/src/modules/knowledge/`), video/audio адаптеры отложены до триггера потребителем — см. ADR-006 амендмент 2026-05-02.
 
 ### 2. Prompt caching для Claude — **не документировано**
 
@@ -764,7 +764,7 @@ flowchart TB
 Когда появляется новая фича, задавай вопросы в этом порядке:
 
 1. **Есть ли LLM-работа?** Chain/agent/tool use / embedding / retrieval → **Flowise chatflow.**
-2. **Нужно обработать аудио/видео?** → **NestJS worker** (Groq Whisper через `libs/ingest/`).
+2. **Нужно обработать аудио/видео?** → **NestJS worker** (Groq Whisper через `libs/ingest/` — Phase 2+ knowledge-base, на 2026-05-02 ещё не реализовано).
 3. **System prompt длинный (>1024 токенов) и повторяется?** → либо Flowise с cache_control (если тест A покажет что можно), либо NestJS обёртка с Claude SDK.
 4. **Нужен real-time прогресс/SSE / long-running?** → NestJS API + worker, Flowise как downstream.
 5. **Custom tool/функция домена?** → NestJS expose как MCP-сервер, Flowise-агент использует через MCP client node.

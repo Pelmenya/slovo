@@ -192,20 +192,25 @@ Telegram mini-app закрыт для коммерции в РФ. Клиенты
 
 | Риск | Вероятность | Митигация |
 |---|---|---|
-| **Открытый каталог + анонимный traffic = abuse Vision API** ⚠️ blocker для prod | **Критическая** | Per-IP/IPv6-/64-subnet rate limit (anonymous: 1 image/min, 5 text/min) + global daily cap уже стоит ($5 Vision / $1 Embedding). Без этого один бот за час съедает весь дневной бюджет. См. tech-debt #21. |
-| **Дубликат фото от одного клиента** = повторные Vision-вызовы | Средняя | SHA256-кэш image → vision_response (Redis, TTL 24ч). Ожидаемая экономия 30-50% на image. До запуска реализовать. |
+| **Открытый каталог + анонимный traffic = abuse Vision API** ⚠️ blocker для prod | **Критическая** | ✅ Реализовано: per-IP/IPv6-/64-subnet rate limit (10 req/min anonymous на `/catalog/search`) + budget-cap с Telegram alert. Без этого один бот за час съедает весь дневной бюджет. См. tech-debt #21. |
+| **Дубликат фото от одного клиента** = повторные Vision-вызовы | Средняя | ✅ Реализовано: SHA256-кэш image → vision_response (Redis, TTL 24ч). Ожидаемая экономия 30-50% на image-запросах. |
 | **152-ФЗ (хранение PII в РФ)** при выходе на прод | Высокая | Split-архитектура: каталог + LLM-gateway в EU, пользовательские данные с PII в РФ. План в ADR-007. |
 | **Качество распознавания редких брендов** | Низкая | Промпт уже валидирован на 6 типах фото включая edge-cases. Итеративная доработка по фактическим данным. |
 | **Неизвестный реальный % image vs text запросов** | Средняя | Вилка прогноза 33% — скорректируем после первой недели после запуска. Worst case (100% image) при 5000 поисков/день = ~36 000 ₽/мес — всё ещё в порядке для платформы. |
 | **Зависимость от Anthropic / OpenAI** | Средняя | Архитектура multi-provider — переключение на Cohere / Ollama делается в одной ноде Flowise без изменения кода. |
 | **Блокировка API из РФ** | Высокая | Подтверждена работа через корпоративный VPN. Production выйдет в EU-зоне (вне зоны блокировок). |
 
-### Что нужно сделать ДО публичного запуска на клиентов
+### Pre-launch hardening — статус на 2026-05-02
 
-1. **Per-IP/IPv6-subnet rate limit** на endpoint'ы поиска (`/catalog/search/text`, `/catalog/search/image`, `/catalog/search`). Anonymous лимиты: text 30/min, image 3/min. Authenticated клиент — × 3.
-2. **SHA256-кэш image-запросов** — Redis ключ `slovo:vision:cache:<sha256>` с TTL 24ч → результат vision_response.
-3. **UX-loader при image-search** (6-7 сек на Vision processing) — спиннер с прогрессом или skeleton-карточек, иначе клиент жмёт «обновить» и удваивает cost.
-4. **Алерт на budget-cap exhaustion** — уже срабатывает 503 на endpoint'е, но добавить Telegram/email-нотификацию админу что лимит достигнут (значит либо abuse, либо органический рост — нужно решение по увеличению лимита).
+**✅ Реализовано (3 из 4):**
+
+1. ✅ **Per-IP/IPv6-/64-subnet rate limit** на `POST /catalog/search` — 10 req/min anonymous (баланс между legitimate UX и abuse-protection; legitimate user делает 1-2 поиска/мин, 5× запас). Authenticated клиент получит повышенный лимит после auth-модуля. См. `libs/common/src/http/ip-throttler/`.
+2. ✅ **SHA256-кэш image-запросов** — Redis ключ `slovo:vision:cache:<sha256>` с TTL 24ч → результат vision_response. Ожидаемая экономия 30-50% на image-запросах. См. `apps/api/src/modules/catalog/search/vision-cache.service.ts`.
+3. ✅ **Budget-cap + Telegram alert** — превышение порога расходов триггерит 503 + Telegram-уведомление админу. См. `apps/api/src/modules/budget/budget.service.ts`.
+
+**⏳ Остался один пункт (фронт):**
+
+4. **UX-loader при image-search** (6-7 сек на Vision processing) — спиннер с прогрессом или skeleton-карточек, иначе клиент жмёт «обновить» и удваивает cost. Задача фронт-команды (`prostor-app`) — см. handoff.md.
 
 ---
 

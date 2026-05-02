@@ -5,7 +5,7 @@
 > готовому endpoint'у `POST /catalog/search` на slovo API (NestJS 11).
 >
 > Дата прогона: 2 мая 2026, после полного re-augment 155 items
-> (498.8 секунд, **$0.40 ≈ 32 ₽** по факту Anthropic billing — в 4× дешевле
+> (498.8 секунд, **$0.395 ≈ 32 ₽** по факту Anthropic billing — в 4× дешевле
 > conservative-оценки благодаря Haiku 4.5).
 
 ---
