@@ -5,6 +5,7 @@ import type { SearchResponseDto, VisionOutputDto } from './dto/search.response.d
 import { ImageSearchService } from './image.service';
 import { CatalogSearchService } from './search.service';
 import { TextSearchService } from './text.service';
+import { VisionCacheService } from './vision-cache.service';
 
 type TImageSearchMock = { processVision: jest.Mock };
 type TTextSearchMock = { search: jest.Mock };
@@ -13,6 +14,10 @@ type TBudgetMock = {
     assertEmbeddingBudget: jest.Mock;
     recordVisionCall: jest.Mock;
     recordEmbeddingTokens: jest.Mock;
+};
+type TVisionCacheMock = {
+    get: jest.Mock;
+    set: jest.Mock;
 };
 
 const SAMPLE_IMAGE = { base64: 'aGVsbG8=', mime: 'image/jpeg' as const };
@@ -53,6 +58,7 @@ describe('CatalogSearchService', () => {
     let imageSearch: TImageSearchMock;
     let textSearch: TTextSearchMock;
     let budget: TBudgetMock;
+    let visionCache: TVisionCacheMock;
 
     beforeEach(async () => {
         imageSearch = { processVision: jest.fn() };
@@ -63,6 +69,12 @@ describe('CatalogSearchService', () => {
             recordVisionCall: jest.fn().mockResolvedValue(undefined),
             recordEmbeddingTokens: jest.fn().mockResolvedValue(undefined),
         };
+        visionCache = {
+            // Default: cache miss — все существующие тесты идут полным путём
+            // через Vision call, как было до #66.
+            get: jest.fn().mockResolvedValue(null),
+            set: jest.fn().mockResolvedValue(undefined),
+        };
 
         const moduleRef = await Test.createTestingModule({
             providers: [
@@ -70,6 +82,10 @@ describe('CatalogSearchService', () => {
                 { provide: ImageSearchService, useValue: imageSearch as unknown as ImageSearchService },
                 { provide: TextSearchService, useValue: textSearch as unknown as TextSearchService },
                 { provide: BudgetService, useValue: budget as unknown as BudgetService },
+                {
+                    provide: VisionCacheService,
+                    useValue: visionCache as unknown as VisionCacheService,
+                },
             ],
         }).compile();
 
@@ -294,6 +310,134 @@ describe('CatalogSearchService', () => {
             expect(budget.recordVisionCall).toHaveBeenCalledTimes(1);
             // Embedding не должен записываться — text search не выполнился
             expect(budget.recordEmbeddingTokens).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('Vision SHA256-cache (#66)', () => {
+        it('cache hit → Vision не дёргается, budget assertion/record skipped', async () => {
+            visionCache.get.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            const result = await service.search({ images: [SAMPLE_IMAGE] });
+
+            // Cache hit пропускает Vision call И budget operations
+            expect(imageSearch.processVision).not.toHaveBeenCalled();
+            expect(budget.assertVisionBudget).not.toHaveBeenCalled();
+            expect(budget.recordVisionCall).not.toHaveBeenCalled();
+            expect(visionCache.set).not.toHaveBeenCalled();
+
+            // Embedding всё равно идёт (text search выполняется)
+            expect(budget.assertEmbeddingBudget).toHaveBeenCalled();
+            expect(textSearch.search).toHaveBeenCalledWith(SAMPLE_VISION_OK.descriptionRu, undefined);
+            expect(result.visionOutput).toEqual(SAMPLE_VISION_OK);
+        });
+
+        it('cache miss → полный путь + кеширование результата', async () => {
+            visionCache.get.mockResolvedValueOnce(null); // miss
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            await service.search({ images: [SAMPLE_IMAGE] });
+
+            expect(visionCache.get).toHaveBeenCalled();
+            expect(budget.assertVisionBudget).toHaveBeenCalled();
+            expect(imageSearch.processVision).toHaveBeenCalled();
+            expect(budget.recordVisionCall).toHaveBeenCalled();
+            // После Vision — записываем в кеш
+            expect(visionCache.set).toHaveBeenCalledTimes(1);
+            const [hashArg, outputArg] = visionCache.set.mock.calls[0];
+            expect(typeof hashArg).toBe('string');
+            expect(hashArg.length).toBe(64); // sha256 hex = 64 chars
+            expect(outputArg).toEqual(SAMPLE_VISION_OK);
+        });
+
+        it('cache hit с is_relevant=false → 400, Vision не дёргается', async () => {
+            visionCache.get.mockResolvedValueOnce(SAMPLE_VISION_IRRELEVANT);
+
+            await expect(service.search({ images: [SAMPLE_IMAGE] })).rejects.toBeInstanceOf(
+                BadRequestException,
+            );
+
+            expect(imageSearch.processVision).not.toHaveBeenCalled();
+            expect(textSearch.search).not.toHaveBeenCalled();
+            // Cache hit на irrelevant — не записываем заново
+            expect(visionCache.set).not.toHaveBeenCalled();
+        });
+
+        it('cache miss + is_relevant=false → кешируем тоже (не дёргаем Vision повторно)', async () => {
+            visionCache.get.mockResolvedValueOnce(null);
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_IRRELEVANT);
+
+            await expect(service.search({ images: [SAMPLE_IMAGE] })).rejects.toBeInstanceOf(
+                BadRequestException,
+            );
+
+            // Записываем irrelevant в кеш — повторный запрос не платит за Vision
+            expect(visionCache.set).toHaveBeenCalledWith(
+                expect.any(String),
+                SAMPLE_VISION_IRRELEVANT,
+            );
+        });
+
+        it('одинаковые фото → одинаковый hash → cache hit на втором запросе', async () => {
+            // Имитируем два последовательных запроса с теми же images
+            visionCache.get.mockResolvedValueOnce(null); // 1-й запрос: miss
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            await service.search({ images: [SAMPLE_IMAGE] });
+            const hash1 = visionCache.set.mock.calls[0][0];
+
+            // 2-й запрос с тем же image — visionCache.get вернёт результат
+            visionCache.get.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            await service.search({ images: [SAMPLE_IMAGE] });
+            const hash2 = visionCache.get.mock.calls[1][0];
+
+            expect(hash1).toBe(hash2);
+        });
+
+        it('разные фото → разный hash', async () => {
+            const image2 = { base64: 'd29ybGQ=', mime: 'image/jpeg' as const }; // 'world'
+
+            visionCache.get.mockResolvedValueOnce(null);
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            await service.search({ images: [SAMPLE_IMAGE] });
+            const hash1 = visionCache.set.mock.calls[0][0];
+
+            visionCache.get.mockResolvedValueOnce(null);
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            await service.search({ images: [image2] });
+            const hash2 = visionCache.set.mock.calls[1][0];
+
+            expect(hash1).not.toBe(hash2);
+        });
+
+        it('multi-image — hash детерминированный независимо от порядка', async () => {
+            const imgA = { base64: 'YWFhYQ==', mime: 'image/jpeg' as const };
+            const imgB = { base64: 'YmJiYg==', mime: 'image/jpeg' as const };
+
+            // Запрос 1: [A, B]
+            visionCache.get.mockResolvedValueOnce(null);
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+            await service.search({ images: [imgA, imgB] });
+            const hashAB = visionCache.set.mock.calls[0][0];
+
+            // Запрос 2: [B, A] — обратный порядок
+            visionCache.get.mockResolvedValueOnce(null);
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+            await service.search({ images: [imgB, imgA] });
+            const hashBA = visionCache.set.mock.calls[1][0];
+
+            // Hash должен быть одинаковым (sort внутри computeImageHash)
+            expect(hashAB).toBe(hashBA);
         });
     });
 });

@@ -9,6 +9,7 @@ import { ImageSearchService } from './search/image.service';
 import { CatalogSearchController } from './search/search.controller';
 import { CatalogSearchService } from './search/search.service';
 import { TextSearchService } from './search/text.service';
+import { VisionCacheService } from './search/vision-cache.service';
 
 // Defensive guard для useFactory — env.schema валидирует FLOWISE_API_KEY условно
 // (требует только если NODE_ENV=production + FLOWISE_API_URL задан). В dev оба
@@ -80,6 +81,7 @@ const redisClientProvider: Provider = {
         redisClientProvider,
         TextSearchService,
         ImageSearchService,
+        VisionCacheService,
         CatalogSearchService,
     ],
 })

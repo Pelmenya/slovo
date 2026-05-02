@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
     BudgetService,
     VISION_COST_PER_IMAGE_USD,
@@ -10,6 +10,7 @@ import {
 } from './dto/search.response.dto';
 import { ImageSearchService } from './image.service';
 import { TextSearchService } from './text.service';
+import { VisionCacheService } from './vision-cache.service';
 
 // =============================================================================
 // CatalogSearchService — universal search orchestrator (PR9 refactor).
@@ -32,10 +33,13 @@ import { TextSearchService } from './text.service';
 
 @Injectable()
 export class CatalogSearchService {
+    private readonly logger = new Logger(CatalogSearchService.name);
+
     constructor(
         private readonly imageSearch: ImageSearchService,
         private readonly textSearch: TextSearchService,
         private readonly budget: BudgetService,
+        private readonly visionCache: VisionCacheService,
     ) {}
 
     async search(dto: SearchRequestDto): Promise<SearchResponseDto> {
@@ -48,25 +52,35 @@ export class CatalogSearchService {
             );
         }
 
-        // Budget assertions ДО LLM-вызовов — fail-fast если daily cap
-        // достигнут (503 ServiceUnavailable). Vision check только если
-        // будем вызывать Vision; embedding всегда (text search всегда
-        // делает 1 embedding query).
-        if (hasImages) {
-            await this.budget.assertVisionBudget();
-        }
+        // Embedding budget — всегда (text search делает 1 embedding query).
+        // Vision budget — только если был image AND cache miss (см. ниже).
         await this.budget.assertEmbeddingBudget();
 
-        // Vision pass — только если были images. Все фото идут в один
-        // Vision call (multi-image describe). Если is_relevant=false →
-        // 400 с visionOutput hint (UX: «AI распознал кота»).
+        // Vision pass — только если были images. SHA256-кэш отвечающий за
+        // повторные image-запросы (#66): клиент сфоткал тот же фильтр →
+        // hash совпал → пропускаем Vision call ($0). При cache hit budget
+        // не дёргается (фактически не тратим деньги — assertion и record
+        // не нужны).
         let visionOutput: VisionOutputDto | undefined;
         if (hasImages) {
-            visionOutput = await this.imageSearch.processVision(dto.images!);
-            // Записываем cost per-image — multi-image cost линейный (Anthropic
-            // считает каждое фото как отдельный input). VISION_COST_PER_IMAGE_USD
-            // = $0.007 conservative (Sonnet 4.6 worst case).
-            await this.budget.recordVisionCall(dto.images!.length * VISION_COST_PER_IMAGE_USD);
+            const cacheHash = VisionCacheService.computeImageHash(dto.images!);
+            const cached = await this.visionCache.get(cacheHash);
+
+            if (cached !== null) {
+                this.logger.debug(`vision cache HIT (hash=${cacheHash.slice(0, 12)}…)`);
+                visionOutput = cached;
+            } else {
+                // Cache miss → full Vision pass + budget assertion/record.
+                await this.budget.assertVisionBudget();
+                visionOutput = await this.imageSearch.processVision(dto.images!);
+                // VISION_COST_PER_IMAGE_USD = $0.007 conservative (Sonnet 4.6
+                // worst case). Multi-image cost линейный.
+                await this.budget.recordVisionCall(dto.images!.length * VISION_COST_PER_IMAGE_USD);
+                // Кэшируем независимо от is_relevant — повторное «оно нерелевантно»
+                // тоже бесплатно отдаём, не дёргая Vision.
+                await this.visionCache.set(cacheHash, visionOutput);
+            }
+
             if (!visionOutput.isRelevant) {
                 throw new BadRequestException({
                     message: 'Image not relevant — Vision не распознал оборудование на фото',
