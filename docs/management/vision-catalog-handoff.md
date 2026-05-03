@@ -8,6 +8,7 @@
 > - [vision-catalog-one-pager.md](vision-catalog-one-pager.md) — короткая ссылка для руководителя
 > - [vision-catalog-executive-summary.md](vision-catalog-executive-summary.md) — экономика и финансовая модель
 > - [vision-catalog-demo.md](vision-catalog-demo.md) — 7 e2e сценариев со скриншотами
+> - [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html) — UX-спецификация (3 состояния mobile flow + точка интеграции в главную + design-token капля). Live-просмотр через raw.githack: `https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html`
 > - [vision-catalog-search.md](../features/vision-catalog-search.md) — техническая спецификация
 > - [tech-debt.md](../architecture/tech-debt.md) — оставшиеся пункты до prod-выкатки
 
@@ -30,7 +31,9 @@
 типизированный контракт, готовый Swagger.
 
 **Что осталось до прода:** 1 пункт инфраструктуры (webhook-trigger
-вместо 4ч cron'а — опционально), UX-loader на фронте (1-2 дня Петра).
+вместо 4ч cron'а — опционально), UX-loader на фронте (1-2 дня Петра
+— **спецификация готова** в [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html):
+3 состояния mobile flow с 3-step progress на loading-этапе).
 Backend hardening полностью закрыт.
 
 ---
@@ -204,14 +207,20 @@ UI добавляется в существующий «Каталог»-таб 
 
 ## Реалистичные UX-нюансы
 
-| Нюанс | Что учесть |
-|---|---|
-| Vision latency 3-7s | Не блокировать кнопку — показать spinner + «AI смотрит фото...» текст. Дать возможность отменить запрос (`AbortController`) |
-| Multi-image (5 фото) | Vision на 5 фото может занять 8-12s. Показать прогресс «Анализ фото 1/5...» через WebSocket? Или просто spinner |
-| Vision irrelevant (cat-фото) | Показать `descriptionRu` от AI («На фото — кот, не оборудование») + кнопку «Загрузить другое фото» — UX-friendly |
-| Mobile / 3G сети | 5MB image при upload через 3G — 30-60s. Resize на клиенте (sharp в Node-ssr / canvas в браузере) до 1024×1024 → ~150KB |
-| Rate limit 10/min | Per-IP/IPv6-/64 prefix. Disable кнопку на 60s после ошибки 429. Authenticated клиент после auth-модуля получит ×3 |
-| Cost awareness | Image search в 12 000 раз дороже text. UX приём: «Сначала текстом, если не нашли — попробуйте фото» — снижает spend |
+> **Все паттерны ниже визуализированы** в [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html)
+> — 3 состояния mobile flow (idle / loading с 3-step progress / results
+> с Vision-badge), точка интеграции в главную (sticky-инпут + FAB-камера),
+> design-token «капля + sparkle». Live-просмотр:
+> `https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html`
+
+| Нюанс | Что учесть | Решение в mockup |
+|---|---|---|
+| Vision latency 3-7s | Не блокировать кнопку — показать spinner + «AI смотрит фото...» текст. Дать возможность отменить запрос (`AbortController`) | LOADING-state с 3-step progress: «Фото распознано» → «Подбираем товары» → «Услуги и расходники» + скелетон карточек |
+| Multi-image (5 фото) | Vision на 5 фото может занять 8-12s. Показать прогресс «Анализ фото 1/5...» через WebSocket? Или просто spinner | Тот же 3-step progress (Vision API возвращает один общий response для batch'а) |
+| Vision irrelevant (cat-фото) | Показать `descriptionRu` от AI («На фото — кот, не оборудование») + кнопку «Загрузить другое фото» — UX-friendly | Vision-badge с категорией и confidence + текст «Уточнить запрос» |
+| Mobile / 3G сети | 5MB image при upload через 3G — 30-60s. Resize на клиенте (sharp в Node-ssr / canvas в браузере) до 1024×1024 → ~150KB | — (бэкенд-агностично, держим в backlog фронта) |
+| Rate limit 10/min | Per-IP/IPv6-/64 prefix. Disable кнопку на 60s после ошибки 429. Authenticated клиент после auth-модуля получит ×3 | — (frontend toast, не в mockup) |
+| Cost awareness | Image search в 12 000 раз дороже text. UX приём: «Сначала текстом, если не нашли — попробуйте фото» — снижает spend | IDLE-state приоритезирует текстовый input, FAB-камера — вторичная |
 
 ---
 

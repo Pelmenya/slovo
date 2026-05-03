@@ -2,6 +2,11 @@
 
 > AI-поиск товаров в каталоге Аквафор-Pro по тексту и фото для **клиентов
 > на prostor-app** и менеджеров CRM. Готов к подключению клиентского фронта.
+>
+> **UX готов** — 3 состояния mobile flow визуализированы в
+> [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html)
+> ([live-просмотр](https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html))
+> — не нужно объяснять «как это будет в руках клиента», просто открыть.
 
 ---
 

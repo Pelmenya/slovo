@@ -113,7 +113,10 @@ slovo/
 - [`apps/mcp-flowise/README.md`](apps/mcp-flowise/README.md) — 66 MCP tools для Flowise
 
 **Для управления:**
+- [One-pager vision-catalog](docs/management/vision-catalog-one-pager.md) — короткая ссылка для руководителя (5 минут чтения)
 - [Executive summary vision-catalog](docs/management/vision-catalog-executive-summary.md) — экономика, ROI, прогноз
+- [Demo vision-catalog](docs/management/vision-catalog-demo.md) — 7 e2e сценариев с реальными запросами
+- [UX-mockup vision-catalog](docs/management/vision-catalog-ux-mockup.html) — 3 состояния mobile flow для prostor-app ([live-просмотр](https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html))
 - [Handoff для фронт-команды](docs/management/vision-catalog-handoff.md) — API контракты, UX-нюансы
 - [Скриншоты Document Store setup](docs/experiments/vision-catalog/screenshots/document-store-setup/) — визуальный референс настроенной системы
 

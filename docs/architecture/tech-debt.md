@@ -3,7 +3,7 @@
 > Список hardening-задач, отложенных осознанно. Закрываем к моменту соответствующей вехи.
 > Чек-лист на каждый PR, затрагивающий эти зоны — свериться; при закрытии задачи — удалить пункт.
 
-Обновлено: 2026-05-01 (после уточнения сценария запуска — открытый каталог prostor-app).
+Обновлено: 2026-05-03 (Pre-launch hardening A/B/D закрыт, осталась спецификация UX-loader для фронта + опциональный webhook).
 
 ---
 
@@ -13,15 +13,15 @@
 
 | # | Что | Где | Статус |
 |---|---|---|---|
-| **A** | Per-IP/IPv6-/64-subnet rate limit на `/catalog/search/*` (anonymous text 30/min, image 3/min) | См. **#21** «Что НЕ сделано (отложено) → Per-IPv6-subnet throttle» | ⏳ TODO |
-| **B** | SHA256-кэш повторных image-запросов (`slovo:vision:cache:<sha256>` TTL 24ч) | См. **#35** ниже | ⏳ TODO |
-| **C** | UX-loader при image-search (Vision 6-7 сек) — спиннер/skeleton | См. `docs/management/vision-catalog-handoff.md` (фронт-задача) | ⏳ TODO |
-| **D** | Telegram/email alert на budget-cap exhaustion (а не только 503 на endpoint'е) | Расширить `apps/api/src/modules/budget/` | ⏳ TODO |
+| **A** | Per-IP/IPv6-/64-subnet rate limit на `POST /catalog/search` (anonymous 10/min) | `libs/common/src/http/ip-throttler/` + spec | ✅ DONE |
+| **B** | SHA256-кэш повторных image-запросов (`slovo:vision:cache:<sha256>` TTL 24ч) | `apps/api/src/modules/catalog/search/vision-cache.service.ts` + spec | ✅ DONE |
+| **C** | UX-loader при image-search (Vision 6-7 сек) — спиннер/skeleton | Спецификация: [vision-catalog-ux-mockup.html](../management/vision-catalog-ux-mockup.html) (3-step progress LOADING-state). Реализация — фронт-задача Пети. | ⏳ TODO (фронт) |
+| **D** | Telegram alert на budget-cap exhaustion (не только 503 на endpoint'е) | `apps/api/src/modules/budget/budget.service.ts` + spec | ✅ DONE |
 | **E** | Webhook-trigger для catalog-refresh (заменить cron 4ч → push от CRM при write в MinIO) | См. **#37** ниже + ADR-007 amendment | ⏳ TODO (enhancement, не security blocker) |
 
-Пункты A-D обязательны до Phase 2 (публичный запуск) — без них либо abuse через Vision API, либо клиент с долгой image-search'ой бьёт «обновить» и удваивает cost, либо мы узнаём о превышении бюджета только через клиентскую жалобу.
-
-Пункт E (webhook) — желательно вместе с A-D, но не security-blocker. Можно жить с 4ч-задержкой первую неделю в prod, потом выкатить когда соберём метрики реальной частоты обновлений.
+**Backend hardening (A, B, D) полностью закрыт** в коммитах до 2 мая 2026.
+Осталась фронт-задача (C) — спецификация готова, реализация по mockup'у Пети 1-2 дня.
+Webhook (E) — опциональный, можно жить с 4ч cron'ом первую неделю в prod, выкатить когда соберём метрики реальной частоты обновлений.
 
 ---
 
