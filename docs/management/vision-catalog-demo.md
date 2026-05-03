@@ -12,15 +12,20 @@
 
 ## Что увидит клиент prostor-app
 
-Прежде чем смотреть API — открой [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html)
-([live-просмотр](https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html)),
-там визуализирован весь mobile flow:
+Перед тем как смотреть API — вот UX-спецификация фронта:
+
+![UX mockup vision-catalog](screenshots/vision-catalog-ux-mockup.png)
+
+Что показано на mockup'е:
 
 - **IDLE-state** — стартовый экран с умным поиском, чипы быстрого старта («Фото товара», «По артикулу», «Проблема с водой», «Установка / монтаж»), recent searches
 - **LOADING-state** — 3-step progress («Фото распознано» → «Подбираем товары» → «Услуги и расходники») со скелетоном карточек, чтобы клиент видел что AI работает а не повис
 - **RESULTS-state** — Vision-badge с распознанной категорией и уверенностью («AI распознал: обратный осмос — Аквафор, high») + карточки товаров с score% совпадения + пиллы услуг и совместимых картриджей
 - **Точка интеграции** — sticky-инпут поверх главной карты + FAB-камера в правом нижнем для one-tap съёмки
 - **Design-token** — фирменная капля + sparkle как AI-маркер (20/28/48/72 px для разных контекстов)
+
+Mobile-версия отдельно: [screenshots/vision-catalog-ux-mockup-mobile.png](screenshots/vision-catalog-ux-mockup-mobile.png).
+Интерактивная HTML-версия (открыть локально): [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html).
 
 Дальше — то же самое со стороны API.
 

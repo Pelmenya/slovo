@@ -8,7 +8,7 @@
 > - [vision-catalog-one-pager.md](vision-catalog-one-pager.md) — короткая ссылка для руководителя
 > - [vision-catalog-executive-summary.md](vision-catalog-executive-summary.md) — экономика и финансовая модель
 > - [vision-catalog-demo.md](vision-catalog-demo.md) — 7 e2e сценариев со скриншотами
-> - [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html) — UX-спецификация (3 состояния mobile flow + точка интеграции в главную + design-token капля). Live-просмотр через raw.githack: `https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html`
+> - **UX-mockup**: PNG для GitHub-просмотра — [desktop](screenshots/vision-catalog-ux-mockup.png) / [mobile](screenshots/vision-catalog-ux-mockup-mobile.png). Интерактивная HTML-версия — [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html) (открыть локально).
 > - [vision-catalog-search.md](../features/vision-catalog-search.md) — техническая спецификация
 > - [tech-debt.md](../architecture/tech-debt.md) — оставшиеся пункты до prod-выкатки
 
@@ -207,11 +207,15 @@ UI добавляется в существующий «Каталог»-таб 
 
 ## Реалистичные UX-нюансы
 
-> **Все паттерны ниже визуализированы** в [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html)
-> — 3 состояния mobile flow (idle / loading с 3-step progress / results
-> с Vision-badge), точка интеграции в главную (sticky-инпут + FAB-камера),
-> design-token «капля + sparkle». Live-просмотр:
-> `https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html`
+> **Все паттерны ниже визуализированы** в UX-mockup'е:
+>
+> ![UX mockup desktop](screenshots/vision-catalog-ux-mockup.png)
+>
+> 3 состояния mobile flow (idle / loading с 3-step progress / results
+> с Vision-badge + score%), точка интеграции в главную (sticky-инпут +
+> FAB-камера), design-token «капля + sparkle» (20/28/48/72 px).
+> Mobile-версия PNG: [screenshots/vision-catalog-ux-mockup-mobile.png](screenshots/vision-catalog-ux-mockup-mobile.png).
+> Интерактивная HTML-версия: [vision-catalog-ux-mockup.html](vision-catalog-ux-mockup.html) (открыть локально).
 
 | Нюанс | Что учесть | Решение в mockup |
 |---|---|---|

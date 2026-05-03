@@ -116,7 +116,7 @@ slovo/
 - [One-pager vision-catalog](docs/management/vision-catalog-one-pager.md) — короткая ссылка для руководителя (5 минут чтения)
 - [Executive summary vision-catalog](docs/management/vision-catalog-executive-summary.md) — экономика, ROI, прогноз
 - [Demo vision-catalog](docs/management/vision-catalog-demo.md) — 7 e2e сценариев с реальными запросами
-- [UX-mockup vision-catalog](docs/management/vision-catalog-ux-mockup.html) — 3 состояния mobile flow для prostor-app ([live-просмотр](https://raw.githack.com/Pelmenya/slovo/main/docs/management/vision-catalog-ux-mockup.html))
+- UX-mockup vision-catalog — 3 состояния mobile flow для prostor-app: [PNG для GitHub-просмотра](docs/management/screenshots/vision-catalog-ux-mockup.png) / [интерактивная HTML-версия](docs/management/vision-catalog-ux-mockup.html) (открыть локально)
 - [Handoff для фронт-команды](docs/management/vision-catalog-handoff.md) — API контракты, UX-нюансы
 - [Скриншоты Document Store setup](docs/experiments/vision-catalog/screenshots/document-store-setup/) — визуальный референс настроенной системы
 
