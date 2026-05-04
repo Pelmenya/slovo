@@ -108,7 +108,7 @@ prisma/schema/
 ├── main.prisma            # generator client + generator nestjsDto + datasource
 ├── health.prisma          # HealthCheck + HealthCheckStatus enum
 ├── user.prisma            # (будет)
-├── water-analysis.prisma  # (будет)
+├── water-analysis.prisma  # WaterAnalysisRaw + WaterAnalysis + enums (Этап 1.A + 1.B)
 └── notes-rag.prisma       # (будет)
 ```
 
@@ -136,6 +136,7 @@ prisma/schema/
 - **Prod:** `npx prisma migrate deploy`. Откат = новая revert-миграция с обратными изменениями (а не правка истории). Перед деплоем — автоматический `pg_dump` в CI/CD, `pg_restore` если что.
 - **Разрушающие операции** (`DROP COLUMN`, `ALTER COLUMN TYPE`): обычно безопаснее разбить на 3 миграции (add → backfill → drop), чем делать одной.
 - **Ручной SQL** в migration.sql (нужен для HNSW-индекса pgvector, сложных CTE) — через `migrate dev --create-only`, правка файла, потом `migrate dev`. В PR обязательно описать ручную часть.
+- **Drift от Flowise-managed таблиц** (Document Store создаёт `<storeId>_chunks` / `<storeId>_record_manager` через TypeORM вне Prisma migration history) — `migrate dev` будет хотеть `migrate reset`, что сносит данные. Workaround: `migrate diff --from-migrations prisma/migrations --to-schema prisma/schema --script > migration.sql` → положить в `prisma/migrations/<timestamp>_<name>/migration.sql` → применить через `docker exec -i slovo-postgres psql -U slovo -d slovo < migration.sql` → пометить applied через `npx prisma migrate resolve --applied <migration_name>` → `npm run prisma:generate`. Shadow DB `slovo_shadow` уже создана и прописана в `prisma.config.ts` через `SHADOW_DATABASE_URL` — нужна для diff. Прецедент: `20260504072555_add_water_analysis`.
 
 Полные правила — в `docs/architecture/decisions/005-prisma-with-pgvector.md` → «Миграции — только forward».
 
@@ -167,6 +168,33 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 Полный разбор «что можно в Flowise, что руками» — в `docs/guides/flowise-vs-nestjs.md`. Референс-тьюториал — `~/Desktop/test-marpla/docs/tutorial/` (5 уровней).
 
 **Правило при отладке Flowise:** официальная документация (docs.flowiseai.com) **не покрывает всё** — особенно нюансы механики chain-нод и API override. При непонятном поведении — **сразу лезь в исходник** через `docker exec slovo-flowise sh -c "cat /usr/local/lib/node_modules/flowise/dist/routes/<feature>/index.js"` или `node_modules/flowise-components/nodes/<category>/<name>/`. На догадки по UI / issues теряется от часа до целого дня, исходник даёт ответ за 5 минут.
+
+### Flowise LLM Chain `overrideConfig.promptValues` — РАБОТАЕТ (важно)
+
+**Я забывал это правило дважды.** В Flowise 3.x для LLM Chain `overrideConfig.promptValues` через API **РАБОТАЕТ**. Полный разбор — `docs/guides/flowise-vs-nestjs.md` секция «✅ B. `overrideConfig.promptValues` — ДОКОПАЛИСЬ».
+
+Три условия чтобы работало:
+
+1. **`{input}` обязан быть ПОСЛЕДНЕЙ переменной шаблона.** `question` из API hard-map'ится в last var через `[lastValue]: input` (исходник `LLMChain.ts`). `promptValues` его НЕ перебивает — это auto-map для user-input.
+2. **Остальные vars** (`{language}`, `{tenant}`, `{labRegion}`, ...) — пишутся ВЫШЕ `{input}` и подставляются через `overrideConfig.promptValues` в payload.
+3. **Security → Override Configuration → `promptValues` toggle включить + Save** в UI chatflow'а ИЛИ в `apiConfig.overrideConfig` при создании через REST. Без toggle API-override игнорируется (дефолт для безопасности).
+
+**Partial vars в UI ноды (Format Prompt Values)** имеют **приоритет** выше API. Для чистого API-override — очистить partial vars в ноде.
+
+Перед утверждением «promptValues в LLM Chain не работает» / «LLM Chain legacy» — обязательно сверить с `docs/guides/flowise-vs-nestjs.md` секция «✅ B». Memory `project_flowise_proxy_bootstrap` содержит pre-update вывод — не использовать как источник правды без верификации.
+
+### Flowise — конвенции нейминга ресурсов
+
+Полные правила — в `docs/guides/flowise-naming.md`. Краткая выжимка обязательная для всех:
+
+- **Chatflows / AgentFlows:** `<domain>-<task>[-<modifier>]-<version>` — `water-analysis-extractor-vision-v1`, `catalog-augmenter-vision-v1`. Domain первым словом всегда (якорь сортировки и фильтрации). Task — существительное на `-er`/`-or` (`extractor`, не `extract`). Modifier (`vision`/`text`/`tool-agent`) — только когда есть параллельные варианты той же task. Version `-vN` обязательно, инкрементально.
+- **Document Stores:** `<domain>-<source>` — `catalog-aquaphor`, `knowledge-base-text` (без version, store обычно один).
+- **Credentials:** `<provider>-<env>` — `anthropic-prod`, `openai-prod`.
+- **Variables:** `UPPER_SNAKE_CASE` (как env vars) — `WATER_ANALYSIS_BUDGET_USD`, `CATALOG_VISION_DAILY_CAP_USD`.
+- **Custom Tools:** `<domain>-<action>` — `catalog-search-by-image`, `water-analysis-fetch-similar`.
+- **Общие правила:** lowercase, kebab-case, ASCII, singular. Никакой кириллицы, заглавных, точек, эмодзи в именах.
+
+При создании нового ресурса через MCP (`flowise_chatflow_create` / `flowise_credentials_create` и т.д.) — сначала прогнать `flowise_chatflow_list` / `flowise_introspect`, чтобы не плодить конфликт имён.
 
 ### Правило использования MCP-инструментов (главное)
 
@@ -260,6 +288,8 @@ const flowData = serializeFlowData(buildChatflow({
 ### Playwright MCP — браузер для всех задач где нужен браузер
 
 Глобально установленный (`scope=user`, `~/.claude.json`) MCP-сервер для работы с браузером — изолированный chromium instance (не твоя живая сессия). Использую вместо просьбы скриншотов от разработчика, для всех задач где требуется браузер.
+
+**ОБЯЗАТЕЛЬНО** — visual check после любого `flowise_chatflow_create` / `flowise_chatflow_update` / запуска скрипта который генерит flowData через `@slovo/flowise-flowdata`. REST/MCP `chatflow_get` возвращает структурно корректный JSON, **но это не гарантирует что Flowise UI рисует edges** — handles могут быть broken (handles с пробелами `' | '`, отсутствующее поле `id` в anchors, рассогласование sourceHandle/targetHandle с anchor.id). Прецедент 2026-05-04: water-analysis-extractor-vision-v1 создан, MCP get показал 4 ноды + 3 edges, но в UI edges не было — обнаружили только после Playwright screenshot. См. memory `feedback_visual_check_after_chatflow_create`.
 
 **Когда использовать (broad-usage):**
 

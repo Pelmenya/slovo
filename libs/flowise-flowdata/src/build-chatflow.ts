@@ -26,6 +26,21 @@ export function buildChatflow(params: TBuildChatflowParams): TFlowData {
         nodesById[n.id] = n;
     }
     const builtEdges = edges.map((e) => buildEdge(e, nodesById));
+
+    // Прописываем template references в inputs target-нод по edges. Flowise
+    // runtime читает `nodeData.inputs.<anchorName>` ожидая строку
+    // `{{<sourceNodeId>.data.instance}}` — этот формат разрешается в runtime
+    // в actual instance source-ноды. Без этого LLM Chain ругается
+    // `Cannot read properties of undefined (reading 'promptValues')`,
+    // ConversationChain — `model is required`. Прецедент 2026-05-04.
+    // Catalog-augmenter тому пример: его conversationChain inputs содержат
+    // model: "{{chatAnthropic_0.data.instance}}", memory: "{{bufferWindowMemory_0.data.instance}}".
+    for (const edgeSpec of edges) {
+        const target = nodesById[edgeSpec.target];
+        if (!target) continue;
+        target.data.inputs[edgeSpec.targetAnchor] = `{{${edgeSpec.source}.data.instance}}`;
+    }
+
     return { nodes, edges: builtEdges };
 }
 

@@ -5,12 +5,24 @@ import type { TBuilderEdgeSpec, TFlowEdge, TFlowNode } from './t-flowdata';
 // sourceHandle = "<nodeId>-output-<anchorName>-<anchorType>"
 // targetHandle = "<nodeId>-input-<anchorName>-<anchorType>"
 //
-// Где anchorType — конкатенация baseClasses через "|".
+// Где anchorType — конкатенация baseClasses через "|" БЕЗ пробелов.
+//
+// ВАЖНО: outputAnchor.type в Flowise хранится в **двух форматах**:
+//   - Для UI label / отображения — "ChatAnthropic | BaseChatModel | Runnable" (С пробелами)
+//   - Для handle'а edge'ов — "ChatAnthropic|BaseChatModel|Runnable" (БЕЗ пробелов)
+// nodes-base.ts генерит anchor.type С пробелами (UI label), а здесь мы СОКРАЩАЕМ
+// в handle'е — иначе Flowise UI не рендерит соединение между нодами.
+// Прецедент: 2026-05-04 при создании water-analysis-extractor-vision-v1 ноды
+// визуально не были соединены, причина — handles содержали пробелы.
 // =============================================================================
 
 // Тип edge'ов в Flowise — на момент 3.x всегда "buttonedge". В ранних версиях
 // был "default". Если Flowise schema меняется — правим тут одно место.
 export const FLOWISE_EDGE_TYPE = 'buttonedge' as const;
+
+function compactAnchorType(type: string): string {
+    return type.replace(/ \| /g, '|');
+}
 
 function findAnchor(
     anchors: TFlowNode['data']['inputAnchors'] | TFlowNode['data']['outputAnchors'],
@@ -37,7 +49,7 @@ export function makeSourceHandle(node: TFlowNode, anchorName?: string): string {
             `Node ${node.id} output anchor "${anchor.name}" has empty type — likely empty baseClasses in spec`,
         );
     }
-    return `${node.id}-output-${anchor.name}-${anchor.type}`;
+    return `${node.id}-output-${anchor.name}-${compactAnchorType(anchor.type)}`;
 }
 
 export function makeTargetHandle(node: TFlowNode, anchorName: string): string {
@@ -50,7 +62,7 @@ export function makeTargetHandle(node: TFlowNode, anchorName: string): string {
             `Node ${node.id} input anchor "${anchor.name}" has empty type`,
         );
     }
-    return `${node.id}-input-${anchor.name}-${anchor.type}`;
+    return `${node.id}-input-${anchor.name}-${compactAnchorType(anchor.type)}`;
 }
 
 export function buildEdge(

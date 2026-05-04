@@ -600,6 +600,33 @@ if (mappingWasPopulated && skipRate < 0.5) {
 
 Триггер: когда vision-describer / Q&A флоу выйдут в прод и cost prompt-кэшированию реально оправдает оценку. Тогда — два дня A/B на staging (autocache off vs on), решение по cache hit %.
 
+**Эмпирический A/B 2026-05-04 на water-analysis Stress 100 — autocache НЕ работает на нашем профиле:**
+
+Проведён прямой A/B на 100 идентичных Vision-extraction вызовов через chatflow `water-analysis-extractor-vision-v1` (Haiku 4.5, system_prompt ~7488 символов на русском, без tools, image upload):
+
+| Метрика | Без autocache (Stress 100) | С autocache moderate (Stress 100') |
+|---|---|---|
+| input_no_cache (Anthropic CSV) | 387,816 | 388,930 |
+| **cache_read tokens** | **0** | **0** |
+| **cache_write tokens** | **0** | **0** |
+| output_tokens | 86,699 | 87,504 |
+| Cost | $0.82 | $0.83 |
+| Время | 825 сек | 914 сек (+11%) |
+
+autocache **физически работает** (HTTP-цепочка ОК, в логах `cache_injected=true, cache_ratio=0.97, cached_tokens=4227`), но Anthropic API возвращает `cache_creation=0, cache_read=0` на каждом запросе. Сам autocache report'ит `roi_percent=0`.
+
+**Корневая причина**: heuristic tokenizer autocache (offline tokenizer panic'ит на русских chars `°², H₂S, ²⁻`, fallback'ится на char/4) посчитал system_prompt как 4227 cached tokens — выше порога Haiku 4.5 (2048 tokens). Но Anthropic-овский tokenizer считает русский текст эффективнее (~2 chars/token), реально получилось ≤2048 токенов → cache silently отключён Anthropic'ом.
+
+**Когда autocache реально поможет**:
+- Длинные **английские** system prompts (5K+ chars гарантированно даст 2048+ tokens)
+- **Tools schemas** (5K+ tokens отдельным блоком — типичный agent кейс с 10+ tools)
+- Sonnet/Opus (минимум 1024 tokens вместо 2048) — для коротких prompts на русском может сработать
+- В наших сценариях: future Q&A chat с большим контекстом, RAG с длинным retrieval
+
+**Решение**: для water-analysis Full 6000 — без autocache, $49 как ожидалось. Если в Phase 3 webhook ingest появится длинный system prompt или tools — снова попробовать (минимальное усилие — раскомментировать service в docker-compose). Pre-test: измерить input_tokens первого ответа Anthropic — если ≥2500 для Haiku, cache имеет шанс.
+
+**Эмпирическая находка зафиксирована в memory `feedback_autocache_haiku_russian_threshold`.**
+
 ### 35. SHA256-кэш повторных image-запросов (Vision dedup) — pre-launch blocker
 
 **Контекст:** prostor-app — открытая клиентская платформа. Естественный паттерн клиента: сфотографировал свой картридж → искал → не нашёл / нашёл → через минуту пробует **тот же** запрос снова (или с минимальным crop'ом). Сейчас каждый image-запрос идёт в Anthropic Vision ($0.005-0.007), даже на байт-в-байт идентичный файл.

@@ -49,14 +49,15 @@ describe('buildChatflow', () => {
         expect(parsed.edges).toHaveLength(4);
     });
 
-    it('credential подставляется в inputs.FLOWISE_CREDENTIAL_ID', () => {
+    it('credential ID попадает в data.credential как string', () => {
         const flow = buildChatflow({
             nodes: [
                 chatAnthropic({ id: 'llm', credential: 'cred-anthropic-1' }),
             ],
         });
         const node = flow.nodes[0];
-        expect(node?.data.inputs.FLOWISE_CREDENTIAL_ID).toBe('cred-anthropic-1');
+        expect(node?.data.credential).toBe('cred-anthropic-1');
+        expect(node?.data.inputs.FLOWISE_CREDENTIAL_ID).toBeUndefined();
     });
 
     it('inputs ноды пробрасываются корректно (form values)', () => {

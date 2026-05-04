@@ -61,7 +61,7 @@ describe('factories', () => {
             });
             expect(customNode.data.inputs.modelName).toBe('claude-sonnet-4-6');
             expect(customNode.data.inputs.temperature).toBe(0.3);
-            expect(customNode.data.inputs.FLOWISE_CREDENTIAL_ID).toBe('cred-1');
+            expect(customNode.data.credential).toBe('cred-1');
         });
     });
 
@@ -131,12 +131,13 @@ describe('factories', () => {
             ]);
         });
 
-        it('default output anchor строится из baseClasses', () => {
+        it('default output anchor строится из baseClasses (с compact id)', () => {
             expect(node.data.outputAnchors).toEqual([
                 {
                     label: 'OpenAI Embeddings',
                     name: 'openAIEmbeddings',
                     type: 'OpenAIEmbeddings | Embeddings',
+                    id: 'emb-output-openAIEmbeddings-OpenAIEmbeddings|Embeddings',
                 },
             ]);
         });
@@ -217,7 +218,7 @@ describe('factories', () => {
 
         it('явные outputs из spec используются (не дефолтный)', () => {
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Output', name: 'output', type: 'options' },
+                { label: 'Output', name: 'output', type: 'options', id: 'pg-output-output-options' },
             ]);
         });
 
@@ -249,7 +250,7 @@ describe('factories', () => {
 
         it('явные outputs', () => {
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Output', name: 'output', type: 'options' },
+                { label: 'Output', name: 'output', type: 'options', id: 'ds-output-output-options' },
             ]);
         });
     });
@@ -412,7 +413,7 @@ describe('factories', () => {
 
         it('явные outputs', () => {
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Output', name: 'output', type: 'options' },
+                { label: 'Output', name: 'output', type: 'options', id: 'json-output-output-options' },
             ]);
         });
     });
@@ -468,7 +469,7 @@ describe('factories', () => {
 
         it('явные outputs', () => {
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Output', name: 'output', type: 'options' },
+                { label: 'Output', name: 'output', type: 'options', id: 's3-output-output-options' },
             ]);
         });
     });

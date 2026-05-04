@@ -26,9 +26,10 @@ describe('genericNode', () => {
         expect(node.data.inputs.temperature).toBe(0.5);
     });
 
-    it('credential попадает в inputs.FLOWISE_CREDENTIAL_ID', () => {
+    it('credential ID попадает в data.credential как string', () => {
         const node = genericNode({ id: 'gen-1', spec: FULL_SPEC, credential: 'cred-x' });
-        expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBe('cred-x');
+        expect(node.data.credential).toBe('cred-x');
+        expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBeUndefined();
     });
 });
 

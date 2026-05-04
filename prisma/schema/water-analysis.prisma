@@ -1,0 +1,119 @@
+// Water Analysis — два уровня данных по бланкам анализа воды.
+//
+// Этап 1.A — WaterAnalysisRaw: append-only, immutable. Сырое extraction
+// от Claude Vision + Ахантер + filename regex. Никаких enums, никакой
+// нормализации единиц/синонимов параметров. Источник правды.
+//
+// Этап 1.B — WaterAnalysis: derived from raw, перегенерируемое.
+// Каноничные параметры, enum WaterSourceType, разобранный адрес.
+// normalizationVersion позволяет держать несколько версий нормализации
+// параллельно для A/B сравнения.
+//
+// Embedding column добавится в Этапе 2 отдельной миграцией:
+//   ALTER TABLE water_analysis ADD COLUMN embedding vector(1536);
+//   CREATE INDEX water_analysis_embedding_hnsw_idx ON water_analysis
+//       USING hnsw (embedding vector_cosine_ops);
+//
+// PII (customerName, customerPhone) на этапе эксперимента живёт
+// в experiments/water-analysis-dataset/data/pii.jsonl (gitignored,
+// локально). Когда фича пойдёт в slovo runtime + auth + РФ-инстанс
+// БД — добавим обратно отдельной миграцией.
+//
+// См. docs/features/water-analysis.md.
+
+model WaterAnalysisRaw {
+    id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+    // Из имени файла (regex, бесплатно)
+    orderNumber     String   @unique @map("order_number") @db.VarChar(32)
+    sourceFileName  String   @map("source_file_name") @db.VarChar(512)
+
+    // SHA256 hex исходного .docx/.dotx/.pdf файла. Используется для idempotency:
+    // если orderNumber+hash совпадает — skip extraction. Если orderNumber совпадает
+    // но hash другой — файл переименован/обновлён, alert вручную.
+    sourceFileHash  String?  @map("source_file_hash") @db.VarChar(64)
+
+    // filenameMeta: { orderNumber, dealerLocation, customerName, sourceTypeHint, sampleDate }
+    filenameMeta    Json     @map("filename_meta")
+
+    // Vision raw output как пришёл от Claude через Flowise chatflow
+    visionPayload   Json     @map("vision_payload")
+    visionModel     String   @map("vision_model") @db.VarChar(64)
+    visionTokensIn  Int      @map("vision_tokens_in")
+    visionTokensOut Int      @map("vision_tokens_out")
+
+    // Ахантер raw response, что вернул на rawAddress (или dealerLocation fallback)
+    ahunterRawAddress     String?  @map("ahunter_raw_address") @db.VarChar(512)
+    ahunterRawResponse    Json?    @map("ahunter_raw_response")
+    ahunterDealerResponse Json?    @map("ahunter_dealer_response")
+
+    extractedAt     DateTime @default(now()) @map("extracted_at")
+
+    normalized      WaterAnalysis?
+
+    @@index([extractedAt])
+    @@index([sourceFileHash])
+    @@map("water_analysis_raw")
+}
+
+model WaterAnalysis {
+    id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+    rawId           String   @unique @map("raw_id") @db.Uuid
+    raw             WaterAnalysisRaw @relation(fields: [rawId], references: [id], onDelete: Cascade)
+
+    orderNumber     String   @unique @map("order_number") @db.VarChar(32)
+    sourceFileName  String   @map("source_file_name") @db.VarChar(512)
+
+    // Каноничные значения после нормализации
+    sampleDate      DateTime @map("sample_date") @db.Date
+    testDate        DateTime? @map("test_date") @db.Date
+    intakeType      WaterSourceType @map("intake_type")
+    appearance      String?  @db.VarChar(256)
+
+    // params: { hardness: { value, unit, exceedsPdk, belowDetectionLimit }, iron: {...}, ... }
+    params          Json
+
+    // Адрес — каноническая форма от Ахантера
+    canonicalAddress String? @map("canonical_address") @db.VarChar(512)
+    fiasId          String?  @map("fias_id") @db.VarChar(64)
+    region          String?  @db.VarChar(128)
+    district        String?  @db.VarChar(128)
+    locality        String?  @db.VarChar(128)
+    lat             Float?
+    lon             Float?
+    geocodeSource   GeocodeSource @map("geocode_source")
+
+    // Из имени файла (после нормализации dealerLocation)
+    dealerLocation  String?  @map("dealer_location") @db.VarChar(256)
+    // FK на pii.jsonl (string id, не DB constraint — pii живёт вне БД на этапе эксперимента)
+    customerNameRef String?  @map("customer_name_ref") @db.Uuid
+
+    normalizationVersion String @map("normalization_version") @db.VarChar(16)
+    normalizedAt    DateTime @default(now()) @map("normalized_at")
+
+    @@index([region, district])
+    @@index([sampleDate])
+    @@index([intakeType])
+    @@index([normalizationVersion])
+    @@map("water_analysis")
+}
+
+enum WaterSourceType {
+    well        // скважина
+    well_dug    // колодец
+    municipal   // водопровод
+    spring      // родник
+    river       // открытый водоём
+    other
+
+    @@map("water_source_type")
+}
+
+enum GeocodeSource {
+    blank             // адрес из тела бланка → Ахантер
+    dealer_fallback   // адрес объекта пуст → Ахантер по dealerLocation
+    none              // оба источника пусты или невалидны
+
+    @@map("geocode_source")
+}

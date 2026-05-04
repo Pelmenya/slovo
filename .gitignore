@@ -56,3 +56,4 @@ prisma/migrations/dev.db*
 
 # Playwright MCP временные snapshot'ы / screenshot'ы.
 .playwright-mcp/
+.claude/scheduled_tasks.lock

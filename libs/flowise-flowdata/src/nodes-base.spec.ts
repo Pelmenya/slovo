@@ -77,13 +77,16 @@ describe('nodes-base', () => {
             expect(node.data.inputs).toEqual({});
         });
 
-        it('credential попадает в inputs.FLOWISE_CREDENTIAL_ID', () => {
+        it('credential ID попадает в data.credential как string', () => {
+            // Прецедент 2026-05-04: data.credential должен быть string ID,
+            // не spec object. inputs.FLOWISE_CREDENTIAL_ID — устаревший формат.
             const node = nodeFromSpec({
                 id: 'n1',
                 spec: minimalSpec,
                 credential: 'cred-xyz',
             });
-            expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBe('cred-xyz');
+            expect(node.data.credential).toBe('cred-xyz');
+            expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBeUndefined();
         });
 
         it('credential НЕ затирает остальные inputs', () => {
@@ -94,28 +97,34 @@ describe('nodes-base', () => {
                 credential: 'cred-xyz',
             });
             expect(node.data.inputs.foo).toBe('bar');
-            expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBe('cred-xyz');
+            expect(node.data.credential).toBe('cred-xyz');
         });
 
-        it('credential отсутствует → FLOWISE_CREDENTIAL_ID не появляется', () => {
+        it('credential отсутствует → data.credential = undefined', () => {
             const node = nodeFromSpec({ id: 'n1', spec: minimalSpec });
+            expect(node.data.credential).toBeUndefined();
             expect(node.data.inputs.FLOWISE_CREDENTIAL_ID).toBeUndefined();
         });
 
-        it('credential из spec (decorator) проброшен в data.credential', () => {
+        it('credential descriptor из spec → попадает в inputParams (display: true), а data.credential остаётся undefined без явного credential id', () => {
+            // spec.credential — это descriptor для UI form field, а не значение.
+            // Без явного credential ID dropdown остаётся пустым.
             const credSpec: TFlowiseNodeSpec = {
                 ...minimalSpec,
                 credential: { label: 'Credential', name: 'credential', type: 'credential' },
             };
             const node = nodeFromSpec({ id: 'n1', spec: credSpec });
-            expect(node.data.credential).toEqual({
+            expect(node.data.credential).toBeUndefined();
+            const credParam = node.data.inputParams?.find((p) => p.name === 'credential');
+            expect(credParam).toMatchObject({
                 label: 'Credential',
                 name: 'credential',
                 type: 'credential',
+                display: true,
             });
         });
 
-        it('outputs из spec используются если заданы явно', () => {
+        it('outputs из spec используются если заданы явно (с добавленным id)', () => {
             const specWithOutputs: TFlowiseNodeSpec = {
                 ...minimalSpec,
                 outputs: [
@@ -124,14 +133,20 @@ describe('nodes-base', () => {
             };
             const node = nodeFromSpec({ id: 'n1', spec: specWithOutputs });
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Output', name: 'output', type: 'options' },
+                { label: 'Output', name: 'output', type: 'options', id: 'n1-output-output-options' },
             ]);
         });
 
-        it('outputs не заданы → buildDefaultOutputAnchor строит anchor с baseClasses.join(" | ")', () => {
+        it('outputs не заданы → buildDefaultOutputAnchor строит anchor с baseClasses.join(" | ") и compact id', () => {
             const node = nodeFromSpec({ id: 'n1', spec: minimalSpec });
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Minimal', name: 'minimal', type: 'Minimal | Runnable' },
+                {
+                    label: 'Minimal',
+                    name: 'minimal',
+                    type: 'Minimal | Runnable',
+                    // type в anchor для UI label — С пробелами; id для handle — БЕЗ пробелов
+                    id: 'n1-output-minimal-Minimal|Runnable',
+                },
             ]);
         });
     });
@@ -248,7 +263,7 @@ describe('nodes-base', () => {
         // дефолтный output anchor получает type = "" (пустая строка).
         // Это потенциальный баг — Flowise может не уметь подключать к anchor
         // без типа. См. финальный отчёт.
-        it('пустой baseClasses + нет outputs → output anchor.type = ""', () => {
+        it('пустой baseClasses + нет outputs → output anchor.type = "", id с пустым type-suffix', () => {
             const node = nodeFromSpec({
                 id: 'n1',
                 spec: {
@@ -261,7 +276,7 @@ describe('nodes-base', () => {
                 },
             });
             expect(node.data.outputAnchors).toEqual([
-                { label: 'Empty', name: 'empty', type: '' },
+                { label: 'Empty', name: 'empty', type: '', id: 'n1-output-empty-' },
             ]);
         });
     });

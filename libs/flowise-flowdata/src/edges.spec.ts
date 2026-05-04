@@ -6,11 +6,15 @@ import { postgresVectorStore } from './factories/vectorstores';
 
 describe('edges', () => {
     describe('makeSourceHandle', () => {
-        it('строит handle с anchor name + concatenated baseClasses', () => {
+        it('строит handle с anchor name + concatenated baseClasses БЕЗ пробелов', () => {
+            // Регрессия 2026-05-04: handle должен быть БЕЗ пробелов вокруг |.
+            // anchor.type в outputAnchors хранится С пробелами для UI label,
+            // но в handle'е separator должен быть compact, иначе Flowise UI
+            // не рендерит соединение между нодами. См. edges.ts compactAnchorType().
             const node = chatAnthropic({ id: 'llm' });
             const handle = makeSourceHandle(node);
             expect(handle).toBe(
-                'llm-output-chatAnthropic-ChatAnthropic | ChatAnthropicMessages | BaseChatModel | BaseLanguageModel | Runnable',
+                'llm-output-chatAnthropic-ChatAnthropic|ChatAnthropicMessages|BaseChatModel|BaseLanguageModel|Runnable',
             );
         });
 

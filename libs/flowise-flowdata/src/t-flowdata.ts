@@ -7,10 +7,16 @@ export type TFlowAnchor = {
     label: string;
     name: string;
     type: string;
+    // id — React Flow handle ID. Без него UI Flowise не сматчит handle с edge.
+    // Заполняется в nodeFromSpec по формуле `<nodeId>-<direction>-<name>-<compactType>`.
+    id?: string;
     description?: string;
     optional?: boolean;
     list?: boolean;
     options?: Array<{ label: string; name: string; description?: string }>;
+    // baseClasses — встречается в outputs некоторых chain-нод вместо type.
+    // nodeFromSpec синтезирует из него type через `baseClasses.join(' | ')`.
+    baseClasses?: string[];
 };
 
 export type TFlowNodeData = {
@@ -30,7 +36,9 @@ export type TFlowNodeData = {
     selected?: boolean;
     icon?: string;
     badge?: string;
-    credential?: TFlowAnchor;
+    // String ID выбранного credential (UUID) — не spec object.
+    // Spec credential descriptor живёт в inputParams как form field.
+    credential?: string;
 };
 
 export type TFlowNode = {
