@@ -24,6 +24,41 @@ visionTokensOut: number ;
 ahunterRawAddress: string  | null;
 ahunterRawResponse: Prisma.JsonValue  | null;
 ahunterDealerResponse: Prisma.JsonValue  | null;
+addressPreCleaned: string  | null;
+@ApiProperty({
+  type: `string`,
+  format: `date-time`,
+})
+addressPreCleanedAt: Date  | null;
+ahunterCleansed: Prisma.JsonValue  | null;
+@ApiProperty({
+  type: `string`,
+  format: `date-time`,
+})
+ahunterCleansedAt: Date  | null;
+ahunterCleansedTier: string  | null;
+ahunterCleansedQuery: string  | null;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+geoLat: number  | null;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+geoLon: number  | null;
+geoRegion: string  | null;
+geoCity: string  | null;
+geoPretty: string  | null;
+geoLevel: string  | null;
+aiVerified: string  | null;
+@ApiProperty({
+  type: `string`,
+  format: `date-time`,
+})
+aiVerifiedAt: Date  | null;
+aiVerifiedNotes: string  | null;
 @ApiProperty({
   type: `string`,
   format: `date-time`,

@@ -42,10 +42,34 @@ model WaterAnalysisRaw {
     visionTokensIn  Int      @map("vision_tokens_in")
     visionTokensOut Int      @map("vision_tokens_out")
 
-    // Ахантер raw response, что вернул на rawAddress (или dealerLocation fallback)
+    // Ахантер raw response, что вернул на rawAddress (или dealerLocation fallback) — old pipeline
     ahunterRawAddress     String?  @map("ahunter_raw_address") @db.VarChar(512)
     ahunterRawResponse    Json?    @map("ahunter_raw_response")
     ahunterDealerResponse Json?    @map("ahunter_dealer_response")
+
+    // === Этап 1.B address-resolution pipeline ===
+    // Step 1: TS pre-clean (regex strip phone/parens/tail-noise/typos)
+    addressPreCleaned       String?   @map("address_pre_cleaned") @db.VarChar(512)
+    addressPreCleanedAt     DateTime? @map("address_pre_cleaned_at")
+
+    // Step 2: Ahunter /cleanse/address (full response для optimization later)
+    ahunterCleansed         Json?     @map("ahunter_cleansed")
+    ahunterCleansedAt       DateTime? @map("ahunter_cleansed_at")
+    ahunterCleansedTier     String?   @map("ahunter_cleansed_tier") @db.VarChar(20)
+    ahunterCleansedQuery    String?   @map("ahunter_cleansed_query") @db.VarChar(512)
+
+    // Денормализованные удобные поля (частые query без JSONB digging)
+    geoLat                  Float?    @map("geo_lat")
+    geoLon                  Float?    @map("geo_lon")
+    geoRegion               String?   @map("geo_region") @db.VarChar(64)
+    geoCity                 String?   @map("geo_city") @db.VarChar(64)
+    geoPretty               String?   @map("geo_pretty") @db.VarChar(512)
+    geoLevel                String?   @map("geo_level") @db.VarChar(16)
+
+    // AI verification (Claude review verdict)
+    aiVerified              String?   @map("ai_verified") @db.VarChar(16)
+    aiVerifiedAt            DateTime? @map("ai_verified_at")
+    aiVerifiedNotes         String?   @map("ai_verified_notes") @db.VarChar(512)
 
     extractedAt     DateTime @default(now()) @map("extracted_at")
 
@@ -53,6 +77,9 @@ model WaterAnalysisRaw {
 
     @@index([extractedAt])
     @@index([sourceFileHash])
+    @@index([ahunterCleansedAt])
+    @@index([aiVerified])
+    @@index([geoLat, geoLon])
     @@map("water_analysis_raw")
 }
 

@@ -24,9 +24,15 @@
 | Этап | Артефакт | Расчётная стоимость |
 |---|---|---|
 | **1.A** Raw extraction | таблица `WaterAnalysisRaw` со всеми 6000 бланками: `visionPayload` от Claude как есть, `filenameMeta` regex, `ahunterResponse` целиком | ~$15-20 Claude Vision + ≤1 200 ₽ Ахантер ≈ **3 000 ₽** |
+| **1.A.5** Address resolution *(добавлен 2026-05-05, фактически закрыт)* | поля `address_pre_cleaned`, `ahunter_cleansed` JSONB, `geo_lat/lon/region/city/pretty/level`, `ai_verified` в `WaterAnalysisRaw`. Pre-clean (TS regex) → Ahunter `/cleanse` 3-tier (strict → suggest+strict → smart) → Claude AI verify | ~1 370 ₽ Ahunter `/cleanse` + ~3 часа manual Claude review |
 | **1.B** Normalization | таблица `WaterAnalysis` с каноническими `params{hardness, iron, ...}`, enum `WaterSourceType`, разобранным адресом | $0 (детерминированный transform, повторяемо без расходов) |
 | **2** Embeddings | колонка `embedding vector(1536)` + HNSW-индекс + endpoint `/water-analysis/similar` | ~$0.06 OpenAI embeddings + время на формат embedding text |
 | **3** Real-time + endpoints | webhook из CRM, geo-аналитика, карта МО | infrastructural |
+
+> **Этап 1.A.5 status (2026-05-05):** 11 948 / 15 504 records cleansed,
+> 90.8% точных совпадений, 3.9% wrong (цель <5% выполнена). Осталось
+> 3 556 no_match/empty — на dealer-median fallback. См. lab journal
+> `docs/experiments/water-analysis/2026-05-05-address-resolution.md`.
 
 ---
 
