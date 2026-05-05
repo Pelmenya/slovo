@@ -843,6 +843,29 @@ async reconcileFromChunks(): Promise<number> {
 
 ---
 
+## Water Analysis (Этап 1.A.5 → 1.B)
+
+### 21. Prisma enum для `WaterAnalysisRaw.aiVerified` и `geoLevel`
+
+Сейчас `aiVerified VARCHAR(16)` со значениями `ok|uncertain|wrong` и `geoLevel VARCHAR(16)` со значениями `Region|City|District|Place|Site|Street|...` — обе колонки кандидаты на Prisma `enum`. Текущий риск: опечатка типа `'OK'` vs `'ok'` пройдёт без ошибки и поломает фильтры в downstream (например, в dealer-median-fallback `WHERE ai_verified = 'ok'`).
+
+**Триггер:** перед первым прогоном dealer-median-fallback (#38) — если за это время значений `aiVerified`/`geoLevel` не прибавится. Если прибавятся — конвертить в Этапе 1.B (нормализация WaterAnalysis).
+
+**Стоимость:** одна миграция `ALTER TABLE ... ALTER COLUMN ... TYPE` через `USING ::enum_name` cast — секунды на 15 504 rows.
+
+### 22. Spatial GiST/SP-GiST на `(geo_lat, geo_lon)` при росте dataset
+
+Текущий composite btree `(geo_lat, geo_lon)` подходит для bounding-box queries (`WHERE geo_lat BETWEEN ... AND ... AND geo_lon BETWEEN ...`), но не даёт радиальный поиск (`ORDER BY ST_Distance(...) LIMIT N`). При:
+
+- росте dataset до >100k records (масштабирование на другие лабы / города), или
+- активации UX «клик на карте → ближайшие N анализов с похожими параметрами»,
+
+— перейти на PostGIS `GEOGRAPHY(POINT)` колонку + GiST индекс **или** на `cube` + `earthdistance` extension для радиального поиска. Сейчас 11 948 cleansed rows → seq scan норм, не критично.
+
+**Триггер:** при росте × 10 или при появлении UI-фичи «найди похожие в радиусе».
+
+---
+
 ## Workflow
 
 - При добавлении новой зоны технического долга — писать сюда + синхронизировать с `CLAUDE.md` если нужно.

@@ -122,7 +122,7 @@ Final v5 в production. Postfilter:
 - **Token-overlap ≥0.5:** жёсткий semantic-фильтр на случай когда Ahunter
   возвращает `precision=100% recall=100%` для chunk-mismatched results.
 
-### 4. `05-ahunter-cleanse.ts` — three-tier на 15 004 records
+### 4. `05-ahunter-cleanse.ts` — three-tier на 15 504 records
 
 Strict (10 коп) → Suggest+Strict (free + 10) → Smart (20 коп) с postfilter v5.
 
@@ -130,7 +130,7 @@ Strict (10 коп) → Suggest+Strict (free + 10) → Smart (20 коп) с postf
 запуск (например, если ловили rate limit или меняли логику postfilter)
 не дёргает API заново для уже виденных query.
 
-**Прогон:** **17m 30s wall clock** на 15 004 записей.
+**Прогон:** **17m 30s wall clock** на 15 504 записей.
 
 **Tier распределение:**
 

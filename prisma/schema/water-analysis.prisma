@@ -47,7 +47,8 @@ model WaterAnalysisRaw {
     ahunterRawResponse    Json?    @map("ahunter_raw_response")
     ahunterDealerResponse Json?    @map("ahunter_dealer_response")
 
-    // === Этап 1.B address-resolution pipeline ===
+    // === Этап 1.A.5 address-resolution pipeline ===
+    // (Этап 1.B остаётся за нормализацией params/units/PDK — другая фаза.)
     // Step 1: TS pre-clean (regex strip phone/parens/tail-noise/typos)
     addressPreCleaned       String?   @map("address_pre_cleaned") @db.VarChar(512)
     addressPreCleanedAt     DateTime? @map("address_pre_cleaned_at")
