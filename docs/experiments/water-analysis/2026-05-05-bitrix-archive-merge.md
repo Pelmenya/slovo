@@ -131,8 +131,89 @@ vs single-thread оценка `~10000 × 5sec/file = 14 hours` — **ускор�
 5. **Single source of truth для blanks/** — на будущее. Сегодня потеряли 5 минут
    на разные пути.
 
-## Next
+## Финал extract (Этап 1.A complete для расширенного датасета)
 
-- Топап Anthropic credits на $60-70.
-- Запустить 4-shard parallel extract на 10 074 новых записей. ETA ~2-3 часа.
-- После extract: tasks #31-#34 (LLM address parser → geocode v2) → карта.
+Запущен 6-shard parallel, потом перезапущен в 7-shard после restart системы (порвался прокси-туннель). MAX_RETRIES поднят с 4 до 10. 0 errors на оба прогона.
+
+**Финал DB: 15 504 записей** (100% от готовых PNG, 0 missing). Шарды в modulo-buckets сами догнали 155 «ранее missing» orderNumber из старого dataset.
+
+| | |
+|---|---|
+| Total records | 15 504 |
+| Total parallel time (две сессии) | 6h 4m wall clock |
+| Errors | 0 |
+| Avg params/record | 15.7 |
+| Coverage 14+ params | 99.6% |
+| Coverage objectAddress | 97% |
+| Coverage sampleDate / intakeType | 100% |
+
+## Экономика (полная по обоим дням 2026-05-04 + 2026-05-05)
+
+### API-side (Anthropic billing)
+
+| Дата | Input M | Output M | Cost $ |
+|---|---|---|---|
+| 2026-05-04 | 38.09 | 4.82 | $62.21 |
+| 2026-05-05 | 69.14 | 8.92 | $113.74 |
+| 2026-05-01..02 (Sonnet/Flowise misc) | small | small | $0.30 |
+| **API base** | **107.6 M** | **13.7 M** | **$176.25** |
+
+### Out-of-pocket (Россия)
+
+| Item | $ | ₽ (≈100 ₽/$) |
+|---|---|---|
+| Anthropic API base | $176.25 | 17 625 ₽ |
+| + VAT 21% (digital services) | +$37.01 | +3 700 ₽ |
+| + ~2% currency conversion (EUR→USD карта) | +$4.27 | +427 ₽ |
+| **Total Этап 1.A real-spend** | **~$217.53** | **~21 750 ₽** |
+
+### Cost per record
+
+- $217.53 / 15 504 = **$0.0140 / record** = **1.40 ₽/бланк**
+
+### Upcoming spend (Этап 1.B — address parser + geocode-v2)
+
+| Шаг | Бюджет |
+|---|---|
+| LLM address parser (#33, ~10 074 × $0.0008 Haiku 4.5) | ~$8-12 |
+| Ahunter geocode v2 fetch (~70% match × 10 074 × 20коп) | ~1 500 ₽ |
+| + VAT/conversion на LLM | ~$2.50 |
+| **Итого Этап 1.B clean+geo** | **~$15 + 1 500 ₽** ≈ **3 000 ₽** |
+
+### Совокупно к концу Этапа 1.B (full prod-ready dataset с координатами)
+
+| | $ | ₽ |
+|---|---|---|
+| Этап 1.A (extract) | $217.53 | 21 750 ₽ |
+| Этап 1.B (clean + geocode) | $15 | ~3 000 ₽ |
+| **TOTAL** | **~$232** | **~24 750 ₽** |
+
+**Cost per record final ≈ 1.6 ₽/бланк** с координатами и нормализованными адресами.
+
+## Lessons learned
+
+1. **Persistent context Playwright записывает cookies только при graceful close** —
+   при timeout exit cookies не сохраняются. Workaround: polling-loop с диагностикой
+   вместо одного waitForSelector.
+2. **Bitrix24 main-grid содержит hidden template-row** — нужен `:not([data-id="template_0"])` selector + `state: 'attached'`.
+3. **Sharding везде** где возможно — convert / rasterize / extract. 8 шардов для
+   CPU-bound, 7 для API-bound (Anthropic rate limit input tokens).
+4. **Skip-set логика smart-unzip** — простое решение проблемы пересечения форматов
+   (.docx vs .pdf для одного orderNumber). UNIQUE constraint в DB защищает повторно.
+5. **Single source of truth для blanks/** — на будущее. Сегодня потеряли 5 минут
+   на разные пути.
+6. **Прокси-туннель к Anthropic нестабилен в peak hours** — MAX_RETRIES=10 с
+   exp backoff (max 30s) спасает от потери записей. Шарды живут даже при 30+
+   секундных таймаутах через retry-loop.
+7. **Modulo-sharding идемпотентен по orderNumber** — даже после restart системы
+   и перезапуска шардов с другим SHARD_TOTAL (6→7), они догоняют пропущенное
+   через DB skip + iter all bucket.
+8. **Out-of-pocket cost для РФ ≈ +25%** к Anthropic billing (VAT 21% + conversion
+   2% + bank-fees). Учитывать при планировании бюджетов на API.
+
+## Next (Этап 1.B)
+
+- Tasks #31 → #36 (миграция fields → Flowise chatflow → batch wrapper → geocode v2 → manual override).
+- Бюджет ~$15 + 1 500 ₽ Ahunter = **~3 000 ₽** total доплат.
+- ETA реализация: 4-6 часов работы + ~30 мин batch processing.
+- На выходе: **~80% записей с lat/lon coords** на карте, **~5-10% city-fallback**.
