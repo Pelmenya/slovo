@@ -49,6 +49,12 @@ lon: number  | null;
 })
 geoSource: WaterGeocodeSource  | null;
 dealerLocation: string  | null;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+depthMeters: number  | null;
+labName: string  | null;
 normalizationVersion: string ;
 @ApiProperty({
   type: `string`,

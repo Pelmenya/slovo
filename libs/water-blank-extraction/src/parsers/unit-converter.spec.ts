@@ -166,4 +166,30 @@ describe('normalizeUnit', () => {
             expect(normalizeUnit('unknown_param', 'мг/л')).toBeNull();
         });
     });
+
+    describe('NBSP regression (защита от no-op replace)', () => {
+        // Прецедент 2026-05-06: NBSP-замена в lookup была no-op,
+        // потому что regex / /g содержал literal пробел в исходнике.
+        // Тесты ловят регресс если кто-то заменит \u00A0 на обычный пробел.
+
+        it('NBSP в pH unit между ед. и рН → ед.', () => {
+            const withNbsp = `ед.${'\u00A0'}рН`;
+            expect(normalizeUnit('ph', withNbsp)).toBe('ед.');
+        });
+
+        it('NBSP в permanganate unit (мг<NBSP>О2/л) → мг/л', () => {
+            const withNbsp = `мг${'\u00A0'}О₂/л`;
+            expect(normalizeUnit('permanganate_oxidizability', withNbsp)).toBe('мг/л');
+        });
+
+        it('NBSP в начале/конце тримится', () => {
+            const wrapped = `${'\u00A0'}мг/л${'\u00A0'}`;
+            expect(normalizeUnit('iron_total', wrapped)).toBe('мг/л');
+        });
+
+        it('двойной NBSP collapse через regex \\s+ → один пробел', () => {
+            const withDoubleNbsp = `ед.${'\u00A0'}${'\u00A0'}рН`;
+            expect(normalizeUnit('ph', withDoubleNbsp)).toBe('ед.');
+        });
+    });
 });

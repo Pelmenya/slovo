@@ -83,6 +83,16 @@ geoSource?: WaterGeocodeSource;
 @IsOptional()
 @IsString()
 dealerLocation?: string;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+@IsOptional()
+@IsNumber()
+depthMeters?: number;
+@IsOptional()
+@IsString()
+labName?: string;
 @IsOptional()
 @IsString()
 normalizationVersion?: string;
