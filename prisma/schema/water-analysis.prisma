@@ -137,8 +137,9 @@ model WaterAnalysis {
     // Из имени файла (после нормализации dealerLocation, без PII)
     dealerLocation  String?  @map("dealer_location") @db.VarChar(256)
 
-    // Глубина источника (для скважин/колодцев). 55.7% бланков содержат, 0 для централизованного водопровода.
-    // Важна для подбора оборудования: артезианская >100м vs верховодка <25м дают разный состав.
+    // Глубина источника (для скважин/колодцев). 55.7% бланков содержат, NULL для
+    // централизованного водопровода (нерелевантно). Важна для подбора оборудования:
+    // артезианская >100м vs верховодка <25м дают разный состав.
     depthMeters     Float?   @map("depth_meters")
 
     // Имя лаборатории (для аудита: одна лаборатория может систематически давать кривые значения).
@@ -147,6 +148,7 @@ model WaterAnalysis {
     // NB: objectAddress / samplingPoint / conclusionText / customerNotes / notes
     // в derived НЕ переносим. Доступны через JOIN на water_analysis_raw.vision_payload по rawId
     // когда потребуется. Минимальный denorm — для часто фильтруемых/сортируемых полей.
+    // См. memory `feedback_minimal_denorm` + ADR-005 (raw vs derived split).
 
     normalizationVersion String @map("normalization_version") @db.VarChar(16)
     normalizedAt    DateTime @default(now()) @map("normalized_at")
