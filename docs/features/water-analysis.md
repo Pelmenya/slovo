@@ -1,6 +1,6 @@
 # Water Analysis
 
-> **Статус:** Active. Этап 1.A (extract) и 1.A.5 (address resolution) **закрыты** на 2026-05-05. В работе: dealer-median fallback (#38) + Этап 1.B normalization.
+> **Статус:** Active. Этап 1.A (extract) и 1.A.5 (address resolution) **закрыты** на 2026-05-05. **На 2026-05-06 в работе:** dealer-median fallback (#38) + Этап 1.B normalization.
 > **Связи:** [vision-catalog-search.md](vision-catalog-search.md), [knowledge-base.md](knowledge-base.md), [flowise-naming.md](../guides/flowise-naming.md), [ADR-002 PostgreSQL+pgvector](../architecture/decisions/002-postgresql-with-pgvector.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md), [ADR-005 Prisma+raw queries](../architecture/decisions/005-prisma-with-pgvector.md), [ADR-008 MCP-сервер для Flowise](../architecture/decisions/008-mcp-server-for-flowise.md)
 > **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (расширение dataset 5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5).
 > **Roadmap pin:** `vision-catalog Phase 3 — water-analysis` (CLAUDE.md → «Roadmap фич»)
@@ -24,16 +24,16 @@
 
 | Этап | Артефакт | Стоимость (фактическая) | Статус |
 |---|---|---|---|
-| **1.A** Raw extraction | таблица `WaterAnalysisRaw` с 15 504 бланками: `visionPayload` от Claude Haiku 4.5, `filenameMeta` regex, `sourceFileHash` SHA256 для idempotency | **~$183** Anthropic Vision (5430 на 2026-05-04 за $62.10 + 10 074 от Bitrix-merge на 2026-05-05 за ~$121) + 40 ₽ Ahunter pilot | ✅ закрыт 2026-05-05 |
-| **1.A.5** Address resolution | 15 полей в `WaterAnalysisRaw`: `address_pre_cleaned`, `ahunter_cleansed` JSONB, `geo_lat/lon/region/city/pretty/level`, `ai_verified`. Pre-clean (TS regex) → Ahunter `/cleanse` 3-tier (strict → suggest+strict → smart) → Claude AI verify | **~2 000 ₽** Ahunter `/cleanse` (18 496 API запросов, 12 891 исправлено Ahunter, 11 948 принято нашим postfilter v5) + ~3 часа manual Claude review | ✅ закрыт 2026-05-05 |
+| **1.A** Raw extraction | таблица `WaterAnalysisRaw` с 15 504 бланками: `visionPayload` от Claude Haiku 4.5, `filenameMeta` regex, `sourceFileHash` SHA256 для idempotency | **~$183** только Vision-extract (5430 на 2026-05-04 за $62.10 + 10 074 от Bitrix-merge на 2026-05-05 за ~$121) + 40 ₽ Ahunter pilot. Полный Anthropic billing (включая misc + VAT/conversion) — см. lab journal `2026-05-04-stage-1a-extract-costs.md` | ✅ закрыт 2026-05-05 |
+| **1.A.5** Address resolution | 15 полей в `WaterAnalysisRaw`: `address_pre_cleaned`, `ahunter_cleansed` JSONB, `geo_lat/lon/region/city/pretty/level`, `ai_verified`. Pre-clean (TS regex) → Ahunter `/cleanse` 3-tier (strict → suggest+strict → smart) → Claude AI verify | **~2 000 ₽** Ahunter `/cleanse` за май: 18 496 API запросов = ~17 296 production (multi-tier overhead, не retries) + ~1 200 пилотные итерации `analyze-cleanse-sample.ts` v1→v5; 12 891 исправлено Ahunter, 11 948 принято нашим postfilter v5. + ~3 часа manual Claude review. Детальный breakdown — lab journal `2026-05-05-address-resolution.md` | ✅ закрыт 2026-05-05 |
 | **1.B** Normalization | таблица `WaterAnalysis` с каноническими `params{hardness, iron, ...}`, enum `WaterSourceType`, PII-обезличиванием, derive из `WaterAnalysisRaw` | $0 (детерминированный transform, повторяемо без расходов) | 🟢 в работе |
-| **dealer-median fallback** (между 1.A.5 и 1.B) | для 3 556 no_match/empty — медианные lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с usable lat/lon | $0 (агрегация на стороне БД) | ⏳ TaskList #38 на 2026-05-06 |
+| **dealer-median fallback** (между 1.A.5 и 1.B) | для 3 556 no_match/empty — медианные lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с lat/lon разной точности (precise для 1.A.5 ok, ~5-15 км radius для dealer-median) | $0 (агрегация на стороне БД) | ⏳ TaskList #38 на 2026-05-06 |
 | **2** Embeddings | колонка `embedding vector(1536)` + HNSW-индекс + endpoint `/water-analysis/similar` | ~$0.06 OpenAI embeddings + время на формат embedding text | ⏳ после 1.B |
 | **3** Real-time + endpoints | webhook из CRM, geo-аналитика, карта МО | infrastructural | ⏳ после 2 |
 
 > **Состояние dataset на 2026-05-05 EOD:**
 > - **15 504** total raw records (после Bitrix-merge, +10 074 относительно 5430 на 2026-05-04)
-> - **11 948** cleansed через Ahunter (96.7% strict tier, 2% smart, 1.4% suggest+strict)
+> - **11 948** cleansed через Ahunter (96.7% strict tier, 2.0% smart, 1.3% suggest+strict)
 > - **3 556** no_match/empty — на dealer-median
 > - **AI verified:** 10 846 ok (90.8%) / 633 uncertain (5.3%) / 469 wrong (3.9%) — цель <5% wrong **выполнена**
 
@@ -45,7 +45,7 @@
 2. **Geo-кластеризация проблем.** «В районе X жёсткость стабильно >10 °Ж, железо часто >0.5» — основа для маркетинговых кампаний и предкомплектации стока в локальных складах.
 3. **Карта анализов** — административная аналитика: видим где плотность реальных пробных точек, где разреженно, какие районы под-обеспечены.
 4. **RAG-подложка для будущего chatbot-консультанта.** Клиент в WhatsApp описывает проблему словами → находим похожие исторические анализы → рекомендация на базе реальных кейсов.
-5. **Фундамент для real-time ingest.** После backfill 6000 каждый новый анализ автоматически попадает в индекс — это обычная operational-задача, не аналитический snapshot.
+5. **Фундамент для real-time ingest.** После backfill 15 504 каждый новый анализ автоматически попадает в индекс — это обычная operational-задача, не аналитический snapshot.
 
 ---
 
@@ -563,14 +563,20 @@ enum WaterSourceType {
 
 enum GeocodeSource {
     blank             // адрес из тела бланка → Ahunter strict/suggest matched
-    smart             // smart-tier match с postfilter v5
-    dealer_median     // 1.A.5 не нашёл, использован median lat/lon dealer'а
     dealer_fallback   // [legacy] /fetch/address по dealerLocation
     none              // все методы провалились
+
+    // === PROPOSED — добавляются миграцией add_dealer_median_geocode_source 2026-05-06 ===
+    // smart           // smart-tier match с postfilter v5
+    // dealer_median   // 1.A.5 не нашёл, использован median lat/lon dealer'а
 
     @@map("geocode_source")
 }
 ```
+
+> **Текущая схема в БД содержит только 3 значения** (`blank`, `dealer_fallback`,
+> `none`). `smart` и `dealer_median` — **планируются** к добавлению вместе
+> с derive в `WaterAnalysis` (Этап 1.B) и dealer-median fallback (#38).
 
 ### Миграции
 
@@ -665,9 +671,12 @@ API-driven paid). 1.A.5 уже закрыт, 1.B остаётся повторя
 
 - **#21** — Prisma enum для `WaterAnalysisRaw.aiVerified` (`ok|uncertain|wrong`) и `geoLevel` (`Region|City|...`). Защита от опечаток `'OK'` vs `'ok'` в downstream queries. Триггер: перед прогоном dealer-median-fallback.
 - **#22** — PostGIS GiST/SP-GiST на `(geo_lat, geo_lon)` при росте × 10 или появлении UI «найди похожие в радиусе». Текущий composite btree подходит для bounding-box, не для радиального поиска.
-- **#35** (TaskList) — PII обезличивание при derive `WaterAnalysisRaw → WaterAnalysis`. ФИО+телефон не попадают в `WaterAnalysis`, только `customerNameRef` (FK в `pii.jsonl`).
-- **#36** (TaskList) — Manual address override для top-dealers без геоинфы (Опт, Промотдел, Сервис без ТЦ-адреса). Manual lookup координат склада/офиса.
-- **#38** (TaskList) — `07-dealer-median-fallback.ts` для 3 556 no_match/empty. **На 2026-05-06.**
+
+**TaskList items** (live backlog в IDE, не в `tech-debt.md`):
+
+- **#35** PII обезличивание при derive `WaterAnalysisRaw → WaterAnalysis`. ФИО+телефон не попадают в `WaterAnalysis`, только `customerNameRef` (FK в `pii.jsonl`).
+- **#36** Manual address override для top-dealers без геоинфы (Опт, Промотдел, Сервис без ТЦ-адреса). Manual lookup координат склада/офиса.
+- **#38** `07-dealer-median-fallback.ts` для 3 556 no_match/empty. **На 2026-05-06 (сегодня).**
 
 ---
 
@@ -728,7 +737,7 @@ experiments/water-analysis-dataset/             # gitignored целиком (п�
 - [x] **2026-05-05 вечер** — Ahunter `/cleanse` 3-tier на 15 504 records (17m 30s wall, ~2 000 ₽), 11 948 cleansed.
 - [x] **2026-05-05 ночь** — AI verification: auto-OK SQL для 9 315 high-confidence + manual review через 12 batch'ей по ~200 records (2 633 verdicts: 1 333 ok / 633 uncertain / 469 wrong).
 
-### Что дальше (2026-05-06)
+### Сегодня (2026-05-06)
 
 - [ ] **#38** `07-dealer-median-fallback.ts` для 3 556 no_match/empty — median lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с usable lat/lon.
 - [ ] **#36** Manual address override для top-dealers без геоинфы (Опт, Промотдел, Сервис).

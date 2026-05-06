@@ -143,13 +143,22 @@ Strict (10 коп) → Suggest+Strict (free + 10) → Smart (20 коп) с postf
 | `no_match` (все три tier reject) | 1 424 | для dealer-median |
 | `empty` (после pre-clean пусто) | 2 132 | для dealer-median |
 
-**Стоимость API:**
+**Стоимость API (по статистике Ahunter за май):**
 
-- 11 551 strict × 10 коп ≈ 1 155 ₽
-- 162 suggest (free) + 162 strict retry × 10 коп ≈ 16 ₽
-- 235 smart × 20 коп ≈ 47 ₽
-- ~1 500 reject через все tiers ≈ ~150 ₽
-- **Итого ≈ 1 370 ₽** на geocoding 15 504 записей
+| Источник calls | Расчёт | Сумма |
+|---|---|---:|
+| 11 551 strict matched (1 call/record) | 11 551 × 10 коп | 1 155 ₽ |
+| 162 suggest+strict matched (1 reject strict + 1 free suggest + ~2-3 strict retry на кандидатов) | ~600 strict calls × 10 коп | ~60 ₽ |
+| 235 smart matched (3 tier-вызова each: strict reject + suggest free + smart) | 235×10 + 235×20 = 70 ₽ | ~70 ₽ |
+| 1 424 no_match (3 tier-вызова each, все провалились) | 1 424×10 strict + 1 424×20 smart = 427 ₽ | ~430 ₽ |
+| 2 132 empty (после pre-clean пусто, в Ahunter не ходим) | 0 calls | 0 ₽ |
+| `analyze-cleanse-sample.ts` пилотные итерации v1→v5 на 200 random | 5 × ~600 calls × ~10 коп avg | ~300 ₽ |
+| **Итого ≈ 2 000 ₽** на geocoding 15 504 записей + калибровку | | **~2 000 ₽** |
+
+**По счётчикам Ahunter-кабинета (за май 2026):** 18 496 API запросов, 12 891
+исправлено их движком (наш postfilter v5 дополнительно зарезал до 11 948
+принятых). Цифры выше — **архитектурный multi-tier overhead, не retries
+на ошибки** (cache защищал от повторов одинаковых query).
 
 ### 5. `06-ai-verify.ts` — AI verification batch loop
 
@@ -184,10 +193,24 @@ Workflow:
 | 10 | 200 | 122 | 51 | 27 | 61.0% |
 | 11 | 200 | 102 | 59 | 39 | 51.0% |
 | 12 | 263 | 143 | 63 | 57 | 54.4% |
-| **Итого** | **2 633** | **1 333** | **633** | **469** | **50.6%** |
+| Sum по строкам таблицы | 2 535 | 1 233 | 633 | 469 | — |
 
-(Manual % ok ниже чем общий — это запись по которым auto-OK не дал
-high-confidence, ожидаемо более сложные случаи.)
+> **Расхождение с БД:** total verified в БД = 11 948, auto-OK SQL применил
+> 9 315, значит **manual review = 2 633 records** (= 11 948 − 9 315).
+> Аналогично manual ok = 10 846 − 9 315 = **1 531**, manual uncertain = 633,
+> manual wrong = 469. Sum: 2 633 ✓.
+>
+> Sum по batch-строкам в таблице выше даёт 2 535 / 1 233 — расхождение **+98
+> records / +298 ok**. Возможные причины: (а) одна из batch-строк в таблице
+> с опечаткой в Records или ok column; (б) при apply верифицировались
+> уже-помеченные auto-OK записи (UPDATE на тот же verdict) — счётчик в
+> consoles `[apply] ok=...` сложил их в свою статистику, а DB это не
+> зарегистрировала как новые. **Источник правды — DB stats**.
+
+**Финальные corrected manual-review numbers:** 2 633 records / 1 531 ok
+(58.1%) / 633 uncertain (24.0%) / 469 wrong (17.8%). Manual % ok ниже
+auto-OK (по definition: auto-OK = 100% ok) — ожидаемо, в manual идут
+сложные случаи которые auto-OK heuristic не покрывает.
 
 **Финал по всем 11 948 cleansed records:**
 
