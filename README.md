@@ -24,7 +24,7 @@ AI-платформа на NestJS для быстрого прототипиро
 - ✅ Catalog ingest pipeline с RecordManager skip-if-unchanged (95× cost reduction, ~$0/refresh при unchanged)
 - ✅ Vision augmentation на ingest (Phase 2): каждый из 155 товаров обогащён AI-описанием фото через Haiku 4.5 — клиенты могут искать визуальными словами
 - ✅ Pre-launch hardening: per-IP/IPv6-/64 throttle (anti-rotation), SHA256 image-cache (повторные фото 0 ₽), budget cap + Telegram alert на превышение
-- ⏳ Phase 3: water-analysis (анализ лабораторных результатов воды через Vision)
+- ✅ Phase 3 (Stage 1.A-1.B): water-analysis — 15 504 бланка анализов воды нормализованы в structured dataset (см. `docs/management/water-analysis-executive-summary.md`). Phase 2 (embeddings + endpoints) — следующий шаг.
 - ⏳ Опционально: webhook-trigger от CRM для мгновенной переиндексации (вместо cron 4ч)
 
 **Реальные расходы за всю разработку (Phase 1 + Phase 2, 9 дней):** $0.49 ≈ 39 ₽ (фактический billing OpenAI + Anthropic).

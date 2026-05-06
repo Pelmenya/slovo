@@ -3,6 +3,7 @@
 ## Статус
 ✅ Принято — 2026-04-23 (финализировано после экспериментов A, B, C в Flowise 3.1.2 + чтения исходника)
 🟡 **Амендмент 2026-05-02 — приоритет пересмотрен:** knowledge-base отложена. См. секцию «Амендмент 2026-05-02 — vision-catalog как фактическая первая фича» внизу ADR.
+🟡 **Амендмент 2026-05-06 — паттерн «standalone-first» подтверждён вторым кейсом:** water-analysis Phase 1.A-1.B закрыт без knowledge-base слоя. См. секцию внизу ADR.
 
 ## Контекст
 
@@ -243,3 +244,17 @@ Knowledge-base дошла до **Phase 1 text-only MVP** (PR1-PR4), дальне
 - `docs/architecture/decisions/008-flowise-mcp.md` — инфраструктура которая позволила vision-catalog обойтись без knowledge-base слоя
 - `apps/api/src/modules/knowledge/` — реализованный Phase 1 модуль (синхронный text-ingestion + CRUD)
 - `prisma/schema/knowledge-base.prisma` — рабочая Prisma-модель
+
+---
+
+## Амендмент 2026-05-06: water-analysis Phase 1.A-1.B закрыта без knowledge-base слоя
+
+**Контекст:** на 2026-05-06 закрыты Этапы 1.A (extract 15 504 бланков через Vision) + 1.A.5 (geocode + AI-verify + dealer-median) + 1.B (нормализация в structured dataset с 21 paramCode). Извлечение через прямой Vision pipeline (Flowise chatflow) с записью в `WaterAnalysisRaw` → derive в `WaterAnalysis` через `libs/water-blank-extraction/` (TypeScript-парсер на справочнике СанПиН 1.2.3685-21).
+
+**Что подтверждается:** паттерн «первый потребитель строит standalone, knowledge-base слой выделяется при появлении второго» (закреплённый в амендменте 2026-05-02 для vision-catalog) — теперь подтверждён **вторым кейсом**. Water-analysis также **не использует** knowledge-base модули — у него собственная модель данных и pipeline.
+
+**Что значит для knowledge-base Phase 2+:** уже **два** независимых feature-pipeline (vision-catalog + water-analysis) построены без него. Это сильный сигнал что Phase 2 (video/audio/PDF/YouTube адаптеры) активизируется только при появлении кейса с **массовыми текстовыми/мультимедиа источниками** где переиспользование инфраструктуры реально окупится.
+
+**Bridge между фичами:** алгоритм подбора оборудования (Phase 2 water-analysis) будет связывать `water_analysis.params` с vision-catalog товарами через семантический поиск — это первая точка пересечения двух standalone-фич.
+
+См. `docs/features/water-analysis.md` (статус закрытия), `docs/management/water-analysis-executive-summary.md` (executive summary), `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md` (EDA).

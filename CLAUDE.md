@@ -26,11 +26,11 @@
 
 **Цель:** универсальная AI-платформа для прототипирования LLM-фичей и их эволюции в production. Планируется как фундамент будущего SaaS.
 
-**Roadmap фич (актуально на 2026-05-02):**
+**Roadmap фич (актуально на 2026-05-06):**
 
 1. ✅ **vision-catalog-search** (Phase 1 + Phase 2 закрыты 2 мая 2026, ~$0.49 ≈ 39 ₽ за всю разработку, 591 unit-тест) — поиск по каталогу Aquaphor Pro: text / до 5 фото / комбо, Vision augmentation на ingest, pre-launch hardening (per-IP/IPv6-/64 throttle, SHA256 image-cache, budget cap + Telegram alert). Построена **standalone** через Flowise Document Store + `apps/mcp-flowise`, без knowledge-модуля. План: `docs/features/vision-catalog-search.md`. Executive summary: `docs/management/vision-catalog-executive-summary.md`.
 2. 🟢 **knowledge-base Phase 1** (text-only MVP закрыт): `prisma/schema/knowledge-base.prisma` + миграции + `apps/api/src/modules/knowledge/` (Controller + Service + DTO + тесты), синхронный text-ingestion endpoint. Phase 2+ (video/audio/PDF/YouTube адаптеры, Flowise upsert, retrieval) отложены до триггера потребителем. План + амендмент: `docs/features/knowledge-base.md`, ADR-006 амендмент 2026-05-02.
-3. ⏳ **vision-catalog Phase 3 — water-analysis**: анализ лабораторных результатов воды через Claude Vision поверх инфры catalog (переиспользует Vision-pipeline и augmenter, но это отдельный domain-модуль, не «фаза vision-catalog кода»).
+3. ✅ **water-analysis** (Этапы 1.A + 1.A.5 + 1.B закрыты 6 мая 2026, ~23 750 ₽ extraction = $217.53 Anthropic + Ahunter ≥ 2 000 ₽, 110 unit-тестов) — 15 504 бланка анализов воды Аквафор-Pro 2020-2026 нормализованы в structured dataset: 21 paramCode + единицы + флаги, 97% normalize-clean, 93% holistic accuracy. `libs/water-blank-extraction/` (sanpin/ + parsers/ + normalize/), 4 Vision OCR-confusion исправлены пост-процессингом без re-extraction. Готов к Phase 2 (embeddings + endpoints + bridge с vision-catalog для алгоритма подбора оборудования). План: `docs/features/water-analysis.md`. Executive summary: `docs/management/water-analysis-executive-summary.md`. EDA: `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`.
 4. ⏳ **notes-rag**: Q&A endpoint поверх knowledge-base — реактивация когда появится потребитель Phase 2 video/PDF-источников.
 5. ⏳ **multi-tenant**: пользователи, JWT, биллинг (шаг к SaaS). Параллельно с domain-фичами, для каждой закладываем `userId` в модели с нуля (`KnowledgeSource` уже имеет `userId String? @db.Uuid`).
 

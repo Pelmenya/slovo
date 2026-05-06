@@ -1,9 +1,10 @@
 # Water Analysis
 
-> **Статус:** Active. Этап 1.A (extract) и 1.A.5 (address resolution) **закрыты** на 2026-05-05. **На 2026-05-06 в работе:** dealer-median fallback (#38) + Этап 1.B normalization.
+> **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (address resolution + AI-verify + dealer-median fallback) + 1.B (normalize) **закрыты на 6 мая 2026**. 15 504 бланка нормализованы в structured dataset: 21 paramCode + единицы + флаги, 97% normalize-clean, 93% holistic accuracy, 110 unit-тестов. **Следующий шаг:** Phase 2 — embeddings + endpoints + bridge с vision-catalog для алгоритма подбора оборудования (правила определит специалист по водоочистке Аквафор).
 > **Связи:** [vision-catalog-search.md](vision-catalog-search.md), [knowledge-base.md](knowledge-base.md), [flowise-naming.md](../guides/flowise-naming.md), [ADR-002 PostgreSQL+pgvector](../architecture/decisions/002-postgresql-with-pgvector.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md), [ADR-005 Prisma+raw queries](../architecture/decisions/005-prisma-with-pgvector.md), [ADR-008 MCP-сервер для Flowise](../architecture/decisions/008-mcp-server-for-flowise.md)
-> **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (расширение dataset 5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5).
-> **Roadmap pin:** `vision-catalog Phase 3 — water-analysis` (CLAUDE.md → «Roadmap фич»)
+> **Executive summary:** [`docs/management/water-analysis-executive-summary.md`](../management/water-analysis-executive-summary.md) (для руководителя — таблицы с проверенными цифрами).
+> **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5), `2026-05-06-stage-1b-eda.md` (Этап 1.B EDA).
+> **Roadmap pin:** `roadmap #3 — water-analysis ✅` (CLAUDE.md → «Roadmap фич»).
 
 Фича: **семантический поиск и кластеризация по 15 504 бланкам анализов воды** —
 разово оцифровать существующий архив анализов из CRM aqua-kinetics
