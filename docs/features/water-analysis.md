@@ -367,6 +367,15 @@ Lab journal с pipeline diagram, итерациями v1→v5 на пилоте 
 
 ## Этап 1.B — Normalization
 
+> **На 2026-05-06 готов справочник СанПиН** в `libs/water-blank-extraction/src/sanpin/sanpin-1-2-3685-21-v1.0.0.ts`:
+> - 23 параметра (17 регулируемых СанПиН + 6 на физиол./ВОЗ референс)
+> - 95 синонимов из реального dataset (включая OCR-варианты Vision)
+> - **100% покрытие** 238 498 показателей в 15 504 бланках (5 unmapped — амбивалентны, помечаются `unknown`)
+> - Утилита `exceedsPdk(paramCode, value): boolean | null` для расчёта флага
+> - Источник: официальный PDF СанПиН 1.2.3685-21 (Минюст РФ, ред. 24.12.2025), извлечено через `pdftotext -layout` из Раздела III, Таблицы 3.1, 3.3, 3.13
+>
+> **Урок:** WebFetch вторичных сайтов дал 5 из 7 неверных значений (nitrites, turbidity, hydrogen_sulfide, ammonium, magnesium). См. memory `feedback_regulatory_primary_source` — для regulatory нормативов теперь только primary source.
+
 Detrminированный transform `WaterAnalysisRaw` → `WaterAnalysis`. Без LLM,
 без Vision — только маппинг и валидация. Гонится локально, повторяемо,
 $0 расходов.
