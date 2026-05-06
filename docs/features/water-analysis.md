@@ -352,8 +352,8 @@ flowchart LR
 | `geo_lat`, `geo_lon` | `Float` | Координаты |
 | `geo_region`, `geo_city` | `VarChar(64)` | Денормализованные удобные поля |
 | `geo_pretty` | `VarChar(512)` | Полный canonical address от Ahunter |
-| `geo_level` | `VarChar(16)` | `Region` / `City` / `District` / `Place` / `Site` / `Street` (точность матча) |
-| `ai_verified` | `VarChar(16)` | `ok` / `uncertain` / `wrong` (см. tech-debt #21 — кандидат на enum) |
+| `geo_level` | `enum WaterGeoLevel` | `Region` / `City` / `District` / `Place` / `Site` / `Street` (точность матча). Конвертирован из VarChar 2026-05-06 (tech-debt #21 ✅). |
+| `ai_verified` | `enum WaterAddressVerification` | `ok` / `uncertain` / `wrong`. Конвертирован из VarChar 2026-05-06 (tech-debt #21 ✅). |
 | `ai_verified_at`, `ai_verified_notes` | | Reasoning от Claude review (~3 слова на запись) |
 
 Lab journal с pipeline diagram, итерациями v1→v5 на пилоте 200 random,
@@ -485,9 +485,9 @@ model WaterAnalysisRaw {
     geoRegion             String?   @map("geo_region") @db.VarChar(64)
     geoCity               String?   @map("geo_city") @db.VarChar(64)
     geoPretty             String?   @map("geo_pretty") @db.VarChar(512)
-    geoLevel              String?   @map("geo_level") @db.VarChar(16)
+    geoLevel              WaterGeoLevel? @map("geo_level")          // enum с 2026-05-06
 
-    aiVerified            String?   @map("ai_verified") @db.VarChar(16)
+    aiVerified            WaterAddressVerification? @map("ai_verified")  // enum с 2026-05-06
     aiVerifiedAt          DateTime? @map("ai_verified_at")
     aiVerifiedNotes       String?   @map("ai_verified_notes") @db.VarChar(512)
 
@@ -572,11 +572,36 @@ enum GeocodeSource {
 
     @@map("geocode_source")
 }
+
+// Этап 1.A.5 — verdict от Claude AI verify (auto-OK SQL + manual review).
+// Защита от опечаток типа 'OK' vs 'ok' в downstream queries.
+// Конвертирован из VarChar(16) миграцией 2026-05-06.
+enum WaterAddressVerification {
+    ok
+    uncertain
+    wrong
+
+    @@map("water_address_verification")
+}
+
+// Этап 1.A.5 — точность матча от Ahunter /cleanse/address response.
+// Значения PascalCase сохранены as-is из Ahunter API (не нормализуем).
+enum WaterGeoLevel {
+    Region
+    District
+    City
+    Place
+    Site
+    Street
+
+    @@map("water_geo_level")
+}
 ```
 
-> **Текущая схема в БД содержит только 3 значения** (`blank`, `dealer_fallback`,
-> `none`). `smart` и `dealer_median` — **планируются** к добавлению вместе
-> с derive в `WaterAnalysis` (Этап 1.B) и dealer-median fallback (#38).
+> **Текущая схема в БД содержит только 3 значения** в `GeocodeSource` (`blank`,
+> `dealer_fallback`, `none`). `smart` и `dealer_median` — **планируются** к
+> добавлению вместе с derive в `WaterAnalysis` (Этап 1.B) и dealer-median
+> fallback (#38).
 
 ### Миграции
 
@@ -585,6 +610,7 @@ enum GeocodeSource {
 | `add_water_analysis` | 2026-05-04 | Базовая `WaterAnalysisRaw` + `WaterAnalysis` + 2 enum |
 | `add_pii_ref_id` | 2026-05-04 | `piiRefId` колонка + UNIQUE collision pre-check |
 | `add_address_resolution_fields` | 2026-05-05 | 15 полей Этапа 1.A.5 + 3 индекса |
+| `add_water_enums_address_verification_geo_level` | 2026-05-06 | VarChar → enum для `aiVerified` (`ok|uncertain|wrong`) и `geoLevel` (`Region|City|...`). Tech-debt #21. |
 | `add_dealer_median_geocode_source` *(планируется 2026-05-06)* | — | Расширение enum `GeocodeSource` (`smart`, `dealer_median`) |
 
 ---
@@ -669,7 +695,8 @@ API-driven paid). 1.A.5 уже закрыт, 1.B остаётся повторя
 
 **Tech-debt пункты в `docs/architecture/tech-debt.md`:**
 
-- **#21** — Prisma enum для `WaterAnalysisRaw.aiVerified` (`ok|uncertain|wrong`) и `geoLevel` (`Region|City|...`). Защита от опечаток `'OK'` vs `'ok'` в downstream queries. Триггер: перед прогоном dealer-median-fallback.
+- **#21 ✅** — Prisma enum для `aiVerified` и `geoLevel` — закрыт 2026-05-06 миграцией `add_water_enums_address_verification_geo_level`.
+- **#21a** — `ahunter_cleansed_tier` остаётся VarChar (значение `suggest+strict` содержит `+`, запрещено в Prisma enum identifier). Решение: оставить, низкий риск потому что колонка пишется только из контролируемого pipeline.
 - **#22** — PostGIS GiST/SP-GiST на `(geo_lat, geo_lon)` при росте × 10 или появлении UI «найди похожие в радиусе». Текущий composite btree подходит для bounding-box, не для радиального поиска.
 
 **TaskList items** (live backlog в IDE, не в `tech-debt.md`):
@@ -739,9 +766,10 @@ experiments/water-analysis-dataset/             # gitignored целиком (п�
 
 ### Сегодня (2026-05-06)
 
-- [ ] **#38** `07-dealer-median-fallback.ts` для 3 556 no_match/empty — median lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с usable lat/lon.
+- [x] **Бэкап БД** перед изменениями: water_analysis tables + full slovo dump в YandexDisk + локально. **Сделано 06:39.**
+- [x] **#21** Prisma enum для `aiVerified` / `geoLevel` — миграция `add_water_enums_address_verification_geo_level`, 591 тест ✓.
+- [ ] **#38** `07-dealer-median-fallback.ts` для 3 556 no_match/empty — median lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с lat/lon разной точности.
 - [ ] **#36** Manual address override для top-dealers без геоинфы (Опт, Промотдел, Сервис).
-- [ ] **#21** Prisma enum для `aiVerified` / `geoLevel` (защита от опечаток типа `'OK'` vs `'ok'`).
 - [ ] **#35** Этап 1.B — derive `WaterAnalysis` (param mapping, unit conversion, value parsing, sourceType inference, PDK flagging, address copy из `geo_*`, PII обезличивание).
 - [ ] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain.
 

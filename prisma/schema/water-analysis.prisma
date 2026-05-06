@@ -65,10 +65,10 @@ model WaterAnalysisRaw {
     geoRegion               String?   @map("geo_region") @db.VarChar(64)
     geoCity                 String?   @map("geo_city") @db.VarChar(64)
     geoPretty               String?   @map("geo_pretty") @db.VarChar(512)
-    geoLevel                String?   @map("geo_level") @db.VarChar(16)
+    geoLevel                WaterGeoLevel? @map("geo_level")
 
     // AI verification (Claude review verdict)
-    aiVerified              String?   @map("ai_verified") @db.VarChar(16)
+    aiVerified              WaterAddressVerification? @map("ai_verified")
     aiVerifiedAt            DateTime? @map("ai_verified_at")
     aiVerifiedNotes         String?   @map("ai_verified_notes") @db.VarChar(512)
 
@@ -144,4 +144,27 @@ enum GeocodeSource {
     none              // оба источника пусты или невалидны
 
     @@map("geocode_source")
+}
+
+// Этап 1.A.5 — verdict от Claude AI verify (auto-OK SQL + manual review).
+// Защита от опечаток типа 'OK' vs 'ok' в downstream queries (tech-debt #21).
+enum WaterAddressVerification {
+    ok
+    uncertain
+    wrong
+
+    @@map("water_address_verification")
+}
+
+// Этап 1.A.5 — точность матча от Ahunter /cleanse/address response.
+// Значения PascalCase сохранены as-is из Ahunter API (не нормализуем).
+enum WaterGeoLevel {
+    Region
+    District
+    City
+    Place
+    Site
+    Street
+
+    @@map("water_geo_level")
 }

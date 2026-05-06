@@ -845,13 +845,30 @@ async reconcileFromChunks(): Promise<number> {
 
 ## Water Analysis (Этап 1.A.5 → 1.B)
 
-### 21. Prisma enum для `WaterAnalysisRaw.aiVerified` и `geoLevel`
+### 21. ✅ Prisma enum для `WaterAnalysisRaw.aiVerified` и `geoLevel` — **закрыт 2026-05-06**
 
-Сейчас `aiVerified VARCHAR(16)` со значениями `ok|uncertain|wrong` и `geoLevel VARCHAR(16)` со значениями `Region|City|District|Place|Site|Street|...` — обе колонки кандидаты на Prisma `enum`. Текущий риск: опечатка типа `'OK'` vs `'ok'` пройдёт без ошибки и поломает фильтры в downstream (например, в dealer-median-fallback `WHERE ai_verified = 'ok'`).
+Конвертированы в enum миграцией `20260506034147_add_water_enums_address_verification_geo_level`:
 
-**Триггер:** перед первым прогоном dealer-median-fallback (#38) — если за это время значений `aiVerified`/`geoLevel` не прибавится. Если прибавятся — конвертить в Этапе 1.B (нормализация WaterAnalysis).
+- `aiVerified` — `WaterAddressVerification` (`ok`/`uncertain`/`wrong`).
+- `geoLevel` — `WaterGeoLevel` (`Region`/`District`/`City`/`Place`/`Site`/`Street`).
 
-**Стоимость:** одна миграция `ALTER TABLE ... ALTER COLUMN ... TYPE` через `USING ::enum_name` cast — секунды на 15 504 rows.
+`ALTER COLUMN ... TYPE ... USING ::enum` прошёл без data loss (15 504 rows за <1s).
+
+### 21a. `ahunter_cleansed_tier` — VarChar остаётся
+
+Не конвертится в Prisma enum: значение `suggest+strict` содержит `+`, запрещённый
+в Prisma enum identifier (rule `[a-zA-Z_][a-zA-Z0-9_]*`). Альтернативы:
+
+1. **Переименовать в БД** `suggest+strict → suggest_strict` (UPDATE на 162 records) +
+   обновить regex в `05-ahunter-cleanse.ts`. Простое решение, breaking change для
+   существующих verdicts JSON если будем делать ré-run.
+2. **Оставить VarChar** — текущее поведение. Опечатка `'STRICT'` vs `'strict'`
+   ловится только runtime postfilter'ом, но колонка пишется только из
+   контролируемого pipeline (3 hardcoded строки в `05-ahunter-cleanse.ts`),
+   риск низкий.
+
+**Решение:** оставить VarChar (вариант 2). Перепроверить при #38 dealer-median —
+если он будет читать tier для классификации, добавить enum-валидацию на runtime.
 
 ### 22. Spatial GiST/SP-GiST на `(geo_lat, geo_lon)` при росте dataset
 

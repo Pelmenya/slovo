@@ -1,5 +1,5 @@
 
-import {Prisma} from '@prisma/client'
+import {Prisma,WaterGeoLevel,WaterAddressVerification} from '@prisma/client'
 import {ApiProperty} from '@nestjs/swagger'
 
 
@@ -51,8 +51,14 @@ geoLon: number  | null;
 geoRegion: string  | null;
 geoCity: string  | null;
 geoPretty: string  | null;
-geoLevel: string  | null;
-aiVerified: string  | null;
+@ApiProperty({
+  enum: WaterGeoLevel,
+})
+geoLevel: WaterGeoLevel  | null;
+@ApiProperty({
+  enum: WaterAddressVerification,
+})
+aiVerified: WaterAddressVerification  | null;
 @ApiProperty({
   type: `string`,
   format: `date-time`,

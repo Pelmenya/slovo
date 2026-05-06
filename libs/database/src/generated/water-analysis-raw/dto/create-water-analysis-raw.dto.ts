@@ -1,7 +1,7 @@
 
-import {Prisma} from '@prisma/client'
+import {Prisma,WaterGeoLevel,WaterAddressVerification} from '@prisma/client'
 import {Type} from 'class-transformer'
-import {IsInt,IsNotEmpty,IsNumber,IsOptional,IsRFC3339,IsString} from 'class-validator'
+import {IsIn,IsInt,IsNotEmpty,IsNumber,IsOptional,IsRFC3339,IsString} from 'class-validator'
 import {ApiProperty,getSchemaPath} from '@nestjs/swagger'
 
 
@@ -93,12 +93,18 @@ geoCity?: string;
 @IsOptional()
 @IsString()
 geoPretty?: string;
+@ApiProperty({
+  enum: WaterGeoLevel,
+})
 @IsOptional()
-@IsString()
-geoLevel?: string;
+@IsIn(["Region","District","City","Place","Site","Street"])
+geoLevel?: WaterGeoLevel;
+@ApiProperty({
+  enum: WaterAddressVerification,
+})
 @IsOptional()
-@IsString()
-aiVerified?: string;
+@IsIn(["ok","uncertain","wrong"])
+aiVerified?: WaterAddressVerification;
 @ApiProperty({
   type: `string`,
   format: `date-time`,
