@@ -697,7 +697,7 @@ API-driven paid). 1.A.5 уже закрыт, 1.B остаётся повторя
 
 - **#21 ✅** — Prisma enum для `aiVerified` и `geoLevel` — закрыт 2026-05-06 миграцией `add_water_enums_address_verification_geo_level`.
 - **#21a** — `ahunter_cleansed_tier` остаётся VarChar (значение `suggest+strict` содержит `+`, запрещено в Prisma enum identifier). Решение: оставить, низкий риск потому что колонка пишется только из контролируемого pipeline.
-- **#22** — PostGIS GiST/SP-GiST на `(geo_lat, geo_lon)` при росте × 10 или появлении UI «найди похожие в радиусе». Текущий composite btree подходит для bounding-box, не для радиального поиска.
+- **#22 ✅** — PostGIS 3.6.3 extension установлен (unblocking) 2026-05-06. Кастомный образ `slovo-postgres:pgvector-postgis-pg18`, миграция `add_postgis_extension`. `geography(Point, 4326)` колонки и GiST-индекс — позже в Этапе 3 при появлении UI «найди в радиусе».
 
 **TaskList items** (live backlog в IDE, не в `tech-debt.md`):
 

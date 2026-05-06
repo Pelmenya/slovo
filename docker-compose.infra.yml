@@ -7,7 +7,11 @@
 
 services:
     postgres:
-        image: pgvector/pgvector:0.8.2-pg18-trixie
+        # Кастомный образ: pgvector 0.8.2 + PostGIS 3.x + cube/earthdistance.
+        # См. docker/postgres/Dockerfile.
+        build:
+            context: ./docker/postgres
+        image: slovo-postgres:pgvector-postgis-pg18
         container_name: slovo-postgres
         restart: unless-stopped
         ports:

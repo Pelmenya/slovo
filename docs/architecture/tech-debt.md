@@ -870,16 +870,17 @@ async reconcileFromChunks(): Promise<number> {
 **Решение:** оставить VarChar (вариант 2). Перепроверить при #38 dealer-median —
 если он будет читать tier для классификации, добавить enum-валидацию на runtime.
 
-### 22. Spatial GiST/SP-GiST на `(geo_lat, geo_lon)` при росте dataset
+### 22. ✅ PostGIS extension установлен — **закрыт 2026-05-06 (unblocking)**
 
-Текущий composite btree `(geo_lat, geo_lon)` подходит для bounding-box queries (`WHERE geo_lat BETWEEN ... AND ... AND geo_lon BETWEEN ...`), но не даёт радиальный поиск (`ORDER BY ST_Distance(...) LIMIT N`). При:
+Подготовка инфры: PostGIS 3.6.3 + cube + earthdistance доступны через `CREATE EXTENSION` на slovo-postgres. Кастомный Dockerfile `docker/postgres/Dockerfile` на базе `pgvector/pgvector:0.8.2-pg18-trixie` с доустановкой `postgresql-18-postgis-3` через apt.
 
-- росте dataset до >100k records (масштабирование на другие лабы / города), или
-- активации UX «клик на карте → ближайшие N анализов с похожими параметрами»,
+Миграция `add_postgis_extension` создаёт `postgis` extension в БД. PostGIS прописан в `prisma/schema/main.prisma` (`extensions = [..., postgis]`).
 
-— перейти на PostGIS `GEOGRAPHY(POINT)` колонку + GiST индекс **или** на `cube` + `earthdistance` extension для радиального поиска. Сейчас 11 948 cleansed rows → seq scan норм, не критично.
+**Smoke test:** `ST_Distance(ST_MakePoint(...)::geography, ...)` на реальных данных Москва-Серпухов → 90 км, корректно.
 
-**Триггер:** при росте × 10 или при появлении UI-фичи «найди похожие в радиусе».
+**Что НЕ сделано (specifically tech-debt):** geo_lat/geo_lon остаются `DOUBLE PRECISION`, composite btree `(geo_lat, geo_lon)` сохраняется. Расчётные `geography(Point, 4326)` колонки и GiST-индекс на них — добавятся в Этапе 1.B (`WaterAnalysis`) или Этапе 3 (UI «найди в радиусе»), не сейчас.
+
+**Образ:** `slovo-postgres:pgvector-postgis-pg18` (~250 MB вместо ~80 MB у base pgvector).
 
 ---
 

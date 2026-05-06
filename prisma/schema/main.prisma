@@ -31,5 +31,5 @@ generator nestjsDto {
 
 datasource db {
     provider   = "postgresql"
-    extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp"), pgcrypto]
+    extensions = [vector, pg_trgm, uuidOssp(map: "uuid-ossp"), pgcrypto, postgis]
 }

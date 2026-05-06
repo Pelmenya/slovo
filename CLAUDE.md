@@ -356,7 +356,7 @@ claude mcp list
 
 **Infrastructure:**
 
-- PostgreSQL **18** + pgvector **0.8.2** (образ `pgvector/pgvector:0.8.2-pg18-trixie`)
+- PostgreSQL **18** + pgvector **0.8.2** + PostGIS **3.6.3** (кастомный образ `slovo-postgres:pgvector-postgis-pg18`, базис `pgvector/pgvector:0.8.2-pg18-trixie` + `postgresql-18-postgis-3`, см. `docker/postgres/Dockerfile`)
 - Valkey **9-alpine** (Redis-compatible, BSD-3 license)
 - RabbitMQ **4.2.5-management-alpine**
 - Flowise **3.1.2** (визуальный оркестратор)
