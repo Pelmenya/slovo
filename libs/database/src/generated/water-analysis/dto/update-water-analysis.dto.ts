@@ -1,5 +1,5 @@
 
-import {Prisma,WaterSourceType,GeocodeSource} from '@prisma/client'
+import {Prisma,WaterSourceType,WaterGeocodeSource} from '@prisma/client'
 import {Type} from 'class-transformer'
 import {IsIn,IsNumber,IsOptional,IsRFC3339,IsString} from 'class-validator'
 import {ApiProperty} from '@nestjs/swagger'
@@ -40,6 +40,12 @@ appearance?: string;
 @IsOptional()
 params?: Prisma.InputJsonValue;
 @IsOptional()
+paramUnits?: Prisma.InputJsonValue;
+@IsOptional()
+paramFlags?: Prisma.InputJsonValue;
+@IsOptional()
+paramsUnknown?: Prisma.InputJsonValue;
+@IsOptional()
 @IsString()
 canonicalAddress?: string;
 @IsOptional()
@@ -69,17 +75,14 @@ lat?: number;
 @IsNumber()
 lon?: number;
 @ApiProperty({
-  enum: GeocodeSource,
+  enum: WaterGeocodeSource,
 })
 @IsOptional()
-@IsIn(["blank","dealer_fallback","none"])
-geocodeSource?: GeocodeSource;
+@IsIn(["ahunter_cleanse","dealer_median","manual_override"])
+geoSource?: WaterGeocodeSource;
 @IsOptional()
 @IsString()
 dealerLocation?: string;
-@IsOptional()
-@IsString()
-customerNameRef?: string;
 @IsOptional()
 @IsString()
 normalizationVersion?: string;

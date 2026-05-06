@@ -1,5 +1,5 @@
 
-import {Prisma,WaterSourceType,GeocodeSource} from '@prisma/client'
+import {Prisma,WaterSourceType,WaterGeocodeSource} from '@prisma/client'
 import {ApiProperty} from '@nestjs/swagger'
 import {WaterAnalysisRaw} from '../../water-analysis-raw/entities/water-analysis-raw.entity'
 
@@ -26,6 +26,9 @@ testDate: Date  | null;
 intakeType: WaterSourceType ;
 appearance: string  | null;
 params: Prisma.JsonValue ;
+paramUnits: Prisma.JsonValue ;
+paramFlags: Prisma.JsonValue ;
+paramsUnknown: Prisma.JsonValue ;
 canonicalAddress: string  | null;
 fiasId: string  | null;
 region: string  | null;
@@ -42,11 +45,10 @@ lat: number  | null;
 })
 lon: number  | null;
 @ApiProperty({
-  enum: GeocodeSource,
+  enum: WaterGeocodeSource,
 })
-geocodeSource: GeocodeSource ;
+geoSource: WaterGeocodeSource  | null;
 dealerLocation: string  | null;
-customerNameRef: string  | null;
 normalizationVersion: string ;
 @ApiProperty({
   type: `string`,

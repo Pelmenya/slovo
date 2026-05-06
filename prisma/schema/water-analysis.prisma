@@ -14,10 +14,12 @@
 //   CREATE INDEX water_analysis_embedding_hnsw_idx ON water_analysis
 //       USING hnsw (embedding vector_cosine_ops);
 //
-// PII (customerName, customerPhone) на этапе эксперимента живёт
-// в experiments/water-analysis-dataset/data/pii.jsonl (gitignored,
-// локально). Когда фича пойдёт в slovo runtime + auth + РФ-инстанс
-// БД — добавим обратно отдельной миграцией.
+// PII (customerName, customerPhone) при derive raw → WaterAnalysis
+// полностью отбрасывается (Variant A, решение 2026-05-06): нет колонок
+// customerName*, нет FK на pii.jsonl. Telephone-данные у Аквафор кривые,
+// customerName в filenameMeta нечистый — для analytics/RAG не нужны.
+// Если в будущем потребуется CRM-bridge с person-level точностью —
+// идти через order_number + Bitrix24 join, а не через WaterAnalysis.
 //
 // См. docs/features/water-analysis.md.
 
@@ -108,10 +110,17 @@ model WaterAnalysis {
     intakeType      WaterSourceType @map("intake_type")
     appearance      String?  @db.VarChar(256)
 
-    // params: { hardness: { value, unit, exceedsPdk, belowDetectionLimit }, iron: {...}, ... }
+    // params:        { paramCode: number }                               — flat denorm payload
+    // paramUnits:    { paramCode: string }                               — каноническая единица для каждого значения
+    // paramFlags:    { paramCode: ('below_detection'|'above_limit'|...)[] } — особые случаи
+    // paramsUnknown: { rawName: { valueRaw, unitRaw, reason } }            — для review/расширения PARAM_SYNONYMS
+    // exceedsPdk вычисляется в runtime через @slovo/water-blank-extraction → exceedsPdk(paramCode, value).
     params          Json
+    paramUnits      Json     @map("param_units")
+    paramFlags      Json     @map("param_flags")
+    paramsUnknown   Json     @map("params_unknown")
 
-    // Адрес — каноническая форма от Ахантера
+    // Адрес — каноническая форма (наследуется из WaterAnalysisRaw, после address-resolution pipeline)
     canonicalAddress String? @map("canonical_address") @db.VarChar(512)
     fiasId          String?  @map("fias_id") @db.VarChar(64)
     region          String?  @db.VarChar(128)
@@ -119,12 +128,14 @@ model WaterAnalysis {
     locality        String?  @db.VarChar(128)
     lat             Float?
     lon             Float?
-    geocodeSource   GeocodeSource @map("geocode_source")
+    geoSource       WaterGeocodeSource? @map("geo_source")
 
-    // Из имени файла (после нормализации dealerLocation)
+    // PostGIS: GENERATED ALWAYS AS STORED — синхронизируется при INSERT/UPDATE из lat/lon.
+    // Для radial-search через @slovo/water-blank-extraction в Этапе 2.
+    geoPoint        Unsupported("geography(Point, 4326)")? @map("geo_point")
+
+    // Из имени файла (после нормализации dealerLocation, без PII)
     dealerLocation  String?  @map("dealer_location") @db.VarChar(256)
-    // FK на pii.jsonl (string id, не DB constraint — pii живёт вне БД на этапе эксперимента)
-    customerNameRef String?  @map("customer_name_ref") @db.Uuid
 
     normalizationVersion String @map("normalization_version") @db.VarChar(16)
     normalizedAt    DateTime @default(now()) @map("normalized_at")
@@ -133,6 +144,7 @@ model WaterAnalysis {
     @@index([sampleDate])
     @@index([intakeType])
     @@index([normalizationVersion])
+    @@index([geoSource])
     @@map("water_analysis")
 }
 
@@ -145,14 +157,6 @@ enum WaterSourceType {
     other
 
     @@map("water_source_type")
-}
-
-enum GeocodeSource {
-    blank             // адрес из тела бланка → Ахантер
-    dealer_fallback   // адрес объекта пуст → Ахантер по dealerLocation
-    none              // оба источника пусты или невалидны
-
-    @@map("geocode_source")
 }
 
 // Этап 1.A.5 — verdict от Claude AI verify (auto-OK SQL + manual review).

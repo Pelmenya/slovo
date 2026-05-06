@@ -530,20 +530,15 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'запах (при t по п.1)': 'odor',
     'запах при 20°c': 'odor',
 
-    // permanganate_oxidizability — OCR-разнообразие на «Окисляемость перманганатная»
+    // permanganate_oxidizability — реальные написания и распространённые опечатки.
+    // NB: Vision-галлюцинации типа «омега-3», «омелeние», «омнесканность» удалены
+    // из синонимов 2026-05-06 — пусть идут в paramsUnknown, не превращаются в число.
     'окисляемость перманганатная': 'permanganate_oxidizability',
     'окисляемость': 'permanganate_oxidizability',
     'перманганатная окисляемость': 'permanganate_oxidizability',
-    'омелeние перманганатная': 'permanganate_oxidizability',
-    'омеднение перманганатная': 'permanganate_oxidizability',
-    'омеляемость перманганатная': 'permanganate_oxidizability',
-    'омнесканность перманганатная': 'permanganate_oxidizability',
-    'омолесность перманганатная': 'permanganate_oxidizability',
-    'оксисляемость': 'permanganate_oxidizability',
-    'оксилемость': 'permanganate_oxidizability',
-    'кислотность перманганатная': 'permanganate_oxidizability',
-    'омега-3': 'permanganate_oxidizability',                          // Vision-галлюцинация
-    'омега-3 полиненасыщенная': 'permanganate_oxidizability',         // Vision-галлюцинация (singleton)
+    'оксисляемость': 'permanganate_oxidizability',                    // OCR опечатка
+    'оксилемость': 'permanganate_oxidizability',                      // OCR опечатка
+    'кислотность перманганатная': 'permanganate_oxidizability',       // «кислотность» как OCR от «окисляемость»
 
     // tds
     'минерализация (сухой остаток)': 'tds',
@@ -556,13 +551,14 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'электропроводность': 'electrical_conductivity',
     'удельная электропроводность': 'electrical_conductivity',
 
-    // hardness_total
+    // hardness_total — только общая жёсткость.
+    // NB: «постоянная» (без бикарбонатов) и «временная» (бикарбонатная) — это
+    // КОМПОНЕНТЫ общей жёсткости, не сама общая. Раньше маппились сюда — фикс
+    // 2026-05-06: пусть идут в unknown.
     'жёсткость общая': 'hardness_total',
     'жесткость общая': 'hardness_total',
     'жёсткость': 'hardness_total',
     'жесткость': 'hardness_total',
-    'жёсткость постоянная': 'hardness_total',
-    'жёсткость временная': 'hardness_total',
     'общая жёсткость': 'hardness_total',
 
     // iron_total
@@ -592,11 +588,19 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'марганец (mn, водорастворимо)': 'manganese',
     'марганец (mn, марганец)': 'manganese',          // Vision склеил
     'марганец (mn, валовано)': 'manganese',          // OCR от «валентно»
-    'марганец (mg²⁺)': 'manganese',                  // OCR Vision: Mn → Mg в формуле, но название «Марганец» однозначно (658 records!)
+    // NB: «Марганец (Mg²⁺)» НЕ синоним manganese — это OCR-ошибка имени.
+    // Mg²⁺ = ион магния. Реальное название в бланке — «Магний (Mg²⁺)».
+    // Vision спутал «Магний» → «Марганец» по форме букв, но формула Mg²⁺
+    // химически корректна → маппим в magnesium ниже (не manganese).
 
     // magnesium
     'магний': 'magnesium',
     'магний (mg²⁺)': 'magnesium',
+    'магний (mg, суммарно)': 'magnesium',
+    'магний (mg)': 'magnesium',
+    // OCR-ошибка имени «Магний» → «Марганец», но формула Mg²⁺ корректна → магний.
+    // 658 записей в dataset (изначально неверно смаппил в manganese, fix 2026-05-06).
+    'марганец (mg²⁺)': 'magnesium',
     'магнец (mg²⁺)': 'magnesium', // OCR
 
     // calcium
@@ -638,13 +642,14 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'сероводород (h₂s)': 'hydrogen_sulfide',
     'сероводород (h2s)': 'hydrogen_sulfide',
 
-    // alkalinity_total
+    // alkalinity_total — щёлочность.
+    // NB: «щёлочность перманганатная» (OCR-склейка «Щёлочность общая» + «Окисляемость
+    // перманганатная») удалена из синонимов 2026-05-06 — невозможно различить
+    // что Vision реально читал, пусть идёт в unknown.
     'щёлочность общая': 'alkalinity_total',
     'щелочность общая': 'alkalinity_total',
     'щёлочность': 'alkalinity_total',
     'щелочность': 'alkalinity_total',
-    'щёлочность перманганатная': 'alkalinity_total',  // OCR
-    'щёлочность постоянная': 'alkalinity_total',
 
     // ammonium
     'аммиак': 'ammonium',
