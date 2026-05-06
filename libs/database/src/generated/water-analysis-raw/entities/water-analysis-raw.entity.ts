@@ -1,5 +1,5 @@
 
-import {Prisma,WaterGeoLevel,WaterAddressVerification} from '@prisma/client'
+import {Prisma,WaterGeoLevel,WaterGeocodeSource,WaterAddressVerification} from '@prisma/client'
 import {ApiProperty} from '@nestjs/swagger'
 import {WaterAnalysis} from '../../water-analysis/entities/water-analysis.entity'
 
@@ -56,6 +56,10 @@ geoPretty: string  | null;
   enum: WaterGeoLevel,
 })
 geoLevel: WaterGeoLevel  | null;
+@ApiProperty({
+  enum: WaterGeocodeSource,
+})
+geoSource: WaterGeocodeSource  | null;
 @ApiProperty({
   enum: WaterAddressVerification,
 })

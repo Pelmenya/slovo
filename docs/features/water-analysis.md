@@ -27,15 +27,18 @@
 | **1.A** Raw extraction | таблица `WaterAnalysisRaw` с 15 504 бланками: `visionPayload` от Claude Haiku 4.5, `filenameMeta` regex, `sourceFileHash` SHA256 для idempotency | **~$183** только Vision-extract (5430 на 2026-05-04 за $62.10 + 10 074 от Bitrix-merge на 2026-05-05 за ~$121) + 40 ₽ Ahunter pilot. Полный Anthropic billing (включая misc + VAT/conversion) — см. lab journal `2026-05-04-stage-1a-extract-costs.md` | ✅ закрыт 2026-05-05 |
 | **1.A.5** Address resolution | 15 полей в `WaterAnalysisRaw`: `address_pre_cleaned`, `ahunter_cleansed` JSONB, `geo_lat/lon/region/city/pretty/level`, `ai_verified`. Pre-clean (TS regex) → Ahunter `/cleanse` 3-tier (strict → suggest+strict → smart) → Claude AI verify | **~2 000 ₽** Ahunter `/cleanse` за май: 18 496 API запросов = ~17 296 production (multi-tier overhead, не retries) + ~1 200 пилотные итерации `analyze-cleanse-sample.ts` v1→v5; 12 891 исправлено Ahunter, 11 948 принято нашим postfilter v5. + ~3 часа manual Claude review. Детальный breakdown — lab journal `2026-05-05-address-resolution.md` | ✅ закрыт 2026-05-05 |
 | **1.B** Normalization | таблица `WaterAnalysis` с каноническими `params{hardness, iron, ...}`, enum `WaterSourceType`, PII-обезличиванием, derive из `WaterAnalysisRaw` | $0 (детерминированный transform, повторяемо без расходов) | 🟢 в работе |
-| **dealer-median fallback** (между 1.A.5 и 1.B) | для 3 556 no_match/empty — медианные lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с lat/lon разной точности (precise для 1.A.5 ok, ~5-15 км radius для dealer-median) | $0 (агрегация на стороне БД) | ⏳ TaskList #38 на 2026-05-06 |
+| **dealer-median fallback** (между 1.A.5 и 1.B) | для 3 185 no_match/empty — медианные lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. **Покрыто 112 dealer'ами с ≥3 ok-records.** Достигнуто: **97.6%** records с lat/lon разной точности | $0 (агрегация на стороне БД) | ✅ закрыт 2026-05-06 |
 | **2** Embeddings | колонка `embedding vector(1536)` + HNSW-индекс + endpoint `/water-analysis/similar` | ~$0.06 OpenAI embeddings + время на формат embedding text | ⏳ после 1.B |
 | **3** Real-time + endpoints | webhook из CRM, geo-аналитика, карта МО | infrastructural | ⏳ после 2 |
 
-> **Состояние dataset на 2026-05-05 EOD:**
-> - **15 504** total raw records (после Bitrix-merge, +10 074 относительно 5430 на 2026-05-04)
-> - **11 948** cleansed через Ahunter (96.7% strict tier, 2.0% smart, 1.3% suggest+strict)
-> - **3 556** no_match/empty — на dealer-median
-> - **AI verified:** 10 846 ok (90.8%) / 633 uncertain (5.3%) / 469 wrong (3.9%) — цель <5% wrong **выполнена**
+> **Состояние dataset на 2026-05-06 EOD утра:**
+> - **15 504** total raw records (после Bitrix-merge на 2026-05-05)
+> - **11 948** cleansed через Ahunter (96.7% strict, 2.0% smart, 1.3% suggest+strict)
+> - **AI verified:** 10 846 ok (90.8%) / 633 uncertain (5.3%) / 469 wrong (3.9%) — цель <5% wrong ✓
+> - **dealer-median fallback** добавил координаты 3 185 записям (112 dealer'ов, мин. 3 ok-records)
+> - **С координатами всего: 15 133 / 15 504 = 97.6%** ✓ (цель ≥95%)
+> - 371 без координат → на manual override (#36)
+> - PostGIS `geo_point geography(Point, 4326)` GENERATED column + GiST индекс — настроены
 
 ---
 
@@ -611,7 +614,10 @@ enum WaterGeoLevel {
 | `add_pii_ref_id` | 2026-05-04 | `piiRefId` колонка + UNIQUE collision pre-check |
 | `add_address_resolution_fields` | 2026-05-05 | 15 полей Этапа 1.A.5 + 3 индекса |
 | `add_water_enums_address_verification_geo_level` | 2026-05-06 | VarChar → enum для `aiVerified` (`ok|uncertain|wrong`) и `geoLevel` (`Region|City|...`). Tech-debt #21. |
-| `add_dealer_median_geocode_source` *(планируется 2026-05-06)* | — | Расширение enum `GeocodeSource` (`smart`, `dealer_median`) |
+| `add_postgis_extension` | 2026-05-06 | `CREATE EXTENSION postgis`. Tech-debt #22. |
+| `add_geo_source_to_water_analysis_raw` | 2026-05-06 | Колонка `geo_source` VARCHAR(20) + индекс + backfill 11 948 как `ahunter_cleanse`. |
+| `convert_geo_source_to_enum` | 2026-05-06 | VarChar → enum `WaterGeocodeSource` (`ahunter_cleanse|dealer_median|manual_override`). |
+| `add_geo_point_geography_with_gist_index` | 2026-05-06 | `geo_point geography(Point, 4326) GENERATED ALWAYS AS ... STORED` + GiST индекс. |
 
 ---
 
@@ -768,8 +774,11 @@ experiments/water-analysis-dataset/             # gitignored целиком (п�
 
 - [x] **Бэкап БД** перед изменениями: water_analysis tables + full slovo dump в YandexDisk + локально. **Сделано 06:39.**
 - [x] **#21** Prisma enum для `aiVerified` / `geoLevel` — миграция `add_water_enums_address_verification_geo_level`, 591 тест ✓.
-- [ ] **#38** `07-dealer-median-fallback.ts` для 3 556 no_match/empty — median lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. Цель: ≥95% records с lat/lon разной точности.
-- [ ] **#36** Manual address override для top-dealers без геоинфы (Опт, Промотдел, Сервис).
+- [x] **#22** PostGIS extension установлен — кастомный образ `slovo-postgres:pgvector-postgis-pg18`, миграция `add_postgis_extension`.
+- [x] **`geo_source` колонка** + enum `WaterGeocodeSource` (3 значения: `ahunter_cleanse`, `dealer_median`, `manual_override`). Backfill: 11 948 записей помечены как `ahunter_cleanse`.
+- [x] **`geo_point geography(Point, 4326)` GENERATED column + GiST индекс** — Postgres автогенерирует точку из lat/lon. Smoke test: nearest-5 за 6.4 ms на 11 948 точках.
+- [x] **#38** `07-dealer-median-fallback.ts` — **3 185 записей покрыто** (112 dealer'ов с ≥3 ok-records, true median PERCENTILE_CONT). Финал: 97.6% records с координатами.
+- [ ] **#36** Manual address override для top-dealers без геоинфы (371 record).
 - [ ] **#35** Этап 1.B — derive `WaterAnalysis` (param mapping, unit conversion, value parsing, sourceType inference, PDK flagging, address copy из `geo_*`, PII обезличивание).
 - [ ] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain.
 

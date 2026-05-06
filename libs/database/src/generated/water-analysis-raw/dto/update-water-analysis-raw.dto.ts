@@ -1,5 +1,5 @@
 
-import {Prisma,WaterGeoLevel,WaterAddressVerification} from '@prisma/client'
+import {Prisma,WaterGeoLevel,WaterGeocodeSource,WaterAddressVerification} from '@prisma/client'
 import {Type} from 'class-transformer'
 import {IsIn,IsInt,IsNumber,IsOptional,IsRFC3339,IsString} from 'class-validator'
 import {ApiProperty} from '@nestjs/swagger'
@@ -99,6 +99,12 @@ geoPretty?: string;
 @IsOptional()
 @IsIn(["Region","District","City","Place","Site","Street"])
 geoLevel?: WaterGeoLevel;
+@ApiProperty({
+  enum: WaterGeocodeSource,
+})
+@IsOptional()
+@IsIn(["ahunter_cleanse","dealer_median","manual_override"])
+geoSource?: WaterGeocodeSource;
 @ApiProperty({
   enum: WaterAddressVerification,
 })

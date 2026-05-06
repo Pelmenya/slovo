@@ -870,15 +870,19 @@ async reconcileFromChunks(): Promise<number> {
 **Решение:** оставить VarChar (вариант 2). Перепроверить при #38 dealer-median —
 если он будет читать tier для классификации, добавить enum-валидацию на runtime.
 
-### 22. ✅ PostGIS extension установлен — **закрыт 2026-05-06 (unblocking)**
+### 22. ✅ PostGIS extension + geography(Point) колонка + GiST индекс — **закрыт 2026-05-06**
 
-Подготовка инфры: PostGIS 3.6.3 + cube + earthdistance доступны через `CREATE EXTENSION` на slovo-postgres. Кастомный Dockerfile `docker/postgres/Dockerfile` на базе `pgvector/pgvector:0.8.2-pg18-trixie` с доустановкой `postgresql-18-postgis-3` через apt.
+Полное решение vместо unblocking-only:
 
-Миграция `add_postgis_extension` создаёт `postgis` extension в БД. PostGIS прописан в `prisma/schema/main.prisma` (`extensions = [..., postgis]`).
+1. **PostGIS 3.6.3 в инфре** — кастомный Dockerfile `docker/postgres/Dockerfile` на базе `pgvector/pgvector:0.8.2-pg18-trixie` + `postgresql-18-postgis-3`. Образ `slovo-postgres:pgvector-postgis-pg18`.
+2. **Миграция `add_postgis_extension`** — `CREATE EXTENSION postgis` + Prisma `extensions = [..., postgis]`.
+3. **Миграция `add_geo_point_geography_with_gist_index`** — `geo_point geography(Point, 4326) GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(geo_lon, geo_lat), 4326)::geography) STORED` + GiST индекс. Postgres автоматически вычисляет geo_point при INSERT/UPDATE из geo_lat/geo_lon. Никаких triggers / manual sync.
+4. **Prisma schema** — `geoPoint Unsupported("geography(Point, 4326)")?` (Prisma 7 не поддерживает geography нативно, но колонка работает через raw queries).
 
-**Smoke test:** `ST_Distance(ST_MakePoint(...)::geography, ...)` на реальных данных Москва-Серпухов → 90 км, корректно.
-
-**Что НЕ сделано (specifically tech-debt):** geo_lat/geo_lon остаются `DOUBLE PRECISION`, composite btree `(geo_lat, geo_lon)` сохраняется. Расчётные `geography(Point, 4326)` колонки и GiST-индекс на них — добавятся в Этапе 1.B (`WaterAnalysis`) или Этапе 3 (UI «найди в радиусе»), не сейчас.
+**Smoke test после dealer-median:**
+- `ST_Distance(Москва::geography, Серпухов::geography) / 1000 = 90 км` ✓
+- nearest 10 к точке (55.5, 38.0): Раменское/Видное в 1-4 км ✓
+- GiST индекс работает: `ORDER BY geo_point <-> ... LIMIT 5` за 6.4 ms на 11 948 точках ✓
 
 **Образ:** `slovo-postgres:pgvector-postgis-pg18` (~250 MB вместо ~80 MB у base pgvector).
 

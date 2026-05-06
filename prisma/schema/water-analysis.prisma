@@ -66,6 +66,14 @@ model WaterAnalysisRaw {
     geoCity                 String?   @map("geo_city") @db.VarChar(64)
     geoPretty               String?   @map("geo_pretty") @db.VarChar(512)
     geoLevel                WaterGeoLevel? @map("geo_level")
+    geoSource               WaterGeocodeSource? @map("geo_source")
+
+    // PostGIS: GENERATED ALWAYS AS (ST_MakePoint(geo_lon, geo_lat)::geography) STORED.
+    // Postgres сам синхронизирует при INSERT/UPDATE из geo_lat/geo_lon.
+    // Prisma помечает Unsupported т.к. нативного geography типа в Prisma 7 нет —
+    // но колонка работает: для read через raw queries ($queryRaw), для filter
+    // через ST_DWithin / ST_Distance / ORDER BY ... <-> в raw SQL.
+    geoPoint                Unsupported("geography(Point, 4326)")? @map("geo_point")
 
     // AI verification (Claude review verdict)
     aiVerified              WaterAddressVerification? @map("ai_verified")
@@ -81,6 +89,7 @@ model WaterAnalysisRaw {
     @@index([ahunterCleansedAt])
     @@index([aiVerified])
     @@index([geoLat, geoLon])
+    @@index([geoSource])
     @@map("water_analysis_raw")
 }
 
@@ -167,4 +176,16 @@ enum WaterGeoLevel {
     Street
 
     @@map("water_geo_level")
+}
+
+// Этап 1.A.5 / dealer-median fallback — источник geo_lat/lon координат.
+//   ahunter_cleanse — точные координаты из Ahunter /cleanse (happy path)
+//   dealer_median   — fallback: median координат ok-records того же dealer'а
+//   manual_override — manual lookup для top-dealers без геоинфы (#36)
+enum WaterGeocodeSource {
+    ahunter_cleanse
+    dealer_median
+    manual_override
+
+    @@map("water_geocode_source")
 }
