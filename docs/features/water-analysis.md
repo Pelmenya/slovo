@@ -692,6 +692,132 @@ API-driven paid). 1.A.5 уже закрыт, 1.B остаётся повторя
 
 ---
 
+## Будущая интеграция: КП-данные + bridge с vision-catalog-search
+
+> **Идея от 2026-05-06.** Если получим от руководителя Аквафор экспорт КП
+> (коммерческие предложения, исторические + текущие) с привязкой к адресам и
+> анализам — это разблокирует **5 уровней value** поверх water-analysis dataset.
+
+### Минимальный достаточный формат КП
+
+```
+{
+  proposal_id          // PK
+  customer_address     // FK по string match с water_analysis_raw.geo_pretty
+  water_analysis_id?   // ИЛИ orderNumber, прямой FK на water_analysis_raw
+  recommended_items: [
+    { moysklad_uuid, qty, price_kopecks }
+  ]
+  total_price_kopecks
+  status               // 'sent' | 'signed' | 'rejected'
+  signed_date?
+  decline_reason?
+  manager_dealer       // string — какой ТЦ оформил
+  created_at
+}
+```
+
+Формат **не критичен** — даже `customer_address` + список товаров + статус
+достаточно для первого пилота. CSV/Excel из CRM сойдёт.
+
+### 5 уровней value поверх существующего dataset
+
+#### 1. Experience-driven recommendation (ключевая фича)
+
+Поверх Сценария 3 из `vision-catalog-search.md:649` (RAG-чатбот по water problems):
+
+```
+Вход: новый клиент, water profile (жёсткость 12, железо 0.8), адрес "Мытищи"
+→ найти 12 ближайших по profile в радиусе 20 км через geo_point GiST
+→ для каждого найти связанные КП (status='signed' предпочтительнее)
+→ basket-frequency: какие SKU встречаются вместе и в каком % случаев
+→ ответ: "В 9 из 12 похожих случаев предложили [ОС-15] + [iron-removal MX-300]"
+```
+
+Это **сильнее** чем чистый semantic search (Этап 2 embeddings) — это
+recommendation на основе того что **уже сработало** у соседей с похожей водой.
+
+#### 2. Conversion analytics
+
+`signed_date IS NOT NULL` vs `NULL` × `decline_reason` × water profile × район:
+
+- ML-классификатор «вероятность подписания КП при отправке»
+- Прогноз на стороне CRM до отправки клиенту
+- Insight'ы менеджерам: «эта конфигурация в Раменском конвертится в 78%, а в
+  Серпухове — в 42%»
+
+#### 3. Geo-pricing intelligence
+
+«В Раменском районе ОС-15 в среднем продаётся за 89к, в Серпухове — 76к» —
+для менеджеров и для админ-аналитики (где зажимает marketplace, где можно
+поднять цену).
+
+#### 4. Cross-sell basket analysis
+
+Прямо из проданных КП (без ML, чисто частоты):
+
+```sql
+-- Что часто продаётся вместе с ОС-15
+SELECT b.moysklad_uuid, COUNT(*) AS cnt
+FROM proposal_items a
+JOIN proposal_items b ON a.proposal_id = b.proposal_id AND a.id != b.id
+WHERE a.moysklad_uuid = '<os-15-uuid>'
+GROUP BY b.moysklad_uuid
+ORDER BY cnt DESC;
+```
+
+Используется в endpoint `/catalog/recommendations?based_on_item=<uuid>`.
+
+#### 5. Bridge с vision-catalog-search (готовая половина)
+
+Vision catalog Phase 1+2 закрыты (см. `vision-catalog-search.md`):
+
+- 155 SKU Aquaphor с vision augmentation
+- Universal endpoint `/catalog/search` (text/image/combined до 5 фото)
+- pgvector + Flowise embedding orchestration
+
+Cross-link через КП:
+
+```
+proposal_items.moysklad_uuid    →   catalog_item.external_id      (FK)
+proposal.water_analysis_id      →   water_analysis_raw.order_no   (FK)
+```
+
+После cross-link — обогащение `CatalogSearchResponse` (см.
+`vision-catalog-search.md:673`) дополнительным полем:
+
+```typescript
+historicalUsage?: {
+    proposalCount: number              // в скольки КП появлялся
+    signedRate: number                 // % подписанных
+    nearbyMatchCount: number           // в радиусе R от точки клиента
+    coOccurrenceTop3: string[]         // 3 чаще всего сопутствующих SKU
+}
+```
+
+Сценарий 3 (`vision-catalog-search.md:649`) **получает фактическое
+подкрепление** от данных проданных решений — переход от «это релевантный
+товар» к «это товар который реально решал такую же проблему у похожих клиентов».
+
+### Что нужно делать в slovo для подготовки
+
+1. **Новая модель `Proposal` + `ProposalItem`** в Prisma schema
+   (`prisma/schema/proposal.prisma` — отдельный домен по конвенции multi-file).
+2. **Endpoint `/proposal/ingest`** для bulk-import из CRM (file-based pull
+   через MinIO bucket, как catalog refresh — ADR-007).
+3. **Cross-link миграция** — добавить `water_analysis_id` FK в `Proposal` +
+   индекс на `geo_point` Proposal'а (если будет адрес → geocode).
+4. **Endpoint `/water-analysis/recommendations`** — по water profile +
+   coords возвращает «что предлагали в похожих случаях» с frequency.
+
+### Триггер реализации
+
+Когда руководитель Аквафор согласится передать экспорт КП (даже частичный
+за 2024-2026). До этого — фокус на Этапах 1.B + 2 + EDA, чтобы при появлении
+КП-данных всё было готово к интеграции **за день**, не за неделю.
+
+---
+
 ## Связанные tech-debt и зависимости
 
 - `libs/geocoding` — будет создан в этапе 3 как переиспользуемый клиент Ахантера (сейчас в crm-aqua-kinetics-back есть `proxy.service.ts` с интеграцией). На этапе 1.A.5 — прямой fetch в tsx-скрипте.

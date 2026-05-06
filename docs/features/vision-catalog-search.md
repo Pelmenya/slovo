@@ -670,6 +670,15 @@ sequenceDiagram
 
 Это уже **агентский flow**, появится в PR после PR8 когда будет готова catalog-search база.
 
+> **Cross-link с water-analysis (заметка 2026-05-06):** при наличии КП-данных
+> от Аквафор (proposals + items + status подписания + связь с водными
+> анализами) Сценарий 3 переходит из «семантического подбора» в
+> **experience-driven recommendation** — «в 9 из 12 похожих случаев
+> предложили этот товар». См. `water-analysis.md` секцию
+> «Будущая интеграция: КП-данные + bridge с vision-catalog-search» для
+> деталей формата КП и пяти уровней value (recommendation, conversion
+> analytics, geo-pricing, basket analysis, historical usage в Response DTO).
+
 ### Response DTO — что получает фронт
 
 ```typescript
