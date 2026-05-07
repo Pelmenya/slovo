@@ -55,6 +55,7 @@ dealerLocation: string  | null;
 })
 depthMeters: number  | null;
 labName: string  | null;
+embeddingText: string  | null;
 normalizationVersion: string ;
 @ApiProperty({
   type: `string`,

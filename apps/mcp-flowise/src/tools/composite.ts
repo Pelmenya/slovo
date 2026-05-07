@@ -204,7 +204,17 @@ export async function docstoreFullSetupHandler(
     const loaderId = loaderResult.data.id;
 
     // 3. process loader (chunking)
-    const processResult = await docstoreLoaderProcessHandler({ storeId, loaderId });
+    // NB: передаём loaderConfig + splitter в body — Flowise `_saveChunksToStorage`
+    // читает `data.loaderConfig` через `Object.getOwnPropertyNames`, и при отсутствии
+    // падает с "Cannot convert undefined or null to object". Прецедент 2026-05-07
+    // на water-analysis-aquaphor.
+    const processResult = await docstoreLoaderProcessHandler({
+        storeId,
+        loaderId,
+        loaderConfig: input.loaderConfig,
+        splitterId: input.splitterId,
+        splitterConfig: input.splitterConfig,
+    });
     if (!processResult.success) {
         return processResult;
     }

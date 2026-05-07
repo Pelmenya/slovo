@@ -93,6 +93,9 @@ depthMeters?: number;
 @IsOptional()
 @IsString()
 labName?: string;
+@IsOptional()
+@IsString()
+embeddingText?: string;
 @IsNotEmpty()
 @IsString()
 normalizationVersion: string;

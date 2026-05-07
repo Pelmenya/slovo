@@ -150,6 +150,21 @@ model WaterAnalysis {
     // когда потребуется. Минимальный denorm — для часто фильтруемых/сортируемых полей.
     // См. memory `feedback_minimal_denorm` + ADR-005 (raw vs derived split).
 
+    // Phase 2 — семантический поиск похожих анализов через Flowise Document Store
+    // "water-analysis-aquaphor" (consistency с catalog-aquaphor паттерном, ADR-006).
+    //
+    // embedding_text — natural language description через generateEmbeddingText() (детерминированно).
+    // Передаётся в Flowise loader как content, embedding хранится в Flowise-managed
+    // таблице <docstoreId>_chunks (PostgresVectorStore с HNSW индексом).
+    //
+    // JOIN на chunks для combined geo+semantic queries:
+    //   SELECT wa.*, ch.embedding <=> $q AS dist
+    //   FROM water_analysis wa
+    //   JOIN <docstoreId>_chunks ch ON ch.metadata->>'order_number' = wa.order_number
+    //   WHERE ST_DWithin(wa.geo_point, $point, 5000)
+    //   ORDER BY ch.embedding <=> $q LIMIT 10;
+    embeddingText   String?  @map("embedding_text") @db.Text
+
     normalizationVersion String @map("normalization_version") @db.VarChar(16)
     normalizedAt    DateTime @default(now()) @map("normalized_at")
 

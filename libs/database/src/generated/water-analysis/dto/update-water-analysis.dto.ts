@@ -95,5 +95,8 @@ depthMeters?: number;
 labName?: string;
 @IsOptional()
 @IsString()
+embeddingText?: string;
+@IsOptional()
+@IsString()
 normalizationVersion?: string;
 }
