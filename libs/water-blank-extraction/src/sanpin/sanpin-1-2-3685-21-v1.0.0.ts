@@ -672,6 +672,27 @@ export const WATER_PARAMS_BY_CODE: Record<string, TWaterParam> = WATER_PARAMS.re
 );
 
 /**
+ * Возвращает каноническую единицу измерения для paramCode.
+ *
+ * Стратегия чтения unit'а из derived `WaterAnalysis`:
+ *   - 95% случаев unit совпадает с canonical (из справочника СанПиН) — paramUnits НЕ хранит, экономит место
+ *   - Редкие случаи (turbidity мг/л-каолин ≈ 82 записи на 15 504) — paramUnits хранит override
+ *
+ * Будущее: при переходе на sparse-модель paramUnits (хранить только overrides)
+ * этот helper читает override → fallback на canonical из справочника.
+ *
+ * @param paramCode — канонический код параметра (iron_total, hardness_total, etc.)
+ * @param paramUnits — derived `WaterAnalysis.paramUnits` (sparse или full — оба работают)
+ * @returns единица или `null` если paramCode unknown
+ */
+export function getParamUnit(paramCode: string, paramUnits: Record<string, string> | null | undefined): string | null {
+    if (paramUnits && paramUnits[paramCode] !== undefined) {
+        return paramUnits[paramCode];
+    }
+    return WATER_PARAMS_BY_CODE[paramCode]?.unit ?? null;
+}
+
+/**
  * Утилита: вычисляет признак превышения ПДК для заданного значения.
  * Возвращает `null` если параметр не нормируется.
  */

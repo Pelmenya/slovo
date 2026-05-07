@@ -12,3 +12,4 @@ export * from './sanpin/sanpin-1-2-3685-21-v1.0.0';
 export * from './parsers/value-parser';
 export * from './parsers/unit-converter';
 export * from './normalize/water-analysis-normalizer';
+export * from './normalize/embedding-text-builder';
