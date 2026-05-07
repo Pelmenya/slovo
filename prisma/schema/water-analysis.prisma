@@ -9,10 +9,13 @@
 // normalizationVersion позволяет держать несколько версий нормализации
 // параллельно для A/B сравнения.
 //
-// Embedding column добавится в Этапе 2 отдельной миграцией:
-//   ALTER TABLE water_analysis ADD COLUMN embedding vector(1536);
-//   CREATE INDEX water_analysis_embedding_hnsw_idx ON water_analysis
-//       USING hnsw (embedding vector_cosine_ops);
+// Phase 2 (закрыта 2026-05-07): embedding column в water_analysis НЕ добавлен,
+// решение пересмотрено в пользу Flowise-managed `<storeId>_chunks`
+// (PostgresVectorStore + HNSW, OpenAI text-embedding-3-large 3072 dim).
+// В water_analysis остался только `embedding_text TEXT` — natural-language
+// description, источник для loader'а. См. ADR-006 амендмент 2026-05-07
+// + детали в строках 153-166 (`embeddingText` + JOIN на `<storeId>_chunks`
+// для будущих combined geo+semantic queries в Phase 2.5).
 //
 // PII (customerName, customerPhone) при derive raw → WaterAnalysis
 // полностью отбрасывается (Variant A, решение 2026-05-06): нет колонок

@@ -24,6 +24,19 @@ export const SIMILAR_MIN_TOP_K = 1;
 export const SIMILAR_MAX_TOP_K = 50;
 
 // =============================================================================
+// Oversample при наличии post-filters. *5 — эмпирическая оценка: при
+// `regionContains='Московская'` hit rate среди 15 504 ≈ 14%, для top-K=10 нужно
+// ≥10/0.14≈72 кандидата. *5 для top-K=10 даёт 50 — обычно хватает. При top-K=50
+// упрётся в MAX_FETCH_K=250 (защита от unbounded retrieval из Flowise/pgvector;
+// cosine linear по top-K, на 15 504 chunks 250 запросов ≈ 1s).
+// Переезд из service.ts в constants 2026-05-07 для consistency с
+// SIMILAR_THROTTLE_LIMIT и других tuning-knobs.
+// =============================================================================
+
+export const SIMILAR_OVERSAMPLE_FACTOR = 5;
+export const SIMILAR_MAX_FETCH_K = 250;
+
+// =============================================================================
 // Throttle — защита от bottleneck Flowise vectorstoreQuery (~600ms/query).
 // Cost атаки малый ($0.00002/query на text-embedding-3-large), но 100 concurrent
 // от одного IP отъедят пул и сломают /catalog/search через тот же Flowise instance.

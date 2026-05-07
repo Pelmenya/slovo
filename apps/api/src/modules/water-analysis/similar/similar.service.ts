@@ -17,6 +17,8 @@ import { exceedsPdk, generateEmbeddingText, getParamUnit } from '@slovo/water-bl
 import {
     FLOWISE_CLIENT_TOKEN,
     SIMILAR_DEFAULT_TOP_K,
+    SIMILAR_MAX_FETCH_K,
+    SIMILAR_OVERSAMPLE_FACTOR,
     WATER_ANALYSIS_AQUAPHOR_STORE_NAME,
 } from '../water-analysis.constants';
 import {
@@ -28,16 +30,6 @@ import {
     SimilarSearchResponseDto,
 } from './dto/similar.response.dto';
 
-// Oversample factor для post-filter — сколько кандидатов запрашиваем у Flowise
-// при наличии фильтров. *5 — эмпирическая оценка: при regionContains='Московская'
-// hit rate среди 15 504 ≈ 14% (2 100 анализов), для top-K=10 нужно ≥10/0.14≈72
-// кандидата. *5 для top-K=10 даёт 50 — обычно хватает; для top-K=50 потолок
-// =MAX_TOP_K=50, oversample упрётся. Acceptable trade-off — без жёстких SLA
-// ситуация «count<topK» легитимна и видна клиенту в response.
-const OVERSAMPLE_FACTOR = 5;
-// Hard cap для vectorstoreQuery — защита от unbounded retrieval. Cosine
-// в pgvector linear по top-K, на 15 504 chunks 250 запросов укладываются в ~1s.
-const MAX_FETCH_K = 250;
 
 // =============================================================================
 // SimilarSearchService — vector search по water-analysis Document Store через
@@ -137,9 +129,9 @@ export class SimilarSearchService {
         if (!hasActiveFilters(filters)) {
             return effectiveTopK;
         }
-        // Oversample × OVERSAMPLE_FACTOR, но не больше MAX_FETCH_K
+        // Oversample × SIMILAR_OVERSAMPLE_FACTOR, но не больше SIMILAR_MAX_FETCH_K
         // (защита от unbounded retrieval из Flowise/pgvector).
-        return Math.min(effectiveTopK * OVERSAMPLE_FACTOR, MAX_FETCH_K);
+        return Math.min(effectiveTopK * SIMILAR_OVERSAMPLE_FACTOR, SIMILAR_MAX_FETCH_K);
     }
 
     /**
@@ -148,6 +140,13 @@ export class SimilarSearchService {
      * Критично: формат должен совпадать с ingest (06-generate-embedding-text.ts
      * использовал ту же `generateEmbeddingText`). Расхождения в шаблоне дадут
      * embedding в другой точке latent space — топ-K будет случайным.
+     *
+     * NB tech-debt #26 (раньше «#27»): paramFlags ingest читает persisted из БД
+     * (derive Этапа 1.B на конкретной версии справочника `sanpin-1-2-3685-21-v1.0.0`),
+     * query вычисляет на месте через `exceedsPdk()` (latest версия). При bump
+     * `v1.0.0 → v1.0.1` query «съедет» от ingest без visible signal. Решение —
+     * shared `buildEmbeddingTextFromWaterAnalysis(record)` в `libs/water-blank-extraction`
+     * + golden test, ETA: перед первым прод-bump'ом справочника.
      */
     private buildQueryText(request: SimilarSearchRequestDto): string {
         const paramUnits: Record<string, string> = {};
@@ -316,7 +315,8 @@ function validateRequest(request: SimilarSearchRequestDto): void {
 // поля попадали в loader metadata (см. memory `feedback_minimal_denorm`).
 // =============================================================================
 
-function hasActiveFilters(filters?: SimilarFiltersDto): boolean {
+// Type predicate — TS сужает тип на is-true ветке без assertion'а.
+function hasActiveFilters(filters: SimilarFiltersDto | undefined): filters is SimilarFiltersDto {
     if (!filters) return false;
     return (
         filters.matchIntakeType === true ||
@@ -335,15 +335,14 @@ function applyPostFilters(
     if (!hasActiveFilters(filters)) {
         return docs;
     }
-    const f = filters as SimilarFiltersDto;
-
-    const regionLower = f.regionContains?.toLowerCase();
-    const localityLower = f.localityContains?.toLowerCase();
+    // После type predicate `filters` сужен до SimilarFiltersDto без cast'а.
+    const regionLower = filters.regionContains?.toLowerCase();
+    const localityLower = filters.localityContains?.toLowerCase();
 
     return docs.filter((doc) => {
         const meta = doc.metadata;
 
-        if (f.matchIntakeType === true) {
+        if (filters.matchIntakeType === true) {
             if (meta.intakeType !== requestIntakeType) return false;
         }
 
@@ -358,13 +357,13 @@ function applyPostFilters(
             if (!locality.includes(localityLower)) return false;
         }
 
-        if (f.depthRange !== undefined) {
+        if (filters.depthRange !== undefined) {
             // Depth NULL для municipal/spring/river — отфильтровываем (не bound для
             // unknown depth). Семантически: если клиент задал depthRange — он ищет
             // именно скважины/колодцы определённой глубины.
             const depth = typeof meta.depthMeters === 'number' ? meta.depthMeters : null;
             if (depth === null) return false;
-            if (depth < f.depthRange.minMeters || depth > f.depthRange.maxMeters) return false;
+            if (depth < filters.depthRange.minMeters || depth > filters.depthRange.maxMeters) return false;
         }
 
         // geo handled via NotImplementedException в search() — сюда не доходит.

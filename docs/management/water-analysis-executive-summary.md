@@ -49,7 +49,7 @@ flowchart LR
 | **Ahunter API** | Геокодирование адресов (РФ-лицензия) | Платная подписка |
 | **PostgreSQL + PostGIS + pgvector** | Хранение, гео-поиск, будущие embeddings | Open-source |
 | **NestJS + Prisma + Docker** | Backend и инфраструктура | Open-source |
-| **TypeScript + Jest** | Нормализатор СанПиН-справочник + 110 unit-тестов | Open-source |
+| **TypeScript + Jest** | Нормализатор СанПиН-справочник + endpoint /water-analysis/similar; 128 unit/e2e-тестов | Open-source |
 
 ---
 

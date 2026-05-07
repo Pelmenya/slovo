@@ -90,7 +90,7 @@ describe('SimilarSearchService', () => {
         await expect(service.search(buildRequest())).rejects.toThrow('ECONNREFUSED');
         await expect(service.search(buildRequest())).resolves.toBeDefined();
 
-        // 4 calls: failed-lookup, retry-lookup, vectorstoreQuery
+        // 3 calls: failed-lookup, retry-lookup, vectorstoreQuery
         expect(flowiseRequest).toHaveBeenCalledTimes(3);
     });
 
@@ -231,6 +231,36 @@ describe('SimilarSearchService', () => {
             await expect(
                 service.search(buildRequest({ params: { ph: -1 } })),
             ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/вне допустимого/) });
+        });
+
+        it('400 — params содержит >MAX_PARAMS_KEYS=50 ключей (DoS guard)', async () => {
+            const service = await setupService(jest.fn());
+            const tooManyParams = Object.fromEntries(
+                Array.from({ length: 51 }, (_, i) => [`p${i}`, 1]),
+            );
+            await expect(
+                service.search(buildRequest({ params: tooManyParams })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/лимит 50/) });
+        });
+
+        it('400 — paramUnits с пустой строкой', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({
+                    params: { ph: 7.2 },
+                    paramUnits: { ph: '' },
+                })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/непустой строкой/) });
+        });
+
+        it('400 — paramUnits со слишком длинной строкой (>16)', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({
+                    params: { ph: 7.2 },
+                    paramUnits: { ph: 'a'.repeat(17) },
+                })),
+            ).rejects.toMatchObject({ status: 400 });
         });
 
         it('400 — depthRange minMeters > maxMeters', async () => {

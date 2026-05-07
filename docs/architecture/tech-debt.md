@@ -903,6 +903,8 @@ async reconcileFromChunks(): Promise<number> {
 
 **Когда:** перед public-deploy (виджет prostor-app / CRM-aqua dealer-side). Скопировать паттерн из `apps/api/src/modules/catalog/search/search.service.ts` — daily cap по embedding-вызовам + Telegram alert.
 
+**Конкретный cap (предложение):** $5/день (~250k queries при $0.00002/query) — отсекает abuse, normal load <$0.50/день при 100 органических queries в день. При public-launch с заметным трафиком — пересмотреть.
+
 ### 25. Langfuse observability для water-analysis embedding queries
 
 **Контекст (2026-05-07):** Flowise OpenAI Embeddings node поддерживает `analytics: ['langfuse']` через credential. Embedding queries `/water-analysis/similar` идут на production hot-path — должны попадать в Langfuse trace для cost monitoring + query-distribution.
@@ -910,6 +912,18 @@ async reconcileFromChunks(): Promise<number> {
 **Что проверить:** в Flowise UI на `water-analysis-aquaphor` Document Store нода OpenAI Embeddings подключена ли к Langfuse credential. Если нет — добавить.
 
 **Альтернатива:** `logger.log` в `SimilarSearchService.search` (query length, latency, count_results, filter active flags) — embedding tokens наружу через Flowise REST не приходят.
+
+**Sanity verify в running prod** (отдельный bullet — нужен независимо от Langfuse):
+
+```sql
+-- Реальная размерность вектора в storage (после первого upsert)
+SELECT vector_dims(embedding) AS dims, COUNT(*)
+FROM "<water-analysis-storeId>_chunks"
+GROUP BY 1;
+-- Ожидаем: dims=3072 (text-embedding-3-large), count > 0
+```
+
+Через `psql` или `flowise_docstore_vectorstore_query` (вернёт vector в response). Прогнать **после** первого ingest на water-analysis store + аналогично для catalog-aquaphor при следующем catalog-refresh — single source of truth что Flowise UI и Postgres согласованы. `pg_typeof` вернёт только `vector` без размерности — нужен `vector_dims()` (pgvector ≥ 0.5).
 
 ### 26. Phase 2.5 раннее предупреждение — combined geo+semantic query
 
@@ -920,6 +934,8 @@ async reconcileFromChunks(): Promise<number> {
 3. **HNSW параметры snapshot** — после первого upsert через `\d+ "<storeId>_chunks"` зафиксировать `m`/`ef_construction` в lab journal на случай tuning при росте >1M chunks.
 
 **Когда:** в момент kickoff Phase 2.5 — открыть `docs/features/water-analysis-geo.md` (новый план-документ) с UX-решением (radius hard-cutoff vs weighted re-rank) до начала кода.
+
+**Связанная PII-mitigation:** `roundCoord` сейчас приватный helper в `apps/api/src/modules/water-analysis/similar/similar.service.ts` — единственная exit-точка lat/lon наружу. При появлении второго Flowise-consumer внутри slovo (equipment-matcher / prostor-app endpoint / CRM-aqua dealer-side) есть риск utilizировать metadata.lat/lon без округления. Решение — вынести `roundCoord` в `libs/water-blank-extraction/src/utils/anonymize-coords.ts` как published utility + добавить ESLint rule «metadata.lat/lon usage requires roundCoord wrap», либо architectural test через regex grep по response DTO. Trigger: появление второго потребителя metadata.lat/lon из Flowise stores.
 
 ### 27. Cross-test invariant «ingest format ≡ query format» для embedding-text
 
