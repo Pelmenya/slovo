@@ -1,6 +1,6 @@
 # Water Analysis
 
-> **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (address resolution + AI-verify + dealer-median fallback) + 1.B (normalize) **закрыты на 6 мая 2026**. 15 504 бланка нормализованы в structured dataset: 21 paramCode + единицы + флаги, 97% normalize-clean, 93% holistic accuracy, 110 unit-тестов. **Следующий шаг:** Phase 2 — embeddings + endpoints + bridge с vision-catalog для алгоритма подбора оборудования (правила определит специалист по водоочистке Аквафор).
+> **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (address resolution + AI-verify + dealer-median fallback) + 1.B (normalize) + **Phase 2 (embeddings + endpoint)** **закрыты на 7 мая 2026**. 15 504 бланка нормализованы и embedded через OpenAI text-embedding-3-large (3072 dim) в Flowise Document Store `water-analysis-aquaphor`. Endpoint `POST /water-analysis/similar` отдаёт top-K похожих по cosine + post-filter (matchIntakeType / regionContains / depthRange / [geo резервирован]) + throttle 60/min/IP. 128 unit/e2e-тестов. **Следующий шаг:** Phase 2.5 — geo-фильтр через Prisma raw `ST_DWithin` + bridge с vision-catalog для алгоритма подбора оборудования (правила определит специалист по водоочистке Аквафор).
 > **Связи:** [vision-catalog-search.md](vision-catalog-search.md), [knowledge-base.md](knowledge-base.md), [flowise-naming.md](../guides/flowise-naming.md), [ADR-002 PostgreSQL+pgvector](../architecture/decisions/002-postgresql-with-pgvector.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md), [ADR-005 Prisma+raw queries](../architecture/decisions/005-prisma-with-pgvector.md), [ADR-008 MCP-сервер для Flowise](../architecture/decisions/008-mcp-server-for-flowise.md)
 > **Executive summary:** [`docs/management/water-analysis-executive-summary.md`](../management/water-analysis-executive-summary.md) (для руководителя — таблицы с проверенными цифрами).
 > **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5), `2026-05-06-stage-1b-eda.md` (Этап 1.B EDA).
@@ -29,8 +29,9 @@
 | **1.A.5** Address resolution | 15 полей в `WaterAnalysisRaw`: `address_pre_cleaned`, `ahunter_cleansed` JSONB, `geo_lat/lon/region/city/pretty/level`, `ai_verified`. Pre-clean (TS regex) → Ahunter `/cleanse` 3-tier (strict → suggest+strict → smart) → Claude AI verify | **~2 000 ₽** Ahunter `/cleanse` за май: 18 496 API запросов = ~17 296 production (multi-tier overhead, не retries) + ~1 200 пилотные итерации `analyze-cleanse-sample.ts` v1→v5; 12 891 исправлено Ahunter, 11 948 принято нашим postfilter v5. + ~3 часа manual Claude review. Детальный breakdown — lab journal `2026-05-05-address-resolution.md` | ✅ закрыт 2026-05-05 |
 | **1.B** Normalization | таблица `WaterAnalysis` с каноническими `params{hardness, iron, ...}`, enum `WaterSourceType`, PII-обезличиванием, derive из `WaterAnalysisRaw` | $0 (детерминированный transform, повторяемо без расходов) | 🟢 в работе |
 | **dealer-median fallback** (между 1.A.5 и 1.B) | для 3 185 no_match/empty — медианные lat/lon из `ai_verified='ok'` записей того же dealer'а с пометкой `geo_source='dealer_median'`. **Покрыто 112 dealer'ами с ≥3 ok-records.** Достигнуто: **97.6%** records с lat/lon разной точности | $0 (агрегация на стороне БД) | ✅ закрыт 2026-05-06 |
-| **2** Embeddings | колонка `embedding vector(1536)` + HNSW-индекс + endpoint `/water-analysis/similar` | ~$0.06 OpenAI embeddings + время на формат embedding text | ⏳ после 1.B |
-| **3** Real-time + endpoints | webhook из CRM, geo-аналитика, карта МО | infrastructural | ⏳ после 2 |
+| **2** Embeddings + endpoint | Flowise Document Store `water-analysis-aquaphor` (PostgresVectorStore + HNSW в Flowise-managed `<storeId>_chunks`) — 15 504 chunks через **Custom Document Loader** (1 loader / N documents через `functionInputVariables` + JS sandbox); detect-text builder через `generateEmbeddingText()` (детерминированный, $0); endpoint `POST /water-analysis/similar` через `flowise_vectorstoreQuery` + post-filter `matchIntakeType / regionContains / depthRange` + oversample ×5; **geo резервирован (501)** | $0.29 OpenAI text-embedding-3-large на 15 504 + 176 секунд (88 rec/s) одной операцией upsert | ✅ закрыт 2026-05-07 |
+| **2.5** Geo-фильтр + ranking | `ST_DWithin` через Prisma raw поверх Flowise-managed `<storeId>_chunks.metadata->>'orderNumber'`; weighted re-rank по дистанции если потребуется | $0 | ⏳ при появлении prostor-app потребителя |
+| **3** Real-time + bridge с vision-catalog | webhook из CRM на новый анализ, авто-ingest pipeline, equipment-matcher (правила специалиста Аквафор) | infrastructural | ⏳ после Phase 2.5 |
 
 > **Состояние dataset на 2026-05-06 EOD утра:**
 > - **15 504** total raw records (после Bitrix-merge на 2026-05-05)
@@ -399,46 +400,142 @@ $0 расходов.
 
 ---
 
-## Этап 2 — Embeddings (отложен до завершения 1.A+1.B)
+## Этап 2 — Embeddings + endpoint (закрыт 2026-05-07)
 
-Решается **после** EDA на нормализованных данных. До этого момента всё —
-гипотезы, и формат `embedding text` критически зависит от того что реально
-лежит в `WaterAnalysis.params`.
+### Что реализовано
 
-### Открытые вопросы (решаем после 1.B)
+**Embedding pipeline через Flowise Document Store:**
 
-1. **Что эмбеддить — формат embedding text:**
-   - **B (предварительный выбор)**: структурированный шаблон (`Источник: колодец\nРегион: Московская обл., Ступино\nЖёсткость: 7.2 (превыш. ПДК)\nЖелезо: 0.8 (превыш. ПДК)...`). Детерминированно, $0, фокус на хим.профиле.
-   - **C**: narrative от Claude Haiku. Богаче семантически, но дороже на 6000 (~$3) и stochastic.
+```mermaid
+flowchart LR
+    A[15 504 WaterAnalysis<br/>с embedding_text] --> B[generateEmbeddingText<br/>детерминированный TS]
+    B --> C[Custom Document Loader<br/>functionInputVariables]
+    C --> D[Flowise upsert<br/>/document-store/upsert/:id]
+    D --> E[OpenAI batch embed<br/>text-embedding-3-large 3072 dim]
+    E --> F[water_analysis_chunks<br/>HNSW pgvector]
+```
 
-2. **Адрес в embedding text** — фиксировано: **только regional context** (область + район/город) идёт в текст. Полный адрес и координаты — метаданные. Координаты в embedding не идут вообще: text-encoder не понимает числа географически (`55.7` ≠ ближе к `55.8`).
+- **Document Store:** `water-analysis-aquaphor` (id resolved by name, не hardcoded UUID — урок из catalog).
+- **Embedding model:** OpenAI `text-embedding-3-large` (3072 dim). Upgrade с `-3-small` сделан одновременно для catalog и water-analysis 2026-05-07.
+- **Loader strategy:** один **Custom Document Loader** через `functionInputVariables` — JS-функция в vm2 sandbox `return $docs.map(d => ({pageContent, metadata}))`. Альтернатива (15 504 отдельных JSON Loaders) ломает Flowise UI и race-condition'ит entity loaders array на concurrent updates.
+- **Время и стоимость:** 176 секунд / 88 rec/s / $0.29 OpenAI на полный datasete. Re-embedding целиком — рутинная операция (через `experiments/water-analysis-dataset/scripts/10-flowise-custom-loader.ts`).
 
-3. **Embedding модель** — `text-embedding-3-small` (default по slovo) vs Cohere multilingual (для русских доменных терминов).
+### Embedding text — детерминированный builder
 
-4. **Стратегия дедупликации** — что делать с повторными анализами одного клиента/места за разные даты:
-   - Эмбеддить каждый отдельно (история динамики воды на одной точке).
-   - Эмбеддить только последний на (адрес × источник).
-   - Эмбеддить все, но при поиске возвращать только уникальные по (customerId × address).
+Файл: `libs/water-blank-extraction/src/normalize/embedding-text-builder.ts`. Чистая функция `generateEmbeddingText(record) → string`, без LLM:
 
-### Архитектурные константы (не пересматриваются)
+```
+Скважина 50 м.
+Превышения ПДК: железо общее 1.5 мг/л (превышение), жёсткость общая 8.2 мг-экв/л (превышение).
+Прочие параметры: водородный показатель 7.2 ед., минерализация 720 мг/л, ...
+Внешний вид: мутнеет со временем.
+```
 
-- **Координаты не идут в embedding** — числовая мусорная пыль для text-encoder'а.
-- **Embedding через Flowise**, не напрямую OpenAI — slovo шлёт rich-text в Flowise, провайдер эмбеддингов меняется без изменения slovo-кода.
-- **Pgvector + HNSW** — `ALTER TABLE "WaterAnalysis" ADD COLUMN embedding vector(1536)` через `migrate dev --create-only` + ручная правка migration.sql.
-- **Geo-фильтр на SQL-уровне** — `WHERE ST_DWithin(...) AND embedding <-> $query` (или Haversine если PostGIS избыточен).
+- **Header:** тип источника + глубина (для скважин/колодцев).
+- **Превышения ПДК** идут первой секцией — главный сигнал для подбора оборудования (через `exceedsPdk()` из СанПиН справочника).
+- **Прочие параметры** — стабильный порядок 21 paramCode (organoleptic → general → metals → anions → other) для воспроизводимости.
+- **Внешний вид** — appearance свободным текстом если задан.
+- **Что НЕ в embedding:** координаты (text-encoder не понимает числа географически), labName (не должен влиять на семантику воды), даты (отдельный axis при нужде), PII (отсутствует в derived в принципе — Variant A).
+
+Тот же builder используется и при ingest (15 504 анализа), и при query во время `/similar` — embedding query попадёт в ту же точку latent space, расхождения шаблона дали бы случайный top-K.
+
+### API contract — POST /water-analysis/similar
+
+```http
+POST /water-analysis/similar
+Content-Type: application/json
+
+{
+    "intakeType": "well",
+    "depthMeters": 50,
+    "appearance": "мутнеет со временем",
+    "params": {
+        "ph": 7.2,
+        "hardness_total": 8.2,
+        "iron_total": 1.5,
+        "manganese": 0.3
+    },
+    "filters": {
+        "matchIntakeType": true,
+        "regionContains": "Московская",
+        "depthRange": { "minMeters": 30, "maxMeters": 100 }
+    },
+    "topK": 10
+}
+```
+
+```json
+{
+    "count": 10,
+    "timeTakenMs": 620,
+    "blanks": [
+        {
+            "orderNumber": "14938",
+            "intakeType": "well",
+            "depthMeters": 50,
+            "region": "Московская",
+            "locality": "Раменское",
+            "lat": 55.6255,
+            "lon": 38.1713,
+            "pageContent": "Скважина 50 м. Превышения ПДК: ..."
+        }
+    ]
+}
+```
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `intakeType` | enum | `well` / `well_dug` / `municipal` / `spring` / `river` / `other` |
+| `depthMeters` | float? 1-1000 | Только для скважин/колодцев |
+| `appearance` | string? 1-256 | Свободный текст (мутность, цветность, динамика) |
+| `params` | `Record<paramCode, number>` | Канонические paramCode из СанПиН (libs/water-blank-extraction). Канонические единицы: мг/л, мг-экв/л, ЕМФ, °C |
+| `paramUnits?` | `Record<paramCode, string>` | Override единиц если они отличаются от канонических. Если не задано — берётся из справочника |
+| `filters?` | `SimilarFiltersDto` | См. ниже |
+| `topK?` | int 1-50 | Default 10 |
+
+**Фильтры (post-processing top-K):**
+
+| Фильтр | Тип | Поведение |
+|---|---|---|
+| `matchIntakeType` | bool | Strict match `metadata.intakeType` с request.intakeType. Default false (vector сам ранжирует — иногда полезно увидеть колодец похожий на скважину по составу) |
+| `regionContains` | string | Case-insensitive substring match на `metadata.region` |
+| `localityContains` | string | Case-insensitive substring match на `metadata.locality` |
+| `depthRange.{minMeters,maxMeters}` | object | Inclusive bounds. Blanks без depth (municipal/spring/river) автоматически отфильтруются — при заданном depthRange клиент явно ищет скважины/колодцы |
+| `geo.{lat,lon,radiusKm}` | object | **501 NotImplemented** в Phase 2 — реализация в Phase 2.5 |
+
+При наличии любого активного фильтра service делает **oversample ×5** (cap MAX_FETCH_K=250) при vectorstoreQuery → post-filter → slice до topK. Если кандидатов меньше topK после filter — возвращается сколько есть (`count` < `topK` — легитимно).
+
+**Throttle:** 60/min/IP (мягче catalog 10/min — embedding cost $0.00002/query, Vision был $0.005). Защищает от bottleneck Flowise-пула на одного pseudoclient'а.
+
+**Resolution storeId:** name lookup (`WATER_ANALYSIS_AQUAPHOR_STORE_NAME = 'water-analysis-aquaphor'`) — lazy + single-flight + reset on failure. Hardcoded UUID отвергнут — при reset Flowise dev-инстанса id меняется и API ломается тихо (тот же урок что в catalog).
+
+### Исключённые из embedding-text оси
+
+- **Координаты** не идут в embedding — числа в text-encoder'е семантически бессмысленны. Geo — отдельный axis, в Phase 2.5 через PostGIS `ST_DWithin`.
+- **labName** — лаборатория не должна влиять на семантику воды (одна лаборатория делает анализы для разных регионов и источников).
+- **sample_date** — временная динамика интересна для отдельной аналитики, не для алгоритма подбора оборудования.
+
+### Архитектурные решения Phase 2
+
+- **Flowise Document Store, не свой pgvector через Prisma** — единый паттерн с catalog-aquaphor. Provider OpenAI embeddings → Cohere → ollama меняется в Flowise UI без изменения slovo-кода. Trade-off: Flowise REST `vectorstoreQuery` не поддерживает `where` — geo-фильтр через post-filter или отдельный raw SQL-путь поверх `<storeId>_chunks`.
+- **Custom Document Loader против Json Loader на каждую запись** — Flowise хранит loaders как JSON-колонку в `document_store`, concurrent UPDATEs ломают array (race condition при concurrency >1) и UI с 15 504 loader'ов нечитаем. Custom Loader — 1 loader на весь datasete, под капотом OpenAI batch embed.
+- **Detect-text builder в `libs/water-blank-extraction`, не в slovo-сервисе** — функция чистая (input → output без LLM/IO), переиспользуется и в ingest-скрипте `10-flowise-custom-loader.ts`, и в slovo `SimilarSearchService.buildQueryText`. Если шаблон расходится между ingest и query — embedding попадёт в случайную точку latent space.
+- **Post-filter, не Flowise-side filter** — `vectorstoreQuery` не поддерживает metadata-where (есть только в legacy Chatflow predict). Альтернатива через `<storeId>_chunks.metadata->>'X'` в raw SQL — оверкилл для текущих 15 504; при росте до сотен тысяч пересмотрим.
 
 ---
 
-## Этап 3 — Real-time + endpoints
+## Этап 3 — Real-time + bridge
 
-После 1.A + 1.B + 2 — endpoint(ы) и интеграция с CRM.
+После Phase 2 + 2.5 — интеграция с потребителями (prostor-app, CRM-aqua-kinetics, equipment-matcher).
 
-| Шаг | Артефакт |
-|---|---|
-| Endpoint `POST /water-analysis/similar` | top-K по входному анализу через pgvector + опц. radius-фильтр |
-| Endpoint `GET /water-analysis/map` | данные для карты МО (bbox, geo-кластеризация) |
-| Webhook из CRM на новый анализ | автоматический ingest в этап 1.A pipeline → этап 1.B нормализация → этап 2 embedding |
-| MinIO bucket для real-time bланков | централизованное хранение бланков от менеджеров CRM (вместо локальной папки) |
+| Шаг | Артефакт | Статус |
+|---|---|---|
+| Endpoint `POST /water-analysis/similar` | top-K по входному анализу через Flowise vectorstoreQuery + post-filter | ✅ Phase 2 |
+| Geo-фильтр `ST_DWithin` через Prisma raw поверх `<storeId>_chunks` | дополнение `/similar` для radius-search | ⏳ Phase 2.5 |
+| Endpoint `GET /water-analysis/map` | данные для карты МО (bbox, geo-кластеризация) | ⏳ Phase 3 |
+| Webhook из CRM на новый анализ | автоматический ingest в этап 1.A pipeline → этап 1.B нормализация → этап 2 re-embed | ⏳ Phase 3 |
+| MinIO bucket для real-time bланков | централизованное хранение бланков от менеджеров CRM (вместо локальной папки) | ⏳ Phase 3 |
+| Equipment-matcher endpoint `POST /water-analysis/recommend` | bridge с vision-catalog: правила специалиста Аквафор «параметр воды → товары» применяются к топ-K похожих анализов и их рекомендованному оборудованию | ⏳ Phase 3 (требует правил специалиста) |
 
 ### Архитектурные решения этапа 3
 

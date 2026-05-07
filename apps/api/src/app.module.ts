@@ -8,6 +8,7 @@ import { BudgetModule } from './modules/budget/budget.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { HealthModule } from './modules/health/health.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
+import { WaterAnalysisModule } from './modules/water-analysis/water-analysis.module';
 
 @Module({
     imports: [
@@ -28,6 +29,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
         HealthModule,
         KnowledgeModule,
         CatalogModule,
+        WaterAnalysisModule,
     ],
     // IpThrottlerGuard — кастомный throttler с IPv6-/64 prefix extraction.
     // Без этого distributed botnet bypass'ит throttle через IPv6 rotation

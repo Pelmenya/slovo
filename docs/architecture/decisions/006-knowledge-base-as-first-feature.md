@@ -4,6 +4,7 @@
 ✅ Принято — 2026-04-23 (финализировано после экспериментов A, B, C в Flowise 3.1.2 + чтения исходника)
 🟡 **Амендмент 2026-05-02 — приоритет пересмотрен:** knowledge-base отложена. См. секцию «Амендмент 2026-05-02 — vision-catalog как фактическая первая фича» внизу ADR.
 🟡 **Амендмент 2026-05-06 — паттерн «standalone-first» подтверждён вторым кейсом:** water-analysis Phase 1.A-1.B закрыт без knowledge-base слоя. См. секцию внизу ADR.
+🟡 **Амендмент 2026-05-07 — water-analysis Phase 2 закрыт через Flowise Document Store:** третий standalone-pipeline (после catalog-aquaphor и Phase 1 knowledge-base text-MVP). Custom Document Loader как новый паттерн ingestion для datasets >1000 records. См. секцию внизу ADR.
 
 ## Контекст
 
@@ -258,3 +259,23 @@ Knowledge-base дошла до **Phase 1 text-only MVP** (PR1-PR4), дальне
 **Bridge между фичами:** алгоритм подбора оборудования (Phase 2 water-analysis) будет связывать `water_analysis.params` с vision-catalog товарами через семантический поиск — это первая точка пересечения двух standalone-фич.
 
 См. `docs/features/water-analysis.md` (статус закрытия), `docs/management/water-analysis-executive-summary.md` (executive summary), `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md` (EDA).
+
+---
+
+## Амендмент 2026-05-07: water-analysis Phase 2 — embeddings + endpoint через Flowise Document Store
+
+**Контекст:** 2026-05-07 закрыта Phase 2 water-analysis. 15 504 бланка embedded через OpenAI `text-embedding-3-large` (3072 dim) в Flowise Document Store `water-analysis-aquaphor`. Endpoint `POST /water-analysis/similar` отдаёт top-K похожих за ~600 мс. Архитектурно — **третий standalone-pipeline на Flowise Document Store** (после catalog-aquaphor и pilot-store): тот же паттерн, knowledge-base модули **не задействованы**.
+
+**Что нового в архитектуре** (даже без knowledge-base слоя):
+
+1. **Custom Document Loader через `functionInputVariables`** — новый паттерн ingestion в Flowise: 1 loader на весь datasete (15 504 docs) вместо 15 504 отдельных JSON Loaders. Реализуется через JS-функцию в vm2 sandbox: `return $docs.map(d => ({pageContent, metadata}))`. Решает race-condition Flowise loaders array на concurrent updates + UI usable. Reusable для любых datasets >1000 records.
+
+2. **Detect-text builder в общем `libs/water-blank-extraction`** — `generateEmbeddingText(record)` чистая функция (детерминированная, без LLM), вызывается и при ingest (experiments-скрипт), и при query (`SimilarSearchService.buildQueryText`). Принцип: shared embedding-text contract между ingest и query — иначе query embedding попадает в случайную точку latent space.
+
+3. **Post-filter через oversample** — Flowise REST `vectorstoreQuery` не поддерживает `where` clause. Решение: при наличии активных фильтров `topK × OVERSAMPLE_FACTOR=5` (cap MAX_FETCH_K=250) → post-filter в TS → slice до topK. Принят как осознанный trade-off для текущих 15 504 chunks; альтернатива (свой combined SQL поверх `<storeId>_chunks.metadata->>'X'`) overengineering до masштаба сотен тысяч.
+
+4. **Geo через PostGIS отложен в Phase 2.5** — embedding-text НЕ содержит координат (text-encoder не понимает числа географически), геопоиск отдельный axis. Реализация требует решения «через Prisma raw `ST_DWithin` поверх Flowise-managed таблицы» vs «отказ от Flowise vectorstoreQuery в пользу своего combined SQL». Решение примем при появлении prostor-app виджет-потребителя — у него будет конкретный UX (radius hard-cutoff vs weighted re-rank).
+
+**Что подтверждено для knowledge-base Phase 2+:** **третий** независимый feature-pipeline на Flowise Document Store без knowledge-base слоя. Закономерно появляются переиспользуемые паттерны (Custom Loader, name-lookup storeId, embedding-text builder + Flowise resolver) — но они выделяются **внутри domain-libs** (`libs/water-blank-extraction`, `libs/flowise-client`), не в knowledge-base модулях. Knowledge-base Phase 2 остаётся отложенной до конкретного кейса с polymorphic ingestion (видео + PDF + текст для одного потребителя).
+
+См. `docs/features/water-analysis.md` (Phase 2 секция с API contract), `docs/management/water-analysis-executive-summary.md` (стоимость + что доступно для downstream).

@@ -127,7 +127,9 @@
             "^@slovo/flowise-client$": "<rootDir>/libs/flowise-client/src",
             "^@slovo/flowise-client/(.*)$": "<rootDir>/libs/flowise-client/src/$1",
             "^@slovo/flowise-flowdata$": "<rootDir>/libs/flowise-flowdata/src",
-            "^@slovo/flowise-flowdata/(.*)$": "<rootDir>/libs/flowise-flowdata/src/$1"
+            "^@slovo/flowise-flowdata/(.*)$": "<rootDir>/libs/flowise-flowdata/src/$1",
+            "^@slovo/water-blank-extraction$": "<rootDir>/libs/water-blank-extraction/src",
+            "^@slovo/water-blank-extraction/(.*)$": "<rootDir>/libs/water-blank-extraction/src/$1"
         },
         "collectCoverageFrom": [
             "apps/**/*.(t|j)s",
