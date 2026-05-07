@@ -17,7 +17,8 @@ export type TCatalogRefreshSuccess = {
     // Сколько items в payload пришло
     itemsTotal: number;
     // Items которые Flowise обработал (NEW + CHANGED) — embedding cost
-    // действительно потрачен. Каждый = ~$0.0000004 на text-embedding-3-small.
+    // действительно потрачен. Каждый ≈ $0.0000026 на text-embedding-3-large
+    // ($0.13/1M tokens × ~20 tokens/item; ранее на -3-small было $0.0000004).
     itemsUpserted: number;
     // Items skipped через RecordManager hash check — content unchanged,
     // embedding НЕ вычислялся, $0 cost. Главный эффект PR9.5.

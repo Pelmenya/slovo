@@ -95,9 +95,9 @@ tool_choice: { type: 'tool', name: 'extract_fields' }
 
 ## 9. Embeddings (для RAG)
 
-- `EMBEDDING_MODEL` из env — сейчас `text-embedding-3-small` (OpenAI, 1536 dims). Претендент multilingual — Cohere.
+- `EMBEDDING_MODEL` из env — сейчас `text-embedding-3-large` (OpenAI, 3072 dims, апгрейд 2026-05-07 одновременно для catalog-aquaphor + water-analysis-aquaphor). Претендент multilingual — Cohere.
 - Embeddings НЕ считаются через Claude — у Anthropic нет embeddings API. Если видишь попытку — критично.
-- Размерность совпадает с `EMBEDDING_DIMENSIONS` и со схемой БД (`vector(1536)`) — сверь.
+- Embedding column в основных таблицах (water_analysis / knowledge_sources) НЕ хранится — вектор живёт в Flowise-managed `<storeId>_chunks` (PostgresVectorStore). Размерность сверяется через `vector_dims()` после первого upsert (`SELECT vector_dims(embedding) FROM "<storeId>_chunks" LIMIT 1` → ожидание 3072).
 
 # Формат отчёта
 

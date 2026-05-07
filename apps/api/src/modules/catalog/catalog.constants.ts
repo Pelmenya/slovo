@@ -29,12 +29,12 @@ export const CATALOG_MIN_TOP_K = 1;
 export const CATALOG_MAX_TOP_K = 50;
 
 // CATALOG_MAX_QUERY_LENGTH = 500 chars — почему 500, а не token-based лимит
-// OpenAI text-embedding-3-small (8191 tokens ≈ 30KB ASCII):
+// OpenAI text-embedding-3-large (8191 tokens ≈ 30KB ASCII):
 // (a) UX — natural language query вряд ли осмыслен >500 chars (одно-два
 //     предложения на естественном языке).
 // (b) embedding cost cap — без token counter здесь, char-based proxy: 500
-//     chars ≈ 150-200 токенов, $0.00000012/query. Token burst через длинные
-//     payload'ы исключён.
+//     chars ≈ 150-200 токенов, ~$0.00002/query на text-embedding-3-large
+//     ($0.13/1M tokens). Token burst через длинные payload'ы исключён.
 // (c) defense-in-depth от prompt injection попыток в metadata downstream:
 //     Flowise vector search не рендерит query в LLM, но если позже добавим
 //     hybrid Chain (ADR-008 future), 500-char hard cap страхует.

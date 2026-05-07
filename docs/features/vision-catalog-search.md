@@ -100,7 +100,7 @@ breaking change без последствий.
 - Observability через Langfuse уже встроена во Flowise
 - Streaming и prompt caching — фичи Flowise из коробки
 
-**Embedding provider:** `OpenAI text-embedding-3-small` 1536 dim — настраивается **в Flowise-ноде**, slovo про это не знает. Переключить в будущем на Cohere / Ollama — меняем ноду во Flowise UI, slovo не трогаем.
+**Embedding provider:** `OpenAI text-embedding-3-large` 3072 dim (апгрейд 2026-05-07 одновременно для catalog-aquaphor + water-analysis-aquaphor) — настраивается **в Flowise-ноде**, slovo про это не знает. Переключить в будущем на Cohere / Ollama — меняем ноду во Flowise UI, slovo не трогаем.
 
 ### Rich context сборка — в два шага
 
@@ -180,7 +180,7 @@ MoySklad `ProductFolder.pathName` — **не таксономия**, а исто
 1. **`vision-catalog-describer-v1`** (уже готов в Phase 0, 2026-04-24) — фото → JSON описание товара через Claude Vision. Используется в image search pipeline как первый шаг.
 
 2. **`catalog-embed-search`** (создать в Phase 0 следующим шагом) — для товарного каталога:
-   - **OpenAI Embeddings** нода — `text-embedding-3-small`, 1536 dim, credentials из Flowise
+   - **OpenAI Embeddings** нода — `text-embedding-3-large`, 3072 dim, credentials из Flowise
    - **Postgres Vector Store** нода — подключение к той же slovo БД (`slovo-postgres:5432`), Flowise сам создаст таблицу `langchain_pg_embedding` или подобную
    - **Custom JSON Loader** / **Document Store** — для приёма items через upsert API
    - **Retriever-only output** (без LLM ноды) — чтобы prediction API возвращал ranked docs, не generated answer
@@ -218,7 +218,7 @@ flowchart TB
 
     AGG --> RICH[Собираем rich text:<br/>feeder-text + Вид на фото:<br/>+ visionDescriptionsText]
     RICH --> FWUP[Flowise catalog-embed-search<br/>POST /vector/upsert]
-    FWUP --> EMBED[OpenAI embedding 1536-dim]
+    FWUP --> EMBED[OpenAI embedding 3072-dim]
     EMBED --> VSTORE[(Flowise-managed<br/>pgvector)]
 
     RICH --> META_DB[(Prisma catalog_items)]
@@ -350,7 +350,7 @@ final_score = 0.7 × vector_similarity_normalized   // от Flowise
   "vision_output": { ... },                 // при image search — для прозрачности
   "debug": {
     "query_text": "...",                   // для text search или description_ru из vision
-    "embedding_provider": "openai:text-embedding-3-small"
+    "embedding_provider": "openai:text-embedding-3-large"
   }
 }
 ```
@@ -414,9 +414,10 @@ model CatalogItem {
     createdAt          DateTime  @default(now()) @map("created_at")
     updatedAt          DateTime  @updatedAt @map("updated_at")
 
-    // Embedding vector(1536) НЕ в этой таблице — живёт во Flowise-managed
-    // таблице (обычно langchain_pg_embedding), с metadata.catalogItemId как
-    // app-level FK. То же разделение что в ADR-006 для knowledge_chunks.
+    // Embedding vector(3072) НЕ в этой таблице — живёт во Flowise-managed
+    // <storeId>_chunks (PostgresVectorStore + HNSW), с metadata.catalogItemId
+    // как app-level FK. То же разделение что в ADR-006 для knowledge_chunks
+    // и водного analysis (амендмент 2026-05-07: text-embedding-3-large 3072 dim).
     // slovo про embeddings не знает, форвардит всё в Flowise.
 
     @@unique([externalSource, externalId])
@@ -767,7 +768,7 @@ type CatalogSearchResponse = {
 
 1. **`vision-catalog-describer-v1`** chatflow готов (Phase 0 в первой версии плана). Промпт даёт стабильный structured JSON `{ is_relevant, category, brand, model_hint, features, condition, description_ru, confidence }`. Валидирован на 6 фото — `description_ru` для C125 точно match'ит каталог-item через retrieval. Известные ограничения: `category: "прочее"` для смесителей (closed enum промпта v1 не покрывает все категории — ограничение промпта, не движка).
 
-2. **Document Store `catalog-aquaphor`** наполнен через REST API (а не UI): S3 File Loader тянет `latest.json` (155 items) из `slovo-datasets/catalogs/aquaphor/`, RecursiveCharacterTextSplitter (chunk 1000, overlap 200) → 912 chunks → OpenAI Embeddings (`text-embedding-3-small`, 1536-dim) → Postgres VectorStore (`catalog_chunks` table). storeId `aec6b741-8610-4f98-9f5c-bc829dc41a96`.
+2. **Document Store `catalog-aquaphor`** наполнен через REST API (а не UI): S3 File Loader тянет `latest.json` (155 items) из `slovo-datasets/catalogs/aquaphor/`, RecursiveCharacterTextSplitter (chunk 1000, overlap 200) → 912 chunks → OpenAI Embeddings (`text-embedding-3-large`, 3072-dim, апгрейд 2026-05-07) → Postgres VectorStore (`catalog_chunks` table). storeId `aec6b741-8610-4f98-9f5c-bc829dc41a96`.
 
 3. **Smoke retrieval** через MCP `flowise_docstore_query`: query "смесители для кухни" → top-3 матчат C125/82138C/C126/82320-1С. timeTaken 525ms.
 
@@ -881,7 +882,7 @@ client → slovo /catalog/search/image
 
 ### Стратегия 2 — Ollama embeddings локально
 
-Заменить OpenAI text-embedding-3-small на локальную `bge-m3` или `multilingual-e5-large` через Ollama (доступен в инфре `water-analysis-parser` стека на RTX 4070 Ti).
+Заменить OpenAI text-embedding-3-large на локальную `bge-m3` или `multilingual-e5-large` через Ollama (доступен в инфре `water-analysis-parser` стека на RTX 4070 Ti).
 
 | | OpenAI small | Ollama bge-m3 |
 |---|---|---|

@@ -233,8 +233,8 @@ Health-check Flowise + проверка валидности API key.
     "embeddingName": "openAIEmbeddings",
     "embeddingConfig": {
         "credential": "50796497-...",
-        "modelName": "text-embedding-3-small",
-        "dimensions": 1536
+        "modelName": "text-embedding-3-large",
+        "dimensions": 3072
     },
     "vectorStoreName": "postgres",
     "vectorStoreConfig": {

@@ -593,7 +593,7 @@ Smoke-test полного pipeline на 3 sample items из CRM-snapshot:
 ```
 Json File loader → Recursive Splitter (chunk=1000, overlap=200)
                                     ↓
-OpenAI Embeddings (text-embedding-3-small, 1536-dim) → Postgres (catalog_chunks)
+OpenAI Embeddings (text-embedding-3-large, 3072-dim) → Postgres (catalog_chunks)
                                     ↓
                   Conversational Retrieval QA Chain
                           ↑                  ↑

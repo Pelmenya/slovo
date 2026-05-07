@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     console.log('[check] requesting embedding for "hello world"...');
     const started = Date.now();
     const result = await client.embeddings.create({
-        model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small',
+        model: process.env.EMBEDDING_MODEL ?? 'text-embedding-3-large',
         input: 'hello world',
     });
     const elapsed = Date.now() - started;

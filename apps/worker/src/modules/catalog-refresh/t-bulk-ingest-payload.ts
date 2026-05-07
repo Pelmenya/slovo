@@ -8,9 +8,11 @@ import { z } from 'zod';
 // в середине upsert цикла.
 //
 // Cap'ы (`.max()`) — защита от malicious feeder / cost burst:
-// - `contentForEmbedding` 50KB на item — OpenAI text-embedding-3-small
-//   $0.02/1M tokens, 50KB ≈ 12.5K tokens × 1000 items = $0.25 на refresh,
-//   ×6 refresh/day = $1.5/day. Без cap'а 10MB строка → $7.75 на refresh.
+// - `contentForEmbedding` 50KB на item — OpenAI text-embedding-3-large
+//   $0.13/1M tokens, 50KB ≈ 12.5K tokens × 1000 items = $1.63 на refresh,
+//   ×6 refresh/day = $9.75/day. Без cap'а 10MB строка → $50 на refresh.
+//   (Бамп с -3-small 2026-05-07 поднял теоретический потолок 6.5x — реальный
+//   refresh ~155 items × ~30 tokens = $0.0006/refresh, далеко от cap'а.)
 // - `name` 200 chars — UI карточка товара, длинее не помещается.
 // - `description` 10KB — 2-3 параграфа.
 // - `imageUrls`/`groupImageKeys` 50 элементов — реальный max в каталоге ~10.

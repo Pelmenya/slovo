@@ -43,7 +43,7 @@ model: opus
 ## 3. pgvector
 
 - **Расширения PG создаются ТОЛЬКО через миграции Prisma** (`extensions=[vector, pg_trgm, uuidOssp, pgcrypto]` в `main.prisma` + `previewFeatures=["postgresqlExtensions"]`). Если видишь `./prisma/init:/docker-entrypoint-initdb.d` в `docker-compose.infra.yml` или SQL-скрипты с `CREATE EXTENSION` — флагни **критично** (это создаёт drift между `_prisma_migrations` и реальной БД, ломает `migrate dev`).
-- Эмбеддинги храним как `Unsupported("vector(1536)")` или через `@db.Vector(1536)` (если поддерживается). Default 1536 — под OpenAI `text-embedding-3-small`.
+- Эмбеддинги в slovo **не** хранятся в основных таблицах (water_analysis / knowledge_sources / catalog) — вектор живёт в **Flowise-managed** `<storeId>_chunks` (PostgresVectorStore + HNSW). Эта таблица создаётся Flowise при первом upsert через TypeORM, в Prisma migration history она отсутствует — drift workaround через `migrate diff + migrate resolve --applied` (см. ADR-005, memory `feedback_prisma_drift_flowise_workaround`). Если в Prisma-схеме встречается `Unsupported("vector(1536)")` или `@db.Vector(1536)` для embedding column — это устаревшее (Phase 2 пересмотрена 2026-05-07: column дропнута, см. миграцию `drop_embedding_column_use_flowise_docstore`). Default размерность сейчас **3072** (text-embedding-3-large), сверка через `SELECT vector_dims(embedding) FROM "<storeId>_chunks" LIMIT 1`.
 - **Поиск ближайших векторов — ТОЛЬКО через raw query**:
   ```ts
   await prisma.$queryRaw`

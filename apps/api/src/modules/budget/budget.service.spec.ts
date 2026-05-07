@@ -143,7 +143,7 @@ describe('BudgetService', () => {
     });
 
     describe('recordEmbeddingTokens', () => {
-        it('30 tokens → cost 30/1M × $0.02 = $0.0000006', async () => {
+        it('30 tokens → cost 30/1M × $0.13 = $0.0000039 (text-embedding-3-large)', async () => {
             await service.recordEmbeddingTokens(30);
 
             expect(redis.incrbyfloat).toHaveBeenCalledWith(
@@ -151,8 +151,8 @@ describe('BudgetService', () => {
                 expect.any(Number),
             );
             const cost = redis.incrbyfloat.mock.calls[0][1] as number;
-            // 30/1M × 0.02 = 6e-7
-            expect(cost).toBeCloseTo(6e-7, 10);
+            // 30/1M × 0.13 = 3.9e-6
+            expect(cost).toBeCloseTo(3.9e-6, 10);
         });
     });
 

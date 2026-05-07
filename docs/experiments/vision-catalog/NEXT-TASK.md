@@ -154,8 +154,8 @@
 
 4. **Embedding Configuration → OpenAI Embeddings:**
    - Connect Credential: `openai-dev`
-   - Model Name: `text-embedding-3-small`
-   - Dimensions: `1536`
+   - Model Name: `text-embedding-3-large` (апгрейд 2026-05-07; в Phase 0 был `-3-small / 1536`)
+   - Dimensions: `3072`
 
 5. **Vector Store Configuration → Postgres:**
    - Connect Credential: `postgres-slovo-dev`

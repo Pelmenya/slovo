@@ -211,7 +211,7 @@ enum KnowledgeSourceStatus {
 - [ ] `libs/storage/` — S3 абстракция (в MVP с MinIO-driver). Пустой placeholder если в phase 1 файлов нет, но лучше сразу — пригодится в Фазе 2
 - [ ] `libs/ingest/` с `TSourceAdapter` + `TextSourceAdapter` (вход: plain text → выход: text + metadata)
 - [ ] `libs/knowledge/` с:
-    - `TEmbedder` + `OpenAiEmbedder` (реальный вызов OpenAI text-embedding-3-small)
+    - `TEmbedder` + `OpenAiEmbedder` (реальный вызов OpenAI text-embedding-3-large)
     - `TextChunker` (sentence-based, 500 tokens max, overlap 50)
     - `PgVectorRetriever` (top-K через `$queryRaw` + `<=>` оператор)
 - [ ] `apps/api/src/modules/knowledge/`:
@@ -336,9 +336,9 @@ enum ArtifactStatus     { pending generating ready failed }
 
 ### Embeddings
 
-- **По умолчанию:** OpenAI `text-embedding-3-small` (1536 dims). Цена `$0.02` за 1M токенов.
+- **По умолчанию:** OpenAI `text-embedding-3-large` (3072 dims, апгрейд 2026-05-07 для consistency с catalog-aquaphor + water-analysis-aquaphor). Цена `$0.13` за 1M токенов.
 - **Альтернатива для русского multilingual:** Cohere `embed-multilingual-v3.0` (1024 dims). Лучше на русском, дороже.
-- `EMBEDDING_MODEL` + `EMBEDDING_DIMENSIONS` уже в `env.schema.ts`. При смене модели — новая миграция с `vector(N)`.
+- `EMBEDDING_MODEL` + `EMBEDDING_DIMENSIONS` уже в `env.schema.ts`. Knowledge Phase 2+ откладывает выбор pipeline'а: либо Flowise Document Store (как catalog/water-analysis), либо собственная `vector(N)` колонка. При смене модели/dimensions — re-embed всех source.
 
 ### Транскрибация
 
@@ -420,11 +420,11 @@ enum ArtifactStatus     { pending generating ready failed }
 
 ### Качество embeddings на русском
 
-**Риск:** `text-embedding-3-small` — англоязычно-ориентирована, русский может давать хуже recall.
+**Риск:** OpenAI embeddings — англоязычно-ориентированы, русский может давать хуже recall. После апгрейда на `text-embedding-3-large` (2026-05-07) ситуация улучшилась, но абсолютной мерой не подтверждена.
 
 **Митигация:**
 - Тест-сет из 50 русскоязычных query + expected chunk пар, замерить recall.
-- Если recall <70% — переключиться на Cohere multilingual (дороже в 5x, но одна миграция).
+- Если recall <70% — переключиться на Cohere multilingual (дороже, но одна миграция).
 - Сохранить `embedder` за интерфейсом — замена прозрачная.
 
 ### Размер видео и стоимость транскрибации
@@ -454,11 +454,11 @@ enum ArtifactStatus     { pending generating ready failed }
 
 ### Drift embeddings при смене модели
 
-**Риск:** обновили `text-embedding-3-small` → она на тех же текстах даёт другие вектора → старые chunks "отстают" от новых query.
+**Риск:** обновили embedding-модель → она на тех же текстах даёт другие вектора → старые chunks «отстают» от новых query.
 
 **Митигация:**
-- Pin модель в env (`EMBEDDING_MODEL=text-embedding-3-small-v1`), обновление — осознанное.
-- Если меняем модель — ре-embed всех source. Фоновая джоба, батчами.
+- Pin модель в env (`EMBEDDING_MODEL=text-embedding-3-large`), обновление — осознанное.
+- Если меняем модель — ре-embed всех source. Фоновая джоба, батчами. Прецедент 2026-05-07: бамп `-3-small` → `-3-large` для catalog-aquaphor + water-analysis-aquaphor через Flowise Document Store re-upsert (несколько минут на 15 504 chunks).
 
 ### Зависимость от Groq API
 

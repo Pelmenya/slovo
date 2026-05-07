@@ -26,7 +26,7 @@
 model DocumentChunk {
   id        Int     @id @default(autoincrement())
   content   String
-  embedding Unsupported("vector(1536)")?
+  embedding Unsupported("vector(3072)")?
   metadata  Json
 }
 ```
@@ -48,7 +48,7 @@ const results = await prisma.$queryRaw<Chunk[]>`
 Плюсы:
 - Нативная поддержка pgvector через декораторы:
   ```typescript
-  @Column({ type: 'vector', length: 1536 })
+  @Column({ type: 'vector', length: 3072 })
   embedding: number[];
   ```
 - Знаком большинству NestJS-разработчиков

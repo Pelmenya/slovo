@@ -21,8 +21,10 @@ export const BUDGET_KEY_TTL_SEC = 86400;
 export const VISION_COST_PER_CALL_USD_DEFAULT = 0.007;
 export const VISION_COST_PER_IMAGE_USD = 0.007;
 
-// EMBEDDING: OpenAI text-embedding-3-small $0.02/1M tokens. 1 search query
-// ≈ 30 tokens (включая Vision-extracted description при combined).
+// EMBEDDING: OpenAI text-embedding-3-large $0.13/1M tokens (апгрейд 2026-05-07
+// с -3-small $0.02/1M, 6.5x подорожание оправдано качеством на русских доменных
+// терминах + consistency с water-analysis-aquaphor). 1 search query ≈ 30 tokens
+// (включая Vision-extracted description при combined).
 //
 // Token count приближаем как `query.length / 3` — safety factor для ru-heavy
 // traffic. Реальный tiktoken cl100k_base даёт ~2-3 chars/token для cyrillic
@@ -31,7 +33,7 @@ export const VISION_COST_PER_IMAGE_USD = 0.007;
 // $1/день cap до фактического превышения.
 //
 // Для precise billing — `js-tiktoken` (~600KB), но для $1/день cap overkill.
-export const EMBEDDING_COST_PER_1M_TOKENS_USD = 0.02;
+export const EMBEDDING_COST_PER_1M_TOKENS_USD = 0.13;
 export const EMBEDDING_AVG_CHARS_PER_TOKEN = 3;
 
 // =============================================================================
