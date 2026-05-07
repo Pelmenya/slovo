@@ -210,8 +210,9 @@ maplibre-gl поддерживает **3D-tilt и rotation** out-of-the-box: п�
 | PostgreSQL + pgvector + PostGIS | Хранилище, векторный и гео-поиск | Open-source |
 | Flowise | LLM-оркестрация и retrieval-pipeline | Open-source |
 | **maplibre-gl** + **OpenStreetMap (CARTO Voyager)** | Карта и heatmap в клиентском приложении | Open-source, без vendor lock-in |
-| Anthropic Claude (Vision + Sonnet) | Извлечение данных из бланков, анализ изображений | Платный, по токенам |
-| OpenAI text-embedding-3-large | Векторизация для семантического поиска | Платный, по токенам |
+| Anthropic Claude **Sonnet 4.6** (Vision) | Распознавание фото оборудования при поиске клиента (search-time) — старшая модель для качества | Платный, по токенам |
+| Anthropic Claude **Haiku 4.5** (Vision) | Извлечение данных из бланков анализов (ingest) + обогащение каталога визуальными описаниями (ingest) — быстрая дешёвая модель для пакетной обработки | Платный, по токенам |
+| OpenAI **text-embedding-3-large** (3072 dim) | Векторизация для семантического поиска (анализы воды + каталог товаров) | Платный, по токенам |
 | MinIO / S3 | Хранение исходных файлов и фото каталога | Open-source / standard |
 | Docker + Docker Compose | Развёртывание | Open-source |
 
