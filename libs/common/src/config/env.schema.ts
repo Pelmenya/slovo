@@ -61,8 +61,15 @@ export const envSchema = z
         ANTHROPIC_DEFAULT_MODEL: z.string().default('claude-sonnet-4-6'),
         ANTHROPIC_FAST_MODEL: z.string().default('claude-haiku-4-5'),
 
-        EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
-        EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
+        // Embedding model defaults — апгрейд 2026-05-07 на text-embedding-3-large
+        // (3072 dim) одновременно для catalog-aquaphor и water-analysis-aquaphor.
+        // Качество выше для русских доменных терминов (СанПиН + товарные названия),
+        // storage 2x, retrieval medium overhead. Фактическая модель задаётся в нодах
+        // OpenAI Embeddings конкретного Flowise chatflow / Document Store — env здесь
+        // используется только для лабораторных / experiment-скриптов
+        // (`experiments/water-analysis-dataset/scripts/`) и для consistency-сверки.
+        EMBEDDING_MODEL: z.string().default('text-embedding-3-large'),
+        EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(3072),
 
         // S3 / MinIO — хранилище сырых источников knowledge base.
         // В dev — MinIO через docker-compose (endpoint http://localhost:9010, force_path_style=true).

@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, NotImplementedException } from '@nestjs/common';
+import {
+    BadRequestException,
+    Inject,
+    Injectable,
+    Logger,
+    NotImplementedException,
+    ServiceUnavailableException,
+} from '@nestjs/common';
 import {
     ENDPOINTS,
     type FlowiseClient,
@@ -80,6 +87,8 @@ export class SimilarSearchService {
             );
         }
 
+        validateRequest(request);
+
         const effectiveTopK = request.topK ?? SIMILAR_DEFAULT_TOP_K;
         const fetchK = this.computeFetchK(effectiveTopK, request.filters);
         const storeId = await this.resolveStoreId();
@@ -107,8 +116,8 @@ export class SimilarSearchService {
                 depthMeters: numberOrNull(doc.metadata.depthMeters),
                 region: stringOrNull(doc.metadata.region),
                 locality: stringOrNull(doc.metadata.locality),
-                lat: numberOrNull(doc.metadata.lat),
-                lon: numberOrNull(doc.metadata.lon),
+                lat: roundCoord(numberOrNull(doc.metadata.lat)),
+                lon: roundCoord(numberOrNull(doc.metadata.lon)),
                 pageContent: doc.pageContent,
             }),
         );
@@ -182,7 +191,12 @@ export class SimilarSearchService {
         );
         const store = stores.find((s) => s.name === WATER_ANALYSIS_AQUAPHOR_STORE_NAME);
         if (!store) {
-            throw new Error(
+            // 503 ServiceUnavailable, не 500 — внешний ресурс (Flowise) не в нужном
+            // состоянии. Клиент / мониторинг отличает «store mis-provisioned» от
+            // «slovo внутренняя ошибка» (другие 500). FlowiseClient сам бросает
+            // FlowiseError на network/HTTP errors — те уйдут как 500, что корректно
+            // (slovo не контролирует Flowise pool).
+            throw new ServiceUnavailableException(
                 `Document Store "${WATER_ANALYSIS_AQUAPHOR_STORE_NAME}" not found in Flowise — ` +
                     `проверь что store создан и embedding pipeline отработал ` +
                     `(experiments/water-analysis-dataset/scripts/10-flowise-custom-loader.ts)`,
@@ -212,6 +226,87 @@ function stringOrNull(value: unknown): string | null {
 
 function numberOrNull(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// =============================================================================
+// roundCoord — снижение точности lat/lon до ~500 м для PII-mitigation в public
+// response. Ahunter geocoding по `objectAddress` даёт точку с радиусом 200м-2км
+// (с этой точностью можно идентифицировать конкретный дом / частную скважину).
+// Снижение precision до 500м даёт деревню / коттеджный посёлок (5-50 семей) —
+// useful для UI карты, но не указывает на конкретное домохозяйство.
+//
+// 0.005° lat = 555 м (constant независимо от широты).
+// 0.005° lon = 555 × cos(lat) м — на 55° широты МО ≈ 320 м.
+// Среднее на МО ≈ 400-500 м — целевой уровень обезличивания.
+//
+// Memory `project_water_analysis_pii_strategy`: derived должен быть обезличенный;
+// raw содержит точные координаты локально (под git).
+// =============================================================================
+
+const COORD_ROUND_GRID = 200; // 1° / 200 = 0.005°
+
+function roundCoord(value: number | null): number | null {
+    if (value === null) return null;
+    return Math.round(value * COORD_ROUND_GRID) / COORD_ROUND_GRID;
+}
+
+// =============================================================================
+// validateRequest — defensive checks которые class-validator не покрывает:
+// (1) cross-field invariant `depthRange.minMeters <= maxMeters` — без custom
+//     decorator class-validator не валидирует cross-field на nested DTO.
+//     Без этой проверки клиент с обратным диапазоном получает silent count=0
+//     и думает что в БД пусто.
+// (2) value-types в `params` / `paramUnits` — `@IsObject()` пропускает
+//     `{ "iron_total": "DROP TABLE" }` или NaN. embedding-text builder
+//     полагается на Number.isFinite на caller-side.
+// (3) bounded размер `params` — защита от DoS на embedding-builder через
+//     гигантский payload. 50 ключей хватает на 21 canonical paramCode +
+//     запас для будущих расширений (electrical_conductivity вариации).
+// =============================================================================
+
+const MAX_PARAMS_KEYS = 50;
+const MAX_PARAM_VALUE = 1e6;
+
+function validateRequest(request: SimilarSearchRequestDto): void {
+    const dr = request.filters?.depthRange;
+    if (dr && dr.minMeters > dr.maxMeters) {
+        throw new BadRequestException(
+            `depthRange.minMeters (${dr.minMeters}) > maxMeters (${dr.maxMeters}) — ` +
+                `обратный диапазон. Передай min <= max.`,
+        );
+    }
+
+    const paramKeys = Object.keys(request.params);
+    if (paramKeys.length === 0) {
+        throw new BadRequestException('params не может быть пустым объектом');
+    }
+    if (paramKeys.length > MAX_PARAMS_KEYS) {
+        throw new BadRequestException(
+            `params содержит ${paramKeys.length} ключей, лимит ${MAX_PARAMS_KEYS}`,
+        );
+    }
+    for (const [code, value] of Object.entries(request.params)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+            throw new BadRequestException(
+                `params["${code}"] должно быть конечным числом, получено: ${typeof value}`,
+            );
+        }
+        if (value < 0 || value > MAX_PARAM_VALUE) {
+            throw new BadRequestException(
+                `params["${code}"]=${value} вне допустимого диапазона [0, ${MAX_PARAM_VALUE}]`,
+            );
+        }
+    }
+
+    if (request.paramUnits) {
+        for (const [code, unit] of Object.entries(request.paramUnits)) {
+            if (typeof unit !== 'string' || unit.length === 0 || unit.length > 16) {
+                throw new BadRequestException(
+                    `paramUnits["${code}"] должно быть непустой строкой ≤16 chars`,
+                );
+            }
+        }
+    }
 }
 
 // =============================================================================

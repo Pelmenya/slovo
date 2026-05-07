@@ -886,6 +886,51 @@ async reconcileFromChunks(): Promise<number> {
 
 **Образ:** `slovo-postgres:pgvector-postgis-pg18` (~250 MB вместо ~80 MB у base pgvector).
 
+### 23. FlowiseClient module helper — extract при N=3 consumer
+
+**Контекст (2026-05-07):** два модуля (`apps/api/src/modules/catalog/catalog.module.ts:32-43`, `apps/api/src/modules/water-analysis/water-analysis.module.ts:13-39`) повторяют паттерн ~1:1: defensive `assertEnv` для FLOWISE_API_URL/KEY, `flowiseClientProvider` через useFactory, name lookup storeId с single-flight cache, `*_FLOWISE_TIMEOUT_MS=10_000`.
+
+**Trigger:** при появлении **третьего** FlowiseClient consumer'а (планируется equipment-matcher / prostor-app виджет / CRM-aqua dealer-side) — выносить в `libs/flowise-client/`:
+- `FlowiseModule.forFeature({ storeName, timeoutMs })` — DynamicModule
+- `FlowiseStoreResolver` — единый name-lookup + single-flight + reset-on-failure (сейчас дублируется в `TextSearchService.lookupStoreId` + `SimilarSearchService.lookupStoreId`)
+- Единая `FLOWISE_HOT_PATH_TIMEOUT_MS = 10_000`
+
+**Что НЕ делать сейчас:** не выносить — дублирование локализованное, специфика модуля видна в одном месте.
+
+### 24. BudgetService gate для water-analysis/similar
+
+**Контекст (2026-05-07):** catalog-search использует `BudgetService` для cost-cap (Vision $0.005/call). Water-analysis/similar gate **не имеет** — embedding query через Flowise OpenAI text-embedding-3-large ~$0.00002/query. Throttle 60/min/IP защищает per-IP, но не глобально (worst-case 100 IPs × 60/min × 24h ≈ $172/сутки).
+
+**Когда:** перед public-deploy (виджет prostor-app / CRM-aqua dealer-side). Скопировать паттерн из `apps/api/src/modules/catalog/search/search.service.ts` — daily cap по embedding-вызовам + Telegram alert.
+
+### 25. Langfuse observability для water-analysis embedding queries
+
+**Контекст (2026-05-07):** Flowise OpenAI Embeddings node поддерживает `analytics: ['langfuse']` через credential. Embedding queries `/water-analysis/similar` идут на production hot-path — должны попадать в Langfuse trace для cost monitoring + query-distribution.
+
+**Что проверить:** в Flowise UI на `water-analysis-aquaphor` Document Store нода OpenAI Embeddings подключена ли к Langfuse credential. Если нет — добавить.
+
+**Альтернатива:** `logger.log` в `SimilarSearchService.search` (query length, latency, count_results, filter active flags) — embedding tokens наружу через Flowise REST не приходят.
+
+### 26. Phase 2.5 раннее предупреждение — combined geo+semantic query
+
+**Контекст (2026-05-07):** при реализации `geo` фильтра через `ST_DWithin` поверх Flowise-managed `<storeId>_chunks` (см. `prisma/schema/water-analysis.prisma:153-166` + ADR-006 амендмент 2026-05-07) есть три специфичных риска:
+
+1. **Динамическое имя таблицы** `<storeId>_chunks` — UUID prefix. Нужен helper `buildChunksTableRef(storeId): Prisma.Sql` с UUID-валидацией + двойные кавычки (`Prisma.raw("\"" + storeId + "_chunks\"")`), не template literal — иначе SQL injection риск если storeId когда-то придёт извне.
+2. **Expression index на JSONB** — `CREATE INDEX ON "<storeId>_chunks" ((metadata->>'order_number'))` нужен **перед** прод-запуском, иначе seq scan на каждом combined query. Через `migrate diff + migrate resolve --applied` workaround (ADR-005, memory `feedback_prisma_drift_flowise_workaround`).
+3. **HNSW параметры snapshot** — после первого upsert через `\d+ "<storeId>_chunks"` зафиксировать `m`/`ef_construction` в lab journal на случай tuning при росте >1M chunks.
+
+**Когда:** в момент kickoff Phase 2.5 — открыть `docs/features/water-analysis-geo.md` (новый план-документ) с UX-решением (radius hard-cutoff vs weighted re-rank) до начала кода.
+
+### 27. Cross-test invariant «ingest format ≡ query format» для embedding-text
+
+**Контекст (2026-05-07):** `generateEmbeddingText()` вызывается и при ingest (experiments-скрипт `10-flowise-custom-loader.ts`), и при query (`SimilarSearchService.buildQueryText`). Если шаблон расходится — embedding query попадает в случайную точку latent space, top-K становится случайным. Сейчас:
+- ingest читает persisted `paramFlags` из БД (derive Этапа 1.B на конкретной версии СанПиН справочника `v1.0.0`)
+- query вычисляет `paramFlags` на месте через `exceedsPdk(code, value)` (latest версия справочника)
+
+**Риск:** при bump `sanpin-1-2-3685-21-v1.0.0 → v1.0.1` query «съедет» от ingest **без видимого signal** — все запросы будут возвращать кандидатов с релевантностью ниже исторической.
+
+**Когда фиксить:** перед первым прод-bump'ом sanpin справочника. Решение — выделить shared `buildEmbeddingTextFromWaterAnalysis(record)` в `libs/water-blank-extraction` с golden test «ingest === query для одной WaterAnalysis fixture» + использовать обе стороны (loader script + service).
+
 ---
 
 ## Workflow

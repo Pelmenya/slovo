@@ -43,7 +43,10 @@ describe('validateEnv', () => {
         const parsed = validateEnv(BASE_ENV);
         expect(parsed.ANTHROPIC_DEFAULT_MODEL).toBe('claude-sonnet-4-6');
         expect(parsed.ANTHROPIC_FAST_MODEL).toBe('claude-haiku-4-5');
-        expect(parsed.EMBEDDING_DIMENSIONS).toBe(1536);
+        // Default апгрейд 2026-05-07: text-embedding-3-large (3072 dim) для
+        // обоих stores (catalog-aquaphor + water-analysis-aquaphor).
+        expect(parsed.EMBEDDING_MODEL).toBe('text-embedding-3-large');
+        expect(parsed.EMBEDDING_DIMENSIONS).toBe(3072);
         expect(parsed.LANGFUSE_ENABLED).toBe(false);
     });
 

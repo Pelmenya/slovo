@@ -648,10 +648,12 @@ model WaterAnalysis {
     normalizationVersion String @map("normalization_version")  // "v1.0.0"
     normalizedAt    DateTime  @default(now()) @map("normalized_at")
 
-    // embedding column — добавится в этапе 2 через manual migration
-    // ALTER TABLE water_analysis ADD COLUMN embedding vector(1536);
-    // CREATE INDEX water_analysis_embedding_hnsw_idx ON water_analysis
-    //     USING hnsw (embedding vector_cosine_ops);
+    // Phase 2 (закрыта 2026-05-07): embedding column в water_analysis НЕ добавлен,
+    // решение пересмотрено в пользу Flowise-managed `<storeId>_chunks` с
+    // PostgresVectorStore + HNSW. embedding_text TEXT остаётся в водной таблице
+    // (источник natural-language description для loader'а). См. ADR-006 амендмент
+    // 2026-05-07 + раздел «Этап 2 — Embeddings + endpoint» выше.
+    embeddingText  String?  @map("embedding_text") @db.Text
 
     @@index([region, district])
     @@index([sampleDate])
@@ -1012,13 +1014,14 @@ experiments/water-analysis-dataset/             # gitignored целиком (п�
 - [x] **`geo_point geography(Point, 4326)` GENERATED column + GiST индекс** — Postgres автогенерирует точку из lat/lon. Smoke test: nearest-5 за 6.4 ms на 11 948 точках.
 - [x] **#38** `07-dealer-median-fallback.ts` — **3 185 записей покрыто** (112 dealer'ов с ≥3 ok-records, true median PERCENTILE_CONT). Финал: 97.6% records с координатами.
 - [ ] **#36** Manual address override для top-dealers без геоинфы (371 record).
-- [ ] **#35** Этап 1.B — derive `WaterAnalysis` (param mapping, unit conversion, value parsing, sourceType inference, PDK flagging, address copy из `geo_*`, PII обезличивание).
-- [ ] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain.
+- [x] **#35** Этап 1.B — derive `WaterAnalysis` (param mapping, unit conversion, value parsing, sourceType inference, PDK flagging, address copy из `geo_*`, PII обезличивание). Закрыт 2026-05-06.
+- [x] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain — `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`.
 
 ### Backlog после 1.B
 
 - [ ] **#13** Переименование существующих chatflows под новую конвенцию (`flowise-naming.md`).
 - [ ] **#18** Extract в `libs/water-blank-extraction` (Variant C продуктизация — после стабилизации 1.B + Этапа 2).
 - [ ] **#22** PostGIS GiST на `(geo_lat, geo_lon)` при росте × 10 / появлении UI «найди в радиусе».
-- [ ] Этап 2: embedding column + HNSW + endpoint `/water-analysis/similar`.
-- [ ] Этап 3: webhook из CRM + `/water-analysis/map` endpoint + carousel в фронте.
+- [x] **Этап 2** (2026-05-07): Flowise Document Store `water-analysis-aquaphor` (15 504 chunks через Custom Document Loader, OpenAI text-embedding-3-large 3072 dim, $0.29) + endpoint `POST /water-analysis/similar` с post-filter (matchIntakeType / regionContains / depthRange / geo резервирован).
+- [ ] **Этап 2.5**: geo-фильтр через `ST_DWithin` поверх Flowise-managed `<storeId>_chunks` — реализация при появлении prostor-app виджета (нужен конкретный UX-кейс radius hard-cutoff vs weighted re-rank).
+- [ ] **Этап 3**: webhook из CRM на новый анализ + `/water-analysis/map` endpoint + bridge с vision-catalog (правила специалиста Аквафор).

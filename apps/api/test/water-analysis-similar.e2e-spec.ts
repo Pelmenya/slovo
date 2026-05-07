@@ -107,8 +107,9 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
                     depthMeters: 50,
                     region: 'Московская',
                     locality: 'Раменское',
-                    lat: 55.6255,
-                    lon: 38.1713,
+                    // PII-mitigation: lat/lon округлены до 0.005° (~500м grid)
+                    lat: 55.625,
+                    lon: 38.17,
                     pageContent: 'Скважина 50 м.\nЖелезо общее: 1.5 мг/л.',
                 },
             ],
@@ -156,7 +157,7 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
             .expect(400);
     });
 
-    it('500 — store not found в Flowise', async () => {
+    it('503 — store not found в Flowise', async () => {
         flowise.request.mockResolvedValueOnce([
             { id: 'other-id', name: 'catalog-aquaphor' },
         ]);
@@ -167,9 +168,9 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
                 intakeType: 'well',
                 params: { ph: 7.2 },
             })
-            .expect(500);
+            .expect(503);
 
-        expect(response.body.message ?? '').toMatch(/Internal/);
+        expect(response.body.message ?? '').toMatch(/Document Store .* not found/);
     });
 
     it('501 — geo filter not implemented', async () => {
@@ -230,21 +231,10 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
             .expect(400);
     });
 
-    it('400 — depthRange minMeters выше maxMeters пройдёт валидацию (обработка в service)', async () => {
-        // class-validator не проверяет cross-field constraints на nested DTO
-        // без custom validator. Валидация min<=max будет на уровне раннего
-        // service-фильтра — invariant: при minMeters > maxMeters результат
-        // пустой (никакая depth не подходит). Это OK — фронт не должен
-        // присылать невалидные диапазоны, behavior consistent.
-        flowise.request
-            .mockResolvedValueOnce([
-                { id: TEST_STORE_ID, name: WATER_ANALYSIS_AQUAPHOR_STORE_NAME },
-            ])
-            .mockResolvedValueOnce({
-                timeTaken: 50,
-                docs: [{ id: '1', pageContent: 'pc1', metadata: { orderNumber: '1', depthMeters: 50 } }],
-            });
-
+    it('400 — depthRange minMeters > maxMeters (cross-field invariant)', async () => {
+        // class-validator не проверяет cross-field на nested DTO без custom
+        // decorator. Валидация min<=max в service.validateRequest — fail-fast
+        // раньше Flowise call. Сильнее silent count=0 (фронт не путается).
         const response = await request(server)
             .post('/water-analysis/similar')
             .send({
@@ -252,9 +242,27 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
                 params: { ph: 7.2 },
                 filters: { depthRange: { minMeters: 100, maxMeters: 50 } },
             })
-            .expect(200);
+            .expect(400);
 
-        expect(response.body.count).toBe(0);
+        expect(response.body.message ?? '').toMatch(/обратный диапазон/);
+    });
+
+    it('400 — params пустой объект', async () => {
+        await request(server)
+            .post('/water-analysis/similar')
+            .send({ intakeType: 'well', params: {} })
+            .expect(400);
+    });
+
+    it('400 — params содержит non-finite value (string instead of number)', async () => {
+        // class-validator @IsObject() пропускает Record<string, любой тип>.
+        // Защита через service.validateRequest — Number.isFinite check.
+        const response = await request(server)
+            .post('/water-analysis/similar')
+            .send({ intakeType: 'well', params: { ph: 'invalid' } })
+            .expect(400);
+
+        expect(response.body.message ?? '').toMatch(/конечным числом/);
     });
 
     it('forbidNonWhitelisted — лишние поля в DTO → 400', async () => {

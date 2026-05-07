@@ -36,15 +36,19 @@ export class SimilarBlankDto {
     locality!: string | null;
 
     @ApiProperty({
-        description: 'Latitude от Ahunter geocoding.',
-        example: 55.6255,
+        description:
+            'Latitude (округлено до ~500 м для PII-mitigation на public endpoint). ' +
+            'Точные координаты Ahunter geocoding указывают на конкретное домохозяйство — ' +
+            'грубое округление до 0.005° даёт деревню/коттеджный посёлок без идентификации частной скважины.',
+        example: 55.625,
         nullable: true,
     })
     lat!: number | null;
 
     @ApiProperty({
-        description: 'Longitude от Ahunter geocoding.',
-        example: 38.1713,
+        description:
+            'Longitude (округлено до ~500 м для PII-mitigation, см. lat).',
+        example: 38.17,
         nullable: true,
     })
     lon!: number | null;

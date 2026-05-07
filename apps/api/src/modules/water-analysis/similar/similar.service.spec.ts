@@ -62,16 +62,18 @@ describe('SimilarSearchService', () => {
         );
     });
 
-    it('throws чёткий error когда store отсутствует', async () => {
+    it('throws ServiceUnavailableException когда store отсутствует', async () => {
         const flowiseRequest = jest.fn().mockResolvedValueOnce([
             { id: 'other-id', name: 'some-other-store' },
         ]);
 
         const service = await setupService(flowiseRequest);
 
-        await expect(service.search(buildRequest())).rejects.toThrow(
-            /Document Store "water-analysis-aquaphor" not found/,
-        );
+        // 503 ServiceUnavailable — это external resource issue, не slovo-internal 500
+        await expect(service.search(buildRequest())).rejects.toMatchObject({
+            status: 503,
+            message: expect.stringMatching(/Document Store "water-analysis-aquaphor" not found/),
+        });
     });
 
     it('reset storeIdPromise при ошибке lookup → следующий request делает retry', async () => {
@@ -192,10 +194,102 @@ describe('SimilarSearchService', () => {
             depthMeters: 50,
             region: 'Московская',
             locality: 'Раменское',
-            lat: 55.6255,
-            lon: 38.1713,
+            // 55.6255 → 55.625 (round к 0.005°), 38.1713 → 38.17 (PII-mitigation)
+            lat: 55.625,
+            lon: 38.17,
             pageContent: 'Скважина 50 м.\nЖелезо общее: 1.5 мг/л.',
         });
+    });
+
+    describe('input validation', () => {
+        it('400 — пустой params', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({ params: {} })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/params не может быть пустым/) });
+        });
+
+        it('400 — params содержит NaN', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({ params: { ph: NaN } })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/конечным числом/) });
+        });
+
+        it('400 — params содержит non-number value', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({
+                    // Имитируем drift невалидного payload через class-validator (если @IsObject слабее проверит)
+                    params: { ph: 'abc' as unknown as number },
+                })),
+            ).rejects.toMatchObject({ status: 400 });
+        });
+
+        it('400 — params значение вне диапазона [0, 1e6]', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({ params: { ph: -1 } })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/вне допустимого/) });
+        });
+
+        it('400 — depthRange minMeters > maxMeters', async () => {
+            const service = await setupService(jest.fn());
+            await expect(
+                service.search(buildRequest({
+                    filters: { depthRange: { minMeters: 100, maxMeters: 50 } },
+                })),
+            ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/обратный диапазон/) });
+        });
+
+        it('paramUnits override попадает в embedding query', async () => {
+            const flowiseRequest = jest.fn();
+            flowiseRequest
+                .mockResolvedValueOnce([{ id: 'wa-store', name: WATER_ANALYSIS_AQUAPHOR_STORE_NAME }])
+                .mockResolvedValueOnce({ docs: [], timeTaken: 10 });
+
+            const service = await setupService(flowiseRequest);
+            await service.search(buildRequest({
+                params: { iron_total: 1.5 },
+                paramUnits: { iron_total: 'ppm' },
+            }));
+
+            const queryCall = flowiseRequest.mock.calls.find(
+                (call) => call[0] === ENDPOINTS.vectorstoreQuery,
+            );
+            const query = ((queryCall as unknown[])[1] as { body: { query: string } }).body.query;
+            expect(query).toMatch(/ppm/);
+            expect(query).not.toMatch(/мг\/л/);
+        });
+    });
+
+    it('PII-mitigation: lat/lon округляются до ~500 м (0.005° grid)', async () => {
+        const flowiseRequest = jest.fn();
+        flowiseRequest
+            .mockResolvedValueOnce([{ id: 'wa-store', name: WATER_ANALYSIS_AQUAPHOR_STORE_NAME }])
+            .mockResolvedValueOnce({
+                timeTaken: 50,
+                docs: [
+                    {
+                        id: 'c1',
+                        pageContent: 'pc',
+                        metadata: {
+                            orderNumber: '1',
+                            // Точные координаты Ahunter (улица + дом) → должны округлиться
+                            lat: 55.7558123,
+                            lon: 37.6173456,
+                        },
+                    },
+                ],
+            });
+
+        const service = await setupService(flowiseRequest);
+        const result = await service.search(buildRequest());
+
+        // Math.round(55.7558123 * 200) / 200 = Math.round(11151.16) / 200 = 11151/200 = 55.755
+        expect(result.blanks[0].lat).toBe(55.755);
+        // Math.round(37.6173456 * 200) / 200 = Math.round(7523.469) / 200 = 7523/200 = 37.615
+        expect(result.blanks[0].lon).toBe(37.615);
     });
 
     describe('post-filters', () => {
@@ -297,6 +391,18 @@ describe('SimilarSearchService', () => {
             }));
             expect(result.count).toBe(5);
             expect(result.blanks).toHaveLength(5);
+        });
+
+        it('localityContains: case-insensitive substring match', async () => {
+            const service = await setupWithDocs([
+                { id: '1', metadata: { orderNumber: '1', locality: 'Раменское' } },
+                { id: '2', metadata: { orderNumber: '2', locality: 'Подольск' } },
+                { id: '3', metadata: { orderNumber: '3', locality: 'Раменский район' } },
+            ]);
+            const result = await service.search(buildRequest({
+                filters: { localityContains: 'раменск' },
+            }));
+            expect(result.blanks.map((b) => b.orderNumber)).toEqual(['1', '3']);
         });
 
         it('geo filter — 501 NotImplemented', async () => {
