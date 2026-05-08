@@ -105,30 +105,36 @@
 
 ## Phases с чек-боксами прогресса
 
-### Phase 1 — Согласование с руководителем Аквафор (БЛОКИРУЮЩАЯ)
+### Phase 1 — Согласование с руководителем Аквафор
 
-- [ ] Подготовить материал для встречи: страницу «Product pivot» в `aquaphor-status-2026-05-07.md` или отдельный mini-pitch
-- [ ] Встреча с руководителем — обсудить map-first positioning
-- [ ] Получить решение: `[ ] Approve` / `[ ] Reject` / `[ ] Modify`
-- [ ] Если modify — зафиксировать поправки и обновить этот документ
-- [ ] Договориться по timeline: когда демо, когда production-deploy
+> **Решение разработчика 8 мая 2026:** делаем спекулятивно (без предварительного approve), показываем работающее. Pitch с готовым демо сильнее абстрактной презентации — руководитель видит карту с каплей в реальном prostor-app, а не на mockup. Phase 1 переведена в **отметочный статус** (post-факт документация решения), не блокирует Phase 2-6.
 
-**Критерий перехода к Phase 2:** approve по product-positioning от руководителя.
+- [x] **Решение** — делаем без блокирующего approve, показываем результат (8 мая 2026)
+- [ ] Демо для руководителя после Phase 3-4 (карта в prostor-app + капля везде)
+- [ ] Получить feedback и финальное решение по landing pivot (Phase 5)
 
-### Phase 2 — Brand foundation (1-2 дня, low-risk)
+**Risk acknowledged:** если руководитель скажет «не подходит» после demo — будет потрачено ~5-7 дней работы. Mitigation: Phase 2-3 имеют независимую ценность (иконка PWA / новая вкладка nav могут существовать без map-first landing), не выкинутся даже при reject.
 
-- [ ] Извлечь SVG капли из `PROSTOR-Smart-Search.html` (Pencil bundler-ассеты в base64)
-- [ ] Если SVG не извлечь — нарисовать заново по образцу скриншота
-- [ ] Создать 3 цветовых варианта (OKLCH gradient)
-- [ ] Сгенерировать PWA-иконки 192/512/180/152/120 px из SVG-источника
-- [ ] Создать Maskable иконку для Android (с safe-zone)
-- [ ] Заменить `prostor-app/public/favicon.ico` на каплю
-- [ ] Обновить `prostor-app/public/manifest.json` — новые иконки
-- [ ] Обновить `<meta>` Apple Touch icon в `app/layout.tsx`
-- [ ] Smoke test PWA install на Android Chrome + iOS Safari
-- [ ] Commit + deploy на staging
+### Phase 2 — Brand foundation (1-2 дня, low-risk) — ✅ В РАБОТЕ
 
-**Acceptance:** PWA устанавливается с каплей-иконкой на homescreen, favicon в табе.
+- [x] Извлечь SVG капли из `PROSTOR-Smart-Search.html` (через Playwright `getElementsByTagName('svg')` после рендера Pencil-bundler) — каноничный 48×48 viewBox
+- [x] Сохранить SVG-источник в `prostor-app/public/icons/water-drop.svg` с OKLCH gradient
+- [x] Создать maskable-вариант `water-drop-maskable.svg` (192×192 viewBox + safe-zone scale 0.6)
+- [x] Сгенерировать PNG-иконки через Playwright canvas (16/32/72/120/152/180/192/512) — рендеринг OKLCH через Chromium корректный
+- [x] Создать maskable PNG для Android adaptive (192/512 с background gradient)
+- [x] Заменить `prostor-app/src/app/favicon.ico` на `src/app/icon.png` (Next.js File Conventions)
+- [x] Создать `src/app/apple-icon.png` (180×180, Next.js auto-routed)
+- [x] Обновить `prostor-app/public/manifest.json` — название «PROSTOR — клуб чистой воды», theme_color #1c4ed8, добавлены maskable icons
+- [ ] Smoke test PWA install на Android Chrome + iOS Safari (на этапе live testing разработчиком)
+- [x] Commit в ветку `feature/water-pivot` + push на origin
+
+**Реализация:** ветка `feature/water-pivot` в prostor-app (commit 8 мая 2026). PR создавать после полного завершения всех Phases или по этапу — на усмотрение разработчика.
+
+**Что НЕ потребовалось делать вопреки изначальному плану:**
+- Не правил `app/layout.tsx` (icons references работают через Next.js File Conventions автоматически после `app/icon.png` + `app/apple-icon.png`)
+- Не делал отдельную ICO-версию (32×32 PNG в `app/icon.png` достаточно для всех современных браузеров)
+
+**Acceptance:** PWA устанавливается с каплей-иконкой на homescreen, favicon в табе. ⏳ ожидает live PWA-тест в браузере разработчика.
 
 ### Phase 3 — Bottom-nav «Вода» (2-3 дня)
 
