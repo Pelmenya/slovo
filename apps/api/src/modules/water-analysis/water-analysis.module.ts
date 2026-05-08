@@ -5,10 +5,13 @@ import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client'
 import type { TAppEnv } from '@slovo/common';
 import Redis from 'ioredis';
 import {
+    DEPTH_MAP_REDIS_TOKEN,
     FLOWISE_CLIENT_TOKEN,
     HEATMAP_REDIS_TOKEN,
     PREDICT_REDIS_TOKEN,
 } from './water-analysis.constants';
+import { DepthMapController } from './depth-map/depth-map.controller';
+import { DepthMapService } from './depth-map/depth-map.service';
 import { HeatmapController } from './heatmap/heatmap.controller';
 import { HeatmapService } from './heatmap/heatmap.service';
 import { PredictController } from './predict/predict.controller';
@@ -92,16 +95,45 @@ const predictRedisProvider: Provider = {
     },
 };
 
+// Depth-map Redis instance — те же параметры что heatmap (TTL 24ч, command-timeout
+// 3s). Раздельный provider для per-feature observability (slowlog + connection pool
+// isolation). При scale можно переехать на shared instance с TTL по key-prefix.
+const depthMapRedisProvider: Provider = {
+    provide: DEPTH_MAP_REDIS_TOKEN,
+    inject: [ConfigService],
+    useFactory: (config: ConfigService<TAppEnv, true>): Redis => {
+        const host = config.getOrThrow('REDIS_HOST', { infer: true });
+        const port = config.getOrThrow('REDIS_PORT', { infer: true });
+        const password = config.get('REDIS_PASSWORD', { infer: true });
+        return new Redis({
+            host,
+            port,
+            password: password || undefined,
+            lazyConnect: false,
+            maxRetriesPerRequest: 2,
+            connectTimeout: 5_000,
+            commandTimeout: 3_000,
+        });
+    },
+};
+
 @Module({
     imports: [DatabaseModule],
-    controllers: [SimilarSearchController, HeatmapController, PredictController],
+    controllers: [
+        SimilarSearchController,
+        HeatmapController,
+        PredictController,
+        DepthMapController,
+    ],
     providers: [
         flowiseClientProvider,
         heatmapRedisProvider,
         predictRedisProvider,
+        depthMapRedisProvider,
         SimilarSearchService,
         HeatmapService,
         PredictService,
+        DepthMapService,
     ],
 })
 export class WaterAnalysisModule {}

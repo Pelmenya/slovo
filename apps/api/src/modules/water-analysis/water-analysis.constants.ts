@@ -120,6 +120,43 @@ export const GRID_DEFAULT_DEG = 0.05;
 // справочник, single source of truth). Дублируем здесь литералом для type-safety
 // `THeatmapParam` (TS не выводит string-literal union из runtime массива).
 // =============================================================================
+// Aquifer layers — водоносные горизонты МО.
+//
+// Эмпирические границы по геологии Подмосковья:
+//   - 0-15м: верховодка / песчаный приповерхностный (часто колодцы)
+//   - 15-50м: основной песчаный (типичная частная скважина)
+//   - 50-100м: песчано-известняковый (граница на смене породы)
+//   - 100-200м: известняковый (артезианский базовый)
+//   - 200м+: глубокий артезианский (редко в МО, скорее Tula/Ярославская)
+//
+// Используется в /predict (mostLikelyAquiferLayer), /depth-map (bucket-распределение
+// в каждой cell), /aquifer-stats (data-driven verification через GMM).
+//
+// Эмпирические границы — не из СанПиН/ГОСТ, а из practitioner-knowledge МО
+// (источник: разработчик + общая гидрогеология). При появлении более точного
+// справочника — обновить здесь, остальные места читают через `AQUIFER_LAYERS`.
+// =============================================================================
+
+export type TAquiferLayer = {
+    /** Минимальная глубина (включительно). */
+    min: number;
+    /** Максимальная глубина (исключительно). Для последнего слоя — Infinity. */
+    max: number;
+    /** UI label с диапазоном + русским названием горизонта. */
+    label: string;
+    /** Стабильный id для filter/index, не зависит от перевода label. */
+    id: string;
+};
+
+export const AQUIFER_LAYERS: ReadonlyArray<TAquiferLayer> = [
+    { id: 'top_water', min: 0, max: 15, label: '0-15m / Верховодка' },
+    { id: 'sandy', min: 15, max: 50, label: '15-50m / Песчаный' },
+    { id: 'sandy_limestone', min: 50, max: 100, label: '50-100m / Песчано-известняковый' },
+    { id: 'limestone', min: 100, max: 200, label: '100-200m / Известняковый' },
+    { id: 'artesian', min: 200, max: Infinity, label: '200m+ / Артезианский' },
+];
+
+// =============================================================================
 // Predict endpoint (4.A.2, USP-1) — kNN-прогноз химии для нового адреса БЕЗ
 // собственного анализа. Top-K ближайших соседей в радиусе → distance-weighted
 // average + P10/P90 percentile interval.
@@ -164,6 +201,32 @@ export const PREDICT_IDW_SCALE_KM = 10;
 // наклон к свежим данным без полного отбрасывания старых (которых только
 // 2020-2026, всё актуально).
 export const PREDICT_RECENCY_HALF_LIFE_YEARS = 5;
+
+// =============================================================================
+// Depth-map endpoint (4.A.3, USP-4 base) — карта глубин скважин/колодцев по grid.
+//
+// Архитектурно похоже на heatmap: те же bbox/grid агрегации через PostGIS, но
+// без params->> extraction — depth_meters это column. Per cell median/P25/P75
+// глубины + count + aquiferLayers bucket-распределение.
+//
+// Audience: бурильщики / копатели колодцев / гидрогеологи / девелоперы.
+// Coverage data: well 76.7% (7 884 точек), well_dug 41.2% (742 точек).
+//
+// Throttle/cache: те же что heatmap (depth-map менее частый запрос — drilling
+// клиент 1-3 раза при выборе участка, не браузинг каждые 100мс).
+// =============================================================================
+
+export const DEPTH_MAP_THROTTLE_LIMIT = 120;
+export const DEPTH_MAP_THROTTLE_TTL_MS = 60_000;
+export const DEPTH_MAP_CACHE_TTL_SECONDS = 24 * 60 * 60;
+export const DEPTH_MAP_REDIS_TOKEN = Symbol('WATER_ANALYSIS_DEPTH_MAP_REDIS');
+
+// intakeType filter — какие источники учитывать. `all` включает well+well_dug
+// (municipal/spring/river depth не имеет смысла). Default 'well' — самый
+// частый use-case для бурильщиков. 'well_dug' — для колодцев (мелкие, в МО
+// обычно <15м).
+export const DEPTH_MAP_INTAKE_FILTER = ['all', 'well', 'well_dug'] as const;
+export type TDepthMapIntakeFilter = (typeof DEPTH_MAP_INTAKE_FILTER)[number];
 
 export const HEATMAP_PARAMS = [
     // Органолептические

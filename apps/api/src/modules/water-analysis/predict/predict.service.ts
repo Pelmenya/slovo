@@ -3,6 +3,7 @@ import { PrismaService } from '@slovo/database';
 import { exceedsPdk } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
 import {
+    AQUIFER_LAYERS,
     PREDICT_CACHE_TTL_SECONDS,
     PREDICT_DEFAULT_K,
     PREDICT_DEFAULT_RADIUS_KM,
@@ -220,14 +221,9 @@ function buildPredictedRecord(
 // Drilling bonus: most-likely aquifer layer
 // =============================================================================
 
-const AQUIFER_LAYERS: ReadonlyArray<{ min: number; max: number; label: string }> = [
-    { min: 0, max: 15, label: '0-15m / Верховодка' },
-    { min: 15, max: 50, label: '15-50m / Песчаный' },
-    { min: 50, max: 100, label: '50-100m / Песчано-известняковый' },
-    { min: 100, max: 200, label: '100-200m / Известняковый' },
-    { min: 200, max: Infinity, label: '200m+ / Артезианский' },
-];
-
+// Минимальное число соседей-скважин с известной глубиной для определения
+// mostLikelyAquiferLayer. <3 → undefined (мало данных, не показываем чтобы не
+// дезинформировать клиента). AQUIFER_LAYERS — shared в `water-analysis.constants.ts`.
 const AQUIFER_MIN_NEIGHBORS = 3;
 
 function computeMostLikelyAquiferLayer(rows: TNeighborRow[]): string | undefined {
