@@ -28,8 +28,11 @@ import type {
 //   3. Prisma raw SQL: bbox-фильтр через PostGIS `&&` (GIST index на geo_point) +
 //      grid-snap через FLOOR(coord/grid)*grid + grid/2 (центр ячейки) +
 //      агрегации COUNT/AVG/PERCENTILE_CONT(0.5,0.75)/exceedsCount.
-//   4. Risk случай — другой SELECT, формула weighted % от ПДК (та же что в
-//      derived 05-normalize.ts).
+//   4. Synthetic params:
+//      - `risk` — weighted % от ПДК по 4 ключевым параметрам (та же формула
+//        что в derived 05-normalize.ts).
+//      - `all_problems` — % строк в cell где хотя бы один нормируемый param
+//        превышает ПДК (max severity OR-aggregation). UX «все проблемы видно».
 //   5. Map rows → GeoJSON Features. Persist в Redis с TTL 24ч.
 //
 // Безопасность SQL: param name приходит из whitelist (HEATMAP_PARAMS) +
@@ -102,6 +105,9 @@ export class HeatmapService {
             const pdk = resolvedPdk.kind === 'single' ? resolvedPdk.pdk : RISK_PDK;
             return this.runRiskQuery(dto, grid, pdk);
         }
+        if (param === 'all_problems') {
+            return this.runAllProblemsQuery(dto, grid);
+        }
         return this.runParamQuery(param, dto, grid, resolvedPdk);
     }
 
@@ -153,6 +159,64 @@ export class HeatmapService {
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY val)::float8 AS median,
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY val)::float8 AS p75,
                 ${exceedsExpr}::int AS exceeds_count
+            FROM extracted
+            GROUP BY cell_lon, cell_lat
+            HAVING COUNT(*) >= 1
+        `;
+    }
+
+    private async runAllProblemsQuery(
+        dto: HeatmapQueryDto,
+        grid: number,
+    ): Promise<TRawRow[]> {
+        // OR-aggregation: для каждого row проверяем все regulated paramы из
+        // СанПиН справочника. Если хотя бы один > ПДК (или out-of-range для pH) —
+        // row помечается has_exceedance=true. Per cell exceedsPct = % таких rows.
+        //
+        // Source of truth для list paramов + ПДК — `WATER_PARAMS_BY_CODE` из
+        // `@slovo/water-blank-extraction` (СанПиН 1.2.3685-21 v1.0.0). При
+        // изменениях справочника SQL автоматически подтянет новые params без
+        // правки этого файла.
+        //
+        // COALESCE(... > pdk, false) — params->>code returns NULL если param
+        // отсутствует в записи; numeric comparison к NULL = NULL → COALESCE на
+        // false. Это значит «нет данных = не считаем нарушением» — правильное
+        // поведение, иначе записи без iron_total автоматически считались бы
+        // problematic.
+        const anyExceedanceExpr = buildAnyExceedanceExpr();
+
+        return this.prisma.$queryRaw<TRawRow[]>`
+            WITH bounded AS (
+                SELECT
+                    geo_point::geometry AS geom,
+                    params
+                FROM water_analysis
+                WHERE
+                    geo_point IS NOT NULL
+                    AND geo_point && ST_MakeEnvelope(
+                        ${dto.west}::float8, ${dto.south}::float8,
+                        ${dto.east}::float8, ${dto.north}::float8, 4326
+                    )::geography
+            ),
+            extracted AS (
+                SELECT
+                    FLOOR(ST_X(geom) / ${grid}::float8) * ${grid}::float8 + ${grid}::float8 / 2 AS cell_lon,
+                    FLOOR(ST_Y(geom) / ${grid}::float8) * ${grid}::float8 + ${grid}::float8 / 2 AS cell_lat,
+                    CASE WHEN (${anyExceedanceExpr}) THEN 1 ELSE 0 END AS has_exceedance
+                FROM bounded
+            )
+            SELECT
+                cell_lon::float8 AS cell_lon,
+                cell_lat::float8 AS cell_lat,
+                COUNT(*)::int AS count,
+                -- Для composite параметра mean/median/p75 семантически = exceedsPct
+                -- (binary aggregation: AVG of 0/1 * 100 = % rows с exceedance).
+                -- Это позволяет statusFor использовать тот же median path как для
+                -- single/range params, а frontend получить consistent shape.
+                (AVG(has_exceedance::float8) * 100)::float8 AS mean,
+                (AVG(has_exceedance::float8) * 100)::float8 AS median,
+                (AVG(has_exceedance::float8) * 100)::float8 AS p75,
+                SUM(has_exceedance)::int AS exceeds_count
             FROM extracted
             GROUP BY cell_lon, cell_lat
             HAVING COUNT(*) >= 1
@@ -260,27 +324,46 @@ type TRawRow = {
 // (water-params.ts mock).
 const RISK_PDK = 50;
 
+// all_problems thresholds — % rows в cell с exceedance хотя бы одного param.
+// 30/60 эмпирически: cells с <30% rows problematic = здоровый район;
+// 30-60% = смешанный; 60+ = массовая проблема. UX-friendly для overview.
+const ALL_PROBLEMS_MID_PCT = 30;
+const ALL_PROBLEMS_BAD_PCT = 60;
+
 /**
- * ПДК для heatmap калибровки + статуса. Три варианта:
+ * ПДК для heatmap калибровки + статуса. Четыре варианта:
  * - `single` — числовое ПДК (большинство параметров: iron/manganese/tds/...)
  *   exceedsCount = COUNT(val > pdk), статус = ratio median/pdk.
  * - `range` — диапазон min-max (только pH в текущем СанПиН справочнике).
  *   exceedsCount = COUNT(val < min OR val > max), статус — outside range = bad.
  * - `none` — параметр не нормируется (temperature, electrical_conductivity).
  *   exceedsCount всегда 0, статус всегда 'good' (нет норматива для оценки).
+ * - `composite` — synthetic `all_problems`: % rows с exceedance хотя бы одного
+ *   regulated paramа. exceedsCount = COUNT таких rows, статус — по
+ *   percentage thresholds (30/60).
  *
  * `displayValue` — что показать в response DTO как "pdk" (для UI legend).
  * Для range берём верхнюю границу как ориентир, для none — 0 (фронт может
- * рендерить «н/о» для статуса при exceedsPct=0).
+ * рендерить «н/о» для статуса при exceedsPct=0). Для composite — пороговый
+ * процент (30) для UI legend «жёлтая зона начинается на 30%».
  */
 type TResolvedPdk =
     | { kind: 'single'; pdk: number; displayValue: number }
     | { kind: 'range'; min: number; max: number; displayValue: number }
-    | { kind: 'none'; displayValue: number };
+    | { kind: 'none'; displayValue: number }
+    | { kind: 'composite'; midPct: number; badPct: number; displayValue: number };
 
 function resolvePdk(param: THeatmapParam): TResolvedPdk {
     if (param === 'risk') {
         return { kind: 'single', pdk: RISK_PDK, displayValue: RISK_PDK };
+    }
+    if (param === 'all_problems') {
+        return {
+            kind: 'composite',
+            midPct: ALL_PROBLEMS_MID_PCT,
+            badPct: ALL_PROBLEMS_BAD_PCT,
+            displayValue: ALL_PROBLEMS_MID_PCT,
+        };
     }
 
     const meta = WATER_PARAMS_BY_CODE[param];
@@ -335,10 +418,57 @@ function buildExceedsExpr(pdk: TResolvedPdk): Prisma.Sql {
         // Range — out-of-range считается превышением (pH, например, < 6 или > 9).
         return Prisma.sql`SUM(CASE WHEN val < ${pdk.min}::float8 OR val > ${pdk.max}::float8 THEN 1 ELSE 0 END)`;
     }
-    // none — нет норматива (temperature, electrical_conductivity), exceeds_count
-    // всегда 0. SELECT 0 без агрегации сломает GROUP BY → используем COUNT(NULL)
-    // который тоже всегда 0 + agreggate-compatible.
+    // none/composite — `runParamQuery` сюда не дойдёт для composite (диспатч
+    // в `runAllProblemsQuery` раньше). Для none нет норматива (temperature,
+    // electrical_conductivity), exceeds_count всегда 0. SELECT 0 без агрегации
+    // сломает GROUP BY → используем COUNT(NULL) (тоже всегда 0, aggregate-compatible).
     return Prisma.sql`COUNT(NULL)`;
+}
+
+/**
+ * Boolean SQL expression «у этого row превышен хотя бы один regulated paramу».
+ *
+ * Динамически собирается из `WATER_PARAMS_BY_CODE` (СанПиН справочник) — при
+ * изменениях справочника SQL автоматически подтягивает новые paramы без
+ * правки этого кода. Используется в `runAllProblemsQuery` для composite
+ * 'all_problems' paramа.
+ *
+ * SQL pattern per paramу:
+ *   - single ПДК (iron 0.3): `COALESCE((params->>'iron_total')::numeric > 0.3, false)`
+ *   - range ПДК (pH 6-9):
+ *     `COALESCE((params->>'ph')::numeric < 6, false) OR
+ *      COALESCE((params->>'ph')::numeric > 9, false)`
+ *
+ * COALESCE(..., false) — params->>'key' возвращает NULL для отсутствующих
+ * paramов. Numeric comparison к NULL = NULL → COALESCE на false. Это значит
+ * «нет данных = не считаем нарушением» (correct: записи без iron_total не
+ * должны автоматически считаться problematic).
+ *
+ * Все ПДК-значения идут как $N params (Prisma.sql interpolation), не concat —
+ * SQL injection невозможна даже теоретически (значения из const справочника,
+ * но pattern правильный).
+ */
+function buildAnyExceedanceExpr(): Prisma.Sql {
+    const checks: Prisma.Sql[] = [];
+    for (const meta of Object.values(WATER_PARAMS_BY_CODE)) {
+        if (!meta.regulated || meta.pdk === null) continue;
+        const code = meta.paramCode;
+        if (typeof meta.pdk === 'number') {
+            checks.push(
+                Prisma.sql`COALESCE((params->>${code})::numeric > ${meta.pdk}::numeric, false)`,
+            );
+        } else {
+            checks.push(
+                Prisma.sql`(COALESCE((params->>${code})::numeric < ${meta.pdk.min}::numeric, false) OR COALESCE((params->>${code})::numeric > ${meta.pdk.max}::numeric, false))`,
+            );
+        }
+    }
+    if (checks.length === 0) {
+        // Defensive: если справочник пуст (не должно случиться) — `false`
+        // → has_exceedance всегда 0 → all cells с exceedsPct=0 (good).
+        return Prisma.sql`false`;
+    }
+    return Prisma.join(checks, ' OR ');
 }
 
 function mapRowsToFeatures(
@@ -349,7 +479,7 @@ function mapRowsToFeatures(
     const isRisk = param === 'risk';
     return rows.map((row): HeatmapFeatureDto => {
         const exceedsPct = row.count > 0 ? Math.round((row.exceeds_count / row.count) * 100) : 0;
-        const status = statusFor(row.median, pdk, isRisk);
+        const status = statusFor(row.median, exceedsPct, pdk, isRisk);
 
         return {
             type: 'Feature',
@@ -371,11 +501,22 @@ function mapRowsToFeatures(
     });
 }
 
-function statusFor(median: number, pdk: TResolvedPdk, isRisk: boolean): THeatmapStatus {
+function statusFor(
+    median: number,
+    exceedsPct: number,
+    pdk: TResolvedPdk,
+    isRisk: boolean,
+): THeatmapStatus {
     if (isRisk) {
         // Risk score 0-100. <50 = норма, 50-80 = mid, 80+ = bad.
         if (median < 50) return 'good';
         if (median < 80) return 'mid';
+        return 'bad';
+    }
+    if (pdk.kind === 'composite') {
+        // all_problems: status по % rows в cell с exceedance.
+        if (exceedsPct < pdk.midPct) return 'good';
+        if (exceedsPct < pdk.badPct) return 'mid';
         return 'bad';
     }
     if (pdk.kind === 'none') {

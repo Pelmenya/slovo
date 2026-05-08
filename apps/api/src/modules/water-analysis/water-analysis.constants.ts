@@ -392,5 +392,10 @@ export const HEATMAP_PARAMS = [
     'electrical_conductivity',
     // Synthetic — weighted % от ПДК по 4 ключевым параметрам
     'risk',
+    // Composite — `max severity` from any regulated param (exceedsPct cell =
+    // % rows в cell где хотя бы один нормируемый paramOK > ПДК).
+    // UX «все проблемы видно сразу», когда юзер хочет overview без выбора
+    // конкретного param. Реализовано в heatmap.service `runAllProblemsQuery`.
+    'all_problems',
 ] as const;
 export type THeatmapParam = (typeof HEATMAP_PARAMS)[number];
