@@ -4,9 +4,15 @@ import { DatabaseModule } from '@slovo/database';
 import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client';
 import type { TAppEnv } from '@slovo/common';
 import Redis from 'ioredis';
-import { FLOWISE_CLIENT_TOKEN, HEATMAP_REDIS_TOKEN } from './water-analysis.constants';
+import {
+    FLOWISE_CLIENT_TOKEN,
+    HEATMAP_REDIS_TOKEN,
+    PREDICT_REDIS_TOKEN,
+} from './water-analysis.constants';
 import { HeatmapController } from './heatmap/heatmap.controller';
 import { HeatmapService } from './heatmap/heatmap.service';
+import { PredictController } from './predict/predict.controller';
+import { PredictService } from './predict/predict.service';
 import { SimilarSearchController } from './similar/similar.controller';
 import { SimilarSearchService } from './similar/similar.service';
 
@@ -64,9 +70,38 @@ const heatmapRedisProvider: Provider = {
     },
 };
 
+// Predict использует свой Redis instance — TTL 5мин vs heatmap 24ч, command-timeout
+// тот же. Можно было shared instance, но раздельные провайдеры дают per-feature
+// observability (отдельные slowlog'и и connection pool isolation).
+const predictRedisProvider: Provider = {
+    provide: PREDICT_REDIS_TOKEN,
+    inject: [ConfigService],
+    useFactory: (config: ConfigService<TAppEnv, true>): Redis => {
+        const host = config.getOrThrow('REDIS_HOST', { infer: true });
+        const port = config.getOrThrow('REDIS_PORT', { infer: true });
+        const password = config.get('REDIS_PASSWORD', { infer: true });
+        return new Redis({
+            host,
+            port,
+            password: password || undefined,
+            lazyConnect: false,
+            maxRetriesPerRequest: 2,
+            connectTimeout: 5_000,
+            commandTimeout: 3_000,
+        });
+    },
+};
+
 @Module({
     imports: [DatabaseModule],
-    controllers: [SimilarSearchController, HeatmapController],
-    providers: [flowiseClientProvider, heatmapRedisProvider, SimilarSearchService, HeatmapService],
+    controllers: [SimilarSearchController, HeatmapController, PredictController],
+    providers: [
+        flowiseClientProvider,
+        heatmapRedisProvider,
+        predictRedisProvider,
+        SimilarSearchService,
+        HeatmapService,
+        PredictService,
+    ],
 })
 export class WaterAnalysisModule {}

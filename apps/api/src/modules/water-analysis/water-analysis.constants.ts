@@ -119,6 +119,52 @@ export const GRID_DEFAULT_DEG = 0.05;
 // Источник списка — `WATER_PARAMS` из `@slovo/water-blank-extraction` (СанПиН
 // справочник, single source of truth). Дублируем здесь литералом для type-safety
 // `THeatmapParam` (TS не выводит string-literal union из runtime массива).
+// =============================================================================
+// Predict endpoint (4.A.2, USP-1) — kNN-прогноз химии для нового адреса БЕЗ
+// собственного анализа. Top-K ближайших соседей в радиусе → distance-weighted
+// average + P10/P90 percentile interval.
+//
+// Throttle 60/min/IP — мягче heatmap (predict дороже на ST_DWithin scan + per-row
+// jsonb extraction в TS, ~50-200мс vs 50-100мс heatmap), и legitimate use-case
+// — клиент 1-3 запроса при выборе оборудования, не браузинг карты.
+//
+// Cache TTL 5 мин — координаты юзера могут shift при пане карты, но реальный
+// USP сценарий (ввёл свой адрес → получил прогноз) дублируется редко. 5 мин
+// достаточно для retry/refresh без штрафа на cache hit-rate.
+// =============================================================================
+
+export const PREDICT_THROTTLE_LIMIT = 60;
+export const PREDICT_THROTTLE_TTL_MS = 60_000;
+export const PREDICT_CACHE_TTL_SECONDS = 5 * 60;
+export const PREDICT_REDIS_TOKEN = Symbol('WATER_ANALYSIS_PREDICT_REDIS');
+
+// Top-K bounds. K=20 default — баланс sample size (для percentile надо ≥10 точек,
+// чтобы P10/P90 был стабилен) и SQL latency (LIMIT 20 на 15 504 записях ~10мс).
+// Min=5 — ниже percentile interval становится noisy. Max=100 — выше уже не
+// «локальный» kNN, и clay смешивается с известняковым горизонтом.
+export const PREDICT_DEFAULT_K = 20;
+export const PREDICT_MIN_K = 5;
+export const PREDICT_MAX_K = 100;
+
+// Radius search bounds. Дефолт 50км — типичный «локальный» bbox для МО (одна
+// область). Min 1км — точечный поиск (для тестов / валидации). Max 200км —
+// полу-глобальный fallback при отсутствии данных рядом.
+export const PREDICT_DEFAULT_RADIUS_KM = 50;
+export const PREDICT_MIN_RADIUS_KM = 1;
+export const PREDICT_MAX_RADIUS_KM = 200;
+
+// Inverse-distance weighting parameter. weight = 1 / (1 + dist_km / IDW_SCALE).
+// IDW_SCALE=10 → точка в 0км имеет weight=1, в 10км weight=0.5, в 50км weight≈0.17.
+// Меньше IDW_SCALE → быстрее затухание (больше bias на ближайших), больше →
+// плавнее (шум усредняется).
+export const PREDICT_IDW_SCALE_KM = 10;
+
+// Recency-weight half-life в годах. weight ∝ exp(-age_years / RECENCY_HALF_LIFE).
+// 5 лет — анализ 5-летней давности имеет half-weight, 10-летней ~25%. Это даёт
+// наклон к свежим данным без полного отбрасывания старых (которых только
+// 2020-2026, всё актуально).
+export const PREDICT_RECENCY_HALF_LIFE_YEARS = 5;
+
 export const HEATMAP_PARAMS = [
     // Органолептические
     'odor',
