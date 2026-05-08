@@ -151,22 +151,34 @@ export class EquipmentSuggestService {
         // (severity-ordered) обычно дают достаточно targeted variety.
         const topProblems = problems.slice(0, MAX_PROBLEM_QUERIES);
 
+        // Per-problem queries параллельно через Promise.all — Flowise
+        // vectorstoreQuery thread-safe для read-only `query`. Sequential
+        // for...await давал ~1.8s wall-clock на 3 round-trip × 600мс,
+        // Promise.all сокращает до ~600мс (один round-trip).
+        //
+        // Severity-ordering preserved: `Promise.all` сохраняет порядок результатов,
+        // соответствующий порядку `topProblems` (severity-sorted) — dedup loop ниже
+        // обрабатывает результаты в severity-priority order.
+        const responses = await Promise.all(
+            topProblems.map((problem) => {
+                const targetedQuery = buildTargetedQuery(problem);
+                return this.flowise.request<TFlowiseQueryResponse>(
+                    ENDPOINTS.vectorstoreQuery,
+                    {
+                        method: 'POST',
+                        body: { storeId, query: targetedQuery, topK: PER_PROBLEM_K },
+                    },
+                ).then((response) => ({ docs: response.docs, problem }));
+            }),
+        );
+
         // Track matched problem на каждый doc — для UI «почему этот товар».
-        // Используем `{ doc, problem }` пар чтобы дедуп сохранял **первую**
-        // matched problem (severity-ordered preserves: для doc найденного через
-        // unsafe-iron а потом через borderline-manganese — оставляем iron, т.к.
-        // более серьёзная проблема приоритет).
+        // `{ doc, problem }` пары: дедуп сохраняет **первую** matched problem
+        // (severity-ordered preserves: для doc найденного через unsafe-iron, потом
+        // через borderline-manganese — оставляем iron, более серьёзная проблема).
         const allMatches: Array<{ doc: TFlowiseQueryDoc; problem: WaterProblemDto }> = [];
-        for (const problem of topProblems) {
-            const targetedQuery = buildTargetedQuery(problem);
-            const response = await this.flowise.request<TFlowiseQueryResponse>(
-                ENDPOINTS.vectorstoreQuery,
-                {
-                    method: 'POST',
-                    body: { storeId, query: targetedQuery, topK: PER_PROBLEM_K },
-                },
-            );
-            for (const doc of response.docs) {
+        for (const { docs, problem } of responses) {
+            for (const doc of docs) {
                 allMatches.push({ doc, problem });
             }
         }
@@ -203,9 +215,14 @@ export class EquipmentSuggestService {
         );
         const store = stores.find((s) => s.name === CATALOG_AQUAPHOR_STORE_NAME);
         if (!store) {
-            throw new ServiceUnavailableException(
+            // Detail в logger.error (для on-call), generic message клиенту чтобы не
+            // раскрывать internals (имя Flowise store + что catalog backend Flowise).
+            this.logger.error(
                 `Document Store "${CATALOG_AQUAPHOR_STORE_NAME}" not found in Flowise — ` +
-                    `проверь что catalog ingested и Flowise running`,
+                    `catalog не ingested или Flowise недоступен`,
+            );
+            throw new ServiceUnavailableException(
+                'Подбор оборудования временно недоступен',
             );
         }
         this.logger.log(

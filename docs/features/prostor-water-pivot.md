@@ -99,7 +99,7 @@
 - ✅ Smart-Search дизайн-mockup от claude design (`PROSTOR-Smart-Search.html`) — там и капля
 - ✅ prostor-app stack готов: Next.js 16, maplibre-gl 5.20, TanStack Query, daisyui, FSD
 - ✅ FSD entities/real-estate уже знает water-source, water-intake-point
-- ❌ slovo-api endpoint `/water-analysis/heatmap` — **не реализован** (нужен ~3 дня для Phase C)
+- ✅ slovo-api endpoint `/water-analysis/heatmap` — **реализован 8 мая 2026** (вместе с 6 другими endpoints в Phase 4)
 
 ---
 
@@ -180,6 +180,16 @@
 - 15 504 анализов воды частных адресов МО за 2020-2026 (97.6% c координатами)
 - 21 параметр химии × geo × дата × лаборатория × источник × **глубина** × дилер
 - Coverage `depth_meters`: well 76.7% (7 884), well_dug 41.2% (742) — **gold для drilling-domain**
+
+**4 интеллектуальные доработки** (поверх базовых endpoints — отличают от наивных kNN-API):
+
+1. **Interval-first responses** (PhD interval analysis, memory `feedback_interval_first_predictions`) — вместо точечного value `iron = 0.42` отдаём 3 уровня интервалов: `interval` P10-P90 80% (для решений) / `iqr` P25-P75 50% (типичный) / `hardRange` 100% (worst-case observed) + `pointEstimate`. Применимо ко всем predict-endpoints (predict + depth-predict).
+
+2. **4-level pdkStatus** (severity gradation с median tipping point) — `safe / borderline / concerning / unsafe`. Не binary boolean — различает `borderline` (interval crosses ПДК + median ≤ pdk = «возможно норма») от `concerning` (median > pdk = «скорее всего проблема»). Без этого все 7 МО-параметров оказывались `borderline`, теряя приоритеты для UX.
+
+3. **Per-problem catalog search** в /equipment-suggest — для каждой identified problem отдельный targeted vector query через `PROBLEM_TO_QUERY` mapping (paramCode → technology keywords: iron_total → «обезжелезиватель», hardness_total → «умягчитель ионный обмен»). Раньше один общий query → generic фильтры. Теперь — targeted RO-системы для nitrites unsafe, обезжелезиватели для iron concerning.
+
+4. **byCategory pre-grouping** в /predict — 22 параметра pre-разбиты по 5 buckets `{ unsafe, concerning, borderline, safe, unmonitored }` с sort внутри (severity → pointEstimate desc, safe → alphabetically). UI shortcut для рендера секций без iteration по 22 параметрам.
 
 #### 4.A Tier 1: фундамент карты + flagship USP — ✅ ЗАКРЫТО (8 мая 2026)
 
@@ -275,12 +285,14 @@
 
 ## Открытые вопросы (требуют решения)
 
-1. **Bottom-nav layout** — FAB-style по центру (как описал в Phase 3) или обычная 3-я вкладка? FAB premium-feel но сложнее реализовать.
-2. **Имя вкладки** — «Вода» (согласовано в обсуждении 8 мая) ✅
-3. **Empty state на `/water` для нелогиненного юзера** — обзор МО или CTA «Войди → увидишь свой район»?
-4. **Где живут анализы конкретного клиента** — в CRM Аквафор? В slovo-архиве? Нужно проектное решение для Phase 6.
-5. **Backend gateway** — prostor-app ходит в `slovo-api:3101` напрямую (CORS) или через `crm-back:3000` как proxy? Я голосую за **Next.js API routes как server-side proxy** — best UX + auth integration.
-6. **Где документ живёт** — этот бриф в slovo (где идёт обсуждение), но при старте Phase 2 нужно дублировать в `prostor-app/docs/features/water-pivot.md`.
+1. **Empty state на `/water` для нелогиненного юзера** — обзор МО или CTA «Войди → увидишь свой район»?
+2. **Где живут анализы конкретного клиента** — в CRM Аквафор? В slovo-архиве? Нужно проектное решение для Phase 6.
+3. **Backend gateway** — prostor-app ходит в `slovo-api:3101` напрямую (CORS) или через `crm-back:3000` как proxy? Я голосую за **Next.js API routes как server-side proxy** — best UX + auth integration.
+4. **Где документ живёт** — этот бриф в slovo (где идёт обсуждение), но при старте Phase 4.5 frontend нужно дублировать в `prostor-app/docs/features/water-pivot.md`.
+
+**Решено:**
+- Bottom-nav layout — обычная 3-я вкладка outline-капля (FAB-стиль отвергнут разработчиком в Phase 3, см. строку 158).
+- Имя вкладки — «Вода» (Phase 3 closed).
 
 ---
 
@@ -319,7 +331,13 @@
 |---|---|---|
 | `POST /catalog/search` | Vision search в каталоге | ✅ |
 | `POST /water-analysis/similar` | Поиск похожих анализов с гео+сем фильтрами | ✅ |
-| `GET /water-analysis/heatmap` | Агрегаты для тепловой карты | ❌ Phase 4 |
+| `GET /water-analysis/heatmap` | Агрегаты для тепловой карты (22 параметра + risk) | ✅ Phase 4 |
+| `GET /water-analysis/predict` | kNN-прогноз 22 параметров + interval-first + 4-level pdkStatus + byCategory (USP-1) | ✅ Phase 4 |
+| `GET /water-analysis/depth-map` | Карта глубин скважин/колодцев + 5 aquifer-buckets (USP-4) | ✅ Phase 4 |
+| `GET /water-analysis/depth-predict` | Interval-first прогноз глубины бурения + mostLikelyAquiferLayer (USP-4) | ✅ Phase 4 |
+| `GET /water-analysis/points` | Individual анализы high-zoom (PII roundCoord 0.005°) | ✅ Phase 4 |
+| `POST /water-analysis/equipment-suggest` | Cross-domain рекомендация фильтра (USP-2 flagship) + per-problem search + reason | ✅ Phase 4 |
+| `GET /water-analysis/aquifer-stats` | Стратифицированная chemistry per aquifer layer (USP-4 deep-dive) | ✅ Phase 4 |
 
 ### Стек prostor-app (без изменений)
 

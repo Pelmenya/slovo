@@ -19,6 +19,21 @@ const REDACT_PATHS = [
     // PR8 — image upload base64. Если когда-то включим req.body
     // в pino-http serializers — 5MB base64 не должно засорять log store.
     'req.body.imageBase64',
+    // Phase 4 water-analysis (8 мая 2026): координаты юзера попадают в pino-http
+    // access logs через req.url (query params) и req.body (для POST). При scaling
+    // на DE/US это нарушение 152-ФЗ — house-level точность позволяет идентифицировать
+    // субъекта данных. Redact ловит лимитированно (only known paths) — но для
+    // /water-analysis/predict, /depth-predict, /equipment-suggest, /points все 4
+    // координатных поля учтены. Полная защита через custom serializer.req если
+    // потребуется (см. tech-debt).
+    'req.body.lat',
+    'req.body.lon',
+    'req.query.lat',
+    'req.query.lon',
+    'req.query.west',
+    'req.query.south',
+    'req.query.east',
+    'req.query.north',
     '*.apiKey',
     '*.secret',
 ];

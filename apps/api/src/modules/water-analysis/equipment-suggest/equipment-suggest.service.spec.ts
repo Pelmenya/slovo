@@ -1437,9 +1437,11 @@ describe('EquipmentSuggestService', () => {
                 }),
             );
 
+            // Generic message клиенту чтобы не раскрывать internals (Flowise backend
+            // + имя store). Detail логируется через logger.error на сервере.
             await expect(service.suggest(buildDto())).rejects.toMatchObject({
                 status: 503,
-                message: expect.stringMatching(/Document Store "catalog-aquaphor" not found/),
+                message: 'Подбор оборудования временно недоступен',
             });
         });
     });
