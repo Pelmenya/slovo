@@ -165,7 +165,7 @@
 
 **Pivot 8 мая 2026:** делаем **backend-first** — без real data фронт-дизайн уходит в воздух. Frontend production отложен в Phase 4.5 после закрытия 4.A. Прототип `prostor-heatmap-mobile-standalone.html` остаётся reference, точечно подгоним под реальные данные когда они будут.
 
-**Итог:** все 6 endpoints Tier 1 (4.A) + 1 endpoint Tier 2 (4.B.6 aquifer-stats) закрыты за один день. 997 unit-тестов зелёные (60 test suites). 4 USP-фичи реализованы, 4 интеллектуальные доработки (severity-4 / per-problem search / reason / byCategory) добавлены поверх базы.
+**Итог:** все 6 endpoints Tier 1 (4.A) + 1 endpoint Tier 2 (4.B.6 aquifer-stats) закрыты за один день. 1101 unit-тест зелёные (64 test suites). 4 USP-фичи реализованы, 4 интеллектуальные доработки (severity-4 / per-problem search / reason / byCategory) добавлены поверх базы.
 
 #### USP-фичи — что отличает PROSTOR от любого магазина фильтров
 

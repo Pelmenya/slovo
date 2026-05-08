@@ -29,7 +29,6 @@ import type { PointsResponseDto } from './dto/points.response.dto';
 // =============================================================================
 
 type TPointRow = {
-    order_number: string;
     intake_type: string;
     depth_meters: number | null;
     sample_date: Date;
@@ -82,7 +81,6 @@ describe('PointsService', () => {
 
     function buildRow(overrides: Partial<TPointRow> = {}): TPointRow {
         return {
-            order_number: 'A-12345',
             intake_type: 'well',
             depth_meters: 45,
             sample_date: new Date('2024-06-15T09:00:00.000Z'),
@@ -161,8 +159,10 @@ describe('PointsService', () => {
     describe('truncated flag', () => {
         it('rows.length > limit → truncated=true + slice(limit)', async () => {
             // limit=10 → fetch=11. Возвращаем 11 rows → truncated=true, features.length=10.
+            // Используем locality как identifier чтобы проверить порядок (orderNumber
+            // удалён из response из-за PII risk — security-auditor 2026-05-08).
             const rows = Array.from({ length: 11 }, (_, i) =>
-                buildRow({ order_number: `A-${String(i)}` }),
+                buildRow({ locality: `City-${String(i)}` }),
             );
             prisma.$queryRaw.mockResolvedValueOnce(rows);
 
@@ -172,25 +172,25 @@ describe('PointsService', () => {
             expect(res.features).toHaveLength(10);
             expect(res.count).toBe(10);
             expect(res.limit).toBe(10);
-            // Берём первые 10 — order_number'ы 0..9.
-            expect(res.features.map((f) => f.properties.orderNumber)).toEqual([
-                'A-0',
-                'A-1',
-                'A-2',
-                'A-3',
-                'A-4',
-                'A-5',
-                'A-6',
-                'A-7',
-                'A-8',
-                'A-9',
+            // Берём первые 10 — locality'и 0..9.
+            expect(res.features.map((f) => f.properties.locality)).toEqual([
+                'City-0',
+                'City-1',
+                'City-2',
+                'City-3',
+                'City-4',
+                'City-5',
+                'City-6',
+                'City-7',
+                'City-8',
+                'City-9',
             ]);
         });
 
         it('rows.length === limit → truncated=false (граница: не сработал LIMIT+1)', async () => {
             // Если в БД ровно 10 точек и limit=10, fetch=11 вернул 10 → нечего truncate.
             const rows = Array.from({ length: 10 }, (_, i) =>
-                buildRow({ order_number: `A-${String(i)}` }),
+                buildRow({ locality: `City-${String(i)}` }),
             );
             prisma.$queryRaw.mockResolvedValueOnce(rows);
 
@@ -203,7 +203,7 @@ describe('PointsService', () => {
 
         it('rows.length < limit → truncated=false', async () => {
             const rows = Array.from({ length: 3 }, (_, i) =>
-                buildRow({ order_number: `A-${String(i)}` }),
+                buildRow({ locality: `City-${String(i)}` }),
             );
             prisma.$queryRaw.mockResolvedValueOnce(rows);
 
@@ -498,12 +498,14 @@ describe('PointsService', () => {
             expect(f.type).toBe('Feature');
             expect(f.geometry.type).toBe('Point');
             expect(f.geometry.coordinates).toHaveLength(2);
-            expect(f.properties.orderNumber).toBe('A-12345');
             expect(f.properties.intakeType).toBe('well');
             expect(f.properties.depthMeters).toBe(45);
             expect(f.properties.region).toBe('Московская область');
             expect(f.properties.locality).toBe('Раменское');
             expect(typeof f.properties.params).toBe('object');
+            // Проверяем что orderNumber НЕ выходит наружу — это PII join-key
+            // к Bitrix24/CRM-aqua, удалён в security-fix 2026-05-08.
+            expect((f.properties as unknown as Record<string, unknown>).orderNumber).toBeUndefined();
         });
 
         it("sample_date.toISOString().slice(0, 10) → 'YYYY-MM-DD'", async () => {
@@ -739,7 +741,7 @@ describe('PointsService', () => {
 
         it('count === features.length всегда (даже при truncated)', async () => {
             const rows = Array.from({ length: 11 }, (_, i) =>
-                buildRow({ order_number: `A-${String(i)}` }),
+                buildRow({ locality: `City-${String(i)}` }),
             );
             prisma.$queryRaw.mockResolvedValueOnce(rows);
             const res = await service.query(buildDto({ limit: 10 }));

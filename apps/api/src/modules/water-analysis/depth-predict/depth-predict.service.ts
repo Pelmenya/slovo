@@ -12,6 +12,14 @@ import {
     DEPTH_PREDICT_REDIS_TOKEN,
     type TDepthPredictIntakeFilter,
 } from '../water-analysis.constants';
+import {
+    ageInYears,
+    computeMostLikelyAquiferLayer,
+    medianOfDistances,
+    percentile,
+    roundTo,
+    stringifyError,
+} from '../_shared';
 import type { DepthPredictQueryDto } from './dto/depth-predict.request.dto';
 import type {
     AquiferLayerCountDto,
@@ -49,25 +57,27 @@ export class DepthPredictService {
         const intakeType: TDepthPredictIntakeFilter = dto.intakeType ?? 'well';
         const cacheKey = buildCacheKey(dto.lat, dto.lon, k, radiusKm, intakeType);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         const rows = await this.fetchNeighbors(dto.lat, dto.lon, radiusKm, k, intakeType);
         const timeTakenMs = Date.now() - t0;
 
         const today = new Date();
         const estimate = computeDepthEstimate(rows, today);
         const layerDistribution = computeLayerDistribution(rows);
-        const aquiferLayer = computeMostLikelyAquiferLayer(rows);
+        const aquiferLayer = computeMostLikelyAquiferLayer(rows.map((r) => r.depth));
 
         const response: DepthPredictResponseDto = {
             predicted: estimate,
             layerDistribution,
             nNeighbors: rows.length,
-            medianDistKm: roundTo(medianOfDistances(rows), 2),
+            medianDistKm: roundTo(medianOfDistances(rows.map((r) => r.dist_km)), 2),
             intakeType,
             radiusKm,
             insufficientData: estimate === null,
@@ -78,9 +88,8 @@ export class DepthPredictService {
             response.mostLikelyAquiferLayer = aquiferLayer;
         }
 
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed */
-        });
+        // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
@@ -159,8 +168,6 @@ type TNeighborRow = {
     dist_km: number;
 };
 
-const AQUIFER_MIN_NEIGHBORS = 3;
-
 /**
  * Interval-валюированный прогноз. null если нет соседей с глубиной.
  */
@@ -217,41 +224,6 @@ function computeLayerDistribution(rows: TNeighborRow[]): AquiferLayerCountDto[] 
     });
 }
 
-function computeMostLikelyAquiferLayer(rows: TNeighborRow[]): string | undefined {
-    if (rows.length < AQUIFER_MIN_NEIGHBORS) return undefined;
-    const sorted = rows.map((r) => r.depth).sort((a, b) => a - b);
-    const median = percentile(sorted, 0.5);
-    const layer = AQUIFER_LAYERS.find((l) => median >= l.min && median < l.max);
-    return layer?.label;
-}
-
-function percentile(sorted: number[], p: number): number {
-    if (sorted.length === 0) return Number.NaN;
-    if (sorted.length === 1) return sorted[0];
-    const idx = (sorted.length - 1) * p;
-    const lo = Math.floor(idx);
-    const hi = Math.ceil(idx);
-    if (lo === hi) return sorted[lo];
-    return sorted[lo] * (hi - idx) + sorted[hi] * (idx - lo);
-}
-
-function medianOfDistances(rows: TNeighborRow[]): number {
-    if (rows.length === 0) return 0;
-    const sorted = rows.map((r) => r.dist_km).sort((a, b) => a - b);
-    return percentile(sorted, 0.5);
-}
-
-function ageInYears(today: Date, sampleDate: Date): number {
-    const ms = today.getTime() - sampleDate.getTime();
-    return ms / (1000 * 60 * 60 * 24 * 365.25);
-}
-
-function roundTo(value: number, digits: number): number {
-    if (!Number.isFinite(value)) return 0;
-    const factor = Math.pow(10, digits);
-    return Math.round(value * factor) / factor;
-}
-
 function buildCacheKey(
     lat: number,
     lon: number,
@@ -261,9 +233,4 @@ function buildCacheKey(
 ): string {
     const r = (n: number): string => n.toFixed(3);
     return `depth-predict:${intakeType}:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }

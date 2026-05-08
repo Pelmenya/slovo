@@ -13,7 +13,7 @@ import { EquipmentSuggestService } from './equipment-suggest.service';
 // EquipmentSuggestController — тонкий слой:
 //   1. delegation на service.suggest
 //   2. возврат результата as-is (Promise<EquipmentSuggestResponseDto>)
-//   3. @Throttle metadata (limit=30, ttl=60_000)
+//   3. @Throttle metadata (limit=10, ttl=60_000)
 //   4. @HttpCode(HttpStatus.OK = 200) metadata
 //
 // Валидация DTO (lat/lon/topK) проверяется в e2e через ValidationPipe.
@@ -94,7 +94,9 @@ describe('EquipmentSuggestController', () => {
         const ttl = Reflect.getMetadata('THROTTLER:TTLdefault', handler) as unknown;
 
         expect(limit).toBe(EQUIPMENT_SUGGEST_THROTTLE_LIMIT);
-        expect(limit).toBe(30);
+        // Hardcoded sanity — security-auditor 2026-05-08: 30→10 для budget cap
+        // на Flowise×3 fanout. Смена константы должна осознанно сломать тест.
+        expect(limit).toBe(10);
         expect(ttl).toBe(EQUIPMENT_SUGGEST_THROTTLE_TTL_MS);
         expect(ttl).toBe(60_000);
     });

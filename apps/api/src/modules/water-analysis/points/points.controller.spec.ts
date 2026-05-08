@@ -50,7 +50,6 @@ describe('PointsController', () => {
                     type: 'Feature',
                     geometry: { type: 'Point', coordinates: [37.625, 55.755] },
                     properties: {
-                        orderNumber: 'A-12345',
                         intakeType: 'well',
                         depthMeters: 45,
                         sampleDate: '2024-06-15',

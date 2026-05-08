@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@slovo/database';
 import type Redis from 'ioredis';
@@ -9,6 +9,7 @@ import {
     GRID_DEFAULT_DEG,
     type TDepthMapIntakeFilter,
 } from '../water-analysis.constants';
+import { roundTo, stringifyError, validateBbox } from '../_shared';
 import type { DepthMapQueryDto } from './dto/depth-map.request.dto';
 import type {
     AquiferLayerCountDto,
@@ -46,12 +47,14 @@ export class DepthMapService {
         const intakeType = dto.intakeType ?? 'all';
         const cacheKey = buildCacheKey(intakeType, dto.west, dto.south, dto.east, dto.north, grid);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         const rows = await this.runQuery(intakeType, dto, grid);
         const timeTakenMs = Date.now() - t0;
 
@@ -65,9 +68,8 @@ export class DepthMapService {
             cached: false,
         };
 
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed */
-        });
+        // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
@@ -127,9 +129,13 @@ export class DepthMapService {
                 SUM(CASE WHEN intake_type = 'well' THEN 1 ELSE 0 END)::int AS well_count
             FROM extracted
             GROUP BY cell_lon, cell_lat
-            HAVING COUNT(*) >= 1
+            HAVING COUNT(*) >= 3
         `;
     }
+    // ^^^ HAVING >= 3: 3-anonymity guard для drilling-данных. Глубина+coord
+    // даёт participant fingerprint участка; security-auditor 2026-05-08 указал
+    // что count=1-2 пропускают идентификацию даже при grid 0.02°. Cells <3
+    // молча пропускаются (UI: пустая зона).
 
     /**
      * Prisma.Sql фрагмент для intake_type фильтра. Возвращается как готовый
@@ -186,27 +192,6 @@ type TRawRow = {
     layer_artesian: number;
     well_count: number;
 };
-
-function validateBbox(dto: DepthMapQueryDto): void {
-    if (dto.west >= dto.east) {
-        throw new BadRequestException(
-            `bbox.west (${dto.west}) должен быть < bbox.east (${dto.east})`,
-        );
-    }
-    if (dto.south >= dto.north) {
-        throw new BadRequestException(
-            `bbox.south (${dto.south}) должен быть < bbox.north (${dto.north})`,
-        );
-    }
-    const lonSpan = dto.east - dto.west;
-    const latSpan = dto.north - dto.south;
-    if (lonSpan > 60 || latSpan > 30) {
-        throw new BadRequestException(
-            `bbox слишком большой (lon ${lonSpan.toFixed(1)}°, lat ${latSpan.toFixed(1)}°). ` +
-                `Максимум 60° lon × 30° lat.`,
-        );
-    }
-}
 
 function buildCacheKey(
     intakeType: TDepthMapIntakeFilter,
@@ -271,13 +256,3 @@ function mapRowsToFeatures(rows: TRawRow[]): DepthMapFeatureDto[] {
     });
 }
 
-function roundTo(value: number, digits: number): number {
-    if (!Number.isFinite(value)) return 0;
-    const factor = Math.pow(10, digits);
-    return Math.round(value * factor) / factor;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
-}

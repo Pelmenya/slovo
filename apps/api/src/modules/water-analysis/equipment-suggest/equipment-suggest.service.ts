@@ -12,9 +12,12 @@ import type Redis from 'ioredis';
 import {
     EQUIPMENT_SUGGEST_CACHE_TTL_SECONDS,
     EQUIPMENT_SUGGEST_DEFAULT_TOP_K,
+    EQUIPMENT_SUGGEST_MAX_PROBLEM_QUERIES,
+    EQUIPMENT_SUGGEST_PER_PROBLEM_K,
     EQUIPMENT_SUGGEST_REDIS_TOKEN,
     FLOWISE_CLIENT_TOKEN,
 } from '../water-analysis.constants';
+import { stringifyError } from '../_shared';
 import { PredictService } from '../predict/predict.service';
 import type { TPdkStatus } from '../predict/dto/predict.response.dto';
 import type { EquipmentSuggestRequestDto } from './dto/equipment-suggest.request.dto';
@@ -63,12 +66,14 @@ export class EquipmentSuggestService {
         const topK = dto.topK ?? EQUIPMENT_SUGGEST_DEFAULT_TOP_K;
         const cacheKey = buildCacheKey(dto.lat, dto.lon, topK);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
 
         // Step 2-3: predict + identify problems
         const prediction = await this.predictService.predict({
@@ -87,9 +92,8 @@ export class EquipmentSuggestService {
                 timeTakenMs: Date.now() - t0,
                 cached: false,
             };
-            this.tryCacheSet(cacheKey, response).catch(() => {
-                /* swallowed */
-            });
+            // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+            void this.tryCacheSet(cacheKey, response);
             return response;
         }
 
@@ -147,9 +151,9 @@ export class EquipmentSuggestService {
         const storeId = await this.resolveCatalogStoreId();
 
         // Ограничиваем кол-во per-problem запросов к Flowise чтобы не делать
-        // 7 round-trips при наличии 7 проблем (latency cap). Топ-3 проблемы
+        // 7 round-trips при наличии 7 проблем (latency cap). Топ-N проблем
         // (severity-ordered) обычно дают достаточно targeted variety.
-        const topProblems = problems.slice(0, MAX_PROBLEM_QUERIES);
+        const topProblems = problems.slice(0, EQUIPMENT_SUGGEST_MAX_PROBLEM_QUERIES);
 
         // Per-problem queries параллельно через Promise.all — Flowise
         // vectorstoreQuery thread-safe для read-only `query`. Sequential
@@ -166,7 +170,7 @@ export class EquipmentSuggestService {
                     ENDPOINTS.vectorstoreQuery,
                     {
                         method: 'POST',
-                        body: { storeId, query: targetedQuery, topK: PER_PROBLEM_K },
+                        body: { storeId, query: targetedQuery, topK: EQUIPMENT_SUGGEST_PER_PROBLEM_K },
                     },
                 ).then((response) => ({ docs: response.docs, problem }));
             }),
@@ -257,19 +261,9 @@ export class EquipmentSuggestService {
 }
 
 // =============================================================================
-// Per-problem catalog search constants + mapping
+// Per-problem catalog search mapping
+// (Tuning constants — в water-analysis.constants.ts: EQUIPMENT_SUGGEST_*)
 // =============================================================================
-
-// Сколько проблем (top-N severity) брать для per-problem catalog queries.
-// 3 — баланс targeted-variety и Flowise round-trip latency. Если у клиента 7
-// проблем (как в МО centre выборке) — берём 3 самые серьёзные. Остальные
-// проблемы UI покажет в `problems[]` чтобы клиент видел полную картину.
-const MAX_PROBLEM_QUERIES = 3;
-
-// Сколько top результатов из catalog забирать на каждую problem. 2 — после
-// dedup даёт обычно 4-5 уникальных рекомендаций (некоторые товары matched
-// несколькими problems, dedup убирает повторы).
-const PER_PROBLEM_K = 2;
 
 /**
  * paramCode → targeted natural-language query для catalog vector search.
@@ -459,9 +453,4 @@ function numberOr(value: unknown, fallback: number): number {
 function buildCacheKey(lat: number, lon: number, topK: number): string {
     const r = (n: number): string => n.toFixed(3);
     return `equipment-suggest:${r(lat)}:${r(lon)}:${topK}`;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }

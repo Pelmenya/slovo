@@ -8,17 +8,16 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  *
  * Risk score (0-100) рассчитан на лету по той же формуле что в /heatmap.
  *
- * Координаты обезличены до 0.005° (~500м) при rounding в service. См. memory
- * `feedback_water_heatmap_pii_strategy` — для отдельных точек защита через
- * round, для агрегатов — через минимальный grid.
+ * **PII strategy:** координаты обезличены до 0.005° (~500м) round в service +
+ * `order_number` НЕ выходит наружу из этого endpoint'а. order_number — join key
+ * к Bitrix24/CRM-aqua с PII клиента (имя, точный адрес, телефон); в комбинации
+ * с округлёнными coord становится re-identification ключом при инсайдере или
+ * утечке CRM. UI «открыть детали» — фича за authenticated endpoint после Phase 5
+ * multi-tenant (через JWT-claim-bound id, не публичный orderNumber).
+ *
+ * См. memory `feedback_water_heatmap_pii_strategy` + security-auditor 2026-05-08.
  */
 export class PointPropertiesDto {
-    @ApiProperty({
-        description: 'order_number из исходного бланка анализа. Стабильный id для UI «открыть детали».',
-        example: 'A-12345',
-    })
-    orderNumber!: string;
-
     @ApiProperty({
         description: 'Тип источника воды (well/well_dug/municipal/spring/other).',
         example: 'well',

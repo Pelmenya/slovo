@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@slovo/database';
 import type Redis from 'ioredis';
 import {
@@ -7,6 +7,7 @@ import {
     POINTS_DEFAULT_LIMIT,
     POINTS_REDIS_TOKEN,
 } from '../water-analysis.constants';
+import { stringifyError, validateBbox } from '../_shared';
 import type { PointsQueryDto } from './dto/points.request.dto';
 import type {
     PointFeatureDto,
@@ -42,12 +43,14 @@ export class PointsService {
         const limit = dto.limit ?? POINTS_DEFAULT_LIMIT;
         const cacheKey = buildCacheKey(dto.west, dto.south, dto.east, dto.north, limit);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         // LIMIT+1 чтобы определить есть ли ещё точки (для truncated флага)
         const rows = await this.fetchPoints(dto, limit + 1);
         const timeTakenMs = Date.now() - t0;
@@ -66,17 +69,17 @@ export class PointsService {
             cached: false,
         };
 
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed */
-        });
+        // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
 
     private async fetchPoints(dto: PointsQueryDto, fetchLimit: number): Promise<TPointRow[]> {
+        // order_number из БД НЕ селектим — это PII join-key к Bitrix24/CRM-aqua.
+        // См. PointPropertiesDto комментарий и security-auditor 2026-05-08.
         return this.prisma.$queryRaw<TPointRow[]>`
             SELECT
-                order_number,
                 intake_type::text AS intake_type,
                 depth_meters,
                 sample_date,
@@ -122,7 +125,6 @@ export class PointsService {
 // =============================================================================
 
 type TPointRow = {
-    order_number: string;
     intake_type: string;
     depth_meters: number | null;
     sample_date: Date;
@@ -132,27 +134,6 @@ type TPointRow = {
     lon: number;
     lat: number;
 };
-
-function validateBbox(dto: PointsQueryDto): void {
-    if (dto.west >= dto.east) {
-        throw new BadRequestException(
-            `bbox.west (${dto.west}) должен быть < bbox.east (${dto.east})`,
-        );
-    }
-    if (dto.south >= dto.north) {
-        throw new BadRequestException(
-            `bbox.south (${dto.south}) должен быть < bbox.north (${dto.north})`,
-        );
-    }
-    const lonSpan = dto.east - dto.west;
-    const latSpan = dto.north - dto.south;
-    if (lonSpan > 60 || latSpan > 30) {
-        throw new BadRequestException(
-            `bbox слишком большой (lon ${lonSpan.toFixed(1)}°, lat ${latSpan.toFixed(1)}°). ` +
-                `Максимум 60° lon × 30° lat.`,
-        );
-    }
-}
 
 function buildCacheKey(
     west: number,
@@ -179,7 +160,6 @@ function mapRowToFeature(row: TPointRow): PointFeatureDto {
     const risk = computeRisk(params);
 
     const properties: PointPropertiesDto = {
-        orderNumber: row.order_number,
         intakeType: row.intake_type,
         depthMeters: row.depth_meters,
         sampleDate: row.sample_date.toISOString().slice(0, 10),
@@ -236,9 +216,4 @@ function computeRisk(params: Record<string, number>): number | null {
         ((manganese ?? 0) / 0.1) * 25 +
         ((tds ?? 0) / 1000) * 25;
     return Math.round(Math.min(100, r));
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }

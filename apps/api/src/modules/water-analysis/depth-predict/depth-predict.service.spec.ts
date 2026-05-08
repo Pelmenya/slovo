@@ -196,10 +196,14 @@ describe('DepthPredictService', () => {
     // -----------------------------------------------------------------------
 
     describe('mostLikelyAquiferLayer', () => {
+        // Все happy-path сценарии — 5 rows (порог AQUIFER_MIN_NEIGHBORS=5,
+        // поднят с 3 в security-fix 2026-05-08 для PII hardening).
         it('median 8м → "0-15m / Верховодка"', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth: 5 }),
+                buildRow({ depth: 7 }),
                 buildRow({ depth: 8 }),
+                buildRow({ depth: 10 }),
                 buildRow({ depth: 12 }),
             ]);
             const res = await service.predict(buildDto());
@@ -209,7 +213,9 @@ describe('DepthPredictService', () => {
         it('median 30м → "15-50m / Песчаный"', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth: 20 }),
+                buildRow({ depth: 25 }),
                 buildRow({ depth: 30 }),
+                buildRow({ depth: 35 }),
                 buildRow({ depth: 40 }),
             ]);
             const res = await service.predict(buildDto());
@@ -219,7 +225,9 @@ describe('DepthPredictService', () => {
         it('median 75м → "50-100m / Песчано-известняковый"', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth: 60 }),
+                buildRow({ depth: 70 }),
                 buildRow({ depth: 75 }),
+                buildRow({ depth: 80 }),
                 buildRow({ depth: 90 }),
             ]);
             const res = await service.predict(buildDto());
@@ -229,7 +237,9 @@ describe('DepthPredictService', () => {
         it('median 150м → "100-200m / Известняковый"', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth: 120 }),
+                buildRow({ depth: 140 }),
                 buildRow({ depth: 150 }),
+                buildRow({ depth: 160 }),
                 buildRow({ depth: 180 }),
             ]);
             const res = await service.predict(buildDto());
@@ -238,24 +248,31 @@ describe('DepthPredictService', () => {
 
         it('median 250м → "200m+ / Артезианский"', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
-                buildRow({ depth: 230 }),
+                buildRow({ depth: 220 }),
+                buildRow({ depth: 240 }),
                 buildRow({ depth: 250 }),
-                buildRow({ depth: 270 }),
+                buildRow({ depth: 260 }),
+                buildRow({ depth: 280 }),
             ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBe('200m+ / Артезианский');
         });
 
-        it('< 3 соседей → mostLikelyAquiferLayer undefined (даже если depths валидные)', async () => {
+        it('< 5 соседей → mostLikelyAquiferLayer undefined (даже если depths валидные)', async () => {
+            // Порог AQUIFER_MIN_NEIGHBORS поднят с 3 до 5 в security-fix 2026-05-08
+            // для k-anonymity при kNN с малым radius.
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth: 50 }),
+                buildRow({ depth: 55 }),
                 buildRow({ depth: 60 }),
+                buildRow({ depth: 65 }),
             ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBeUndefined();
-            // predicted всё ещё не null — есть 2 соседа.
+            // predicted всё ещё не null — есть 4 соседа (interval-первый прогноз
+            // не зависит от aquifer-floor, считаем для любого ≥1).
             expect(res.predicted).not.toBeNull();
-            expect(res.predicted!.n).toBe(2);
+            expect(res.predicted!.n).toBe(4);
         });
     });
 

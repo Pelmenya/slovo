@@ -1,7 +1,7 @@
 # Анализ воды Аквафор: 15 504 бланка превращены в структурированный датасет
 
 > Executive summary для руководителя. Технические детали — `docs/features/water-analysis.md`, разведочный анализ — `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`.
-> **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (geocode + AI-verify) + 1.B (normalize) + **Phase 2 (embeddings + endpoint поиска похожих)** закрыты на 7 мая 2026. Endpoint `POST /water-analysis/similar` принимает анализ воды и за ~600 мс возвращает топ-K максимально похожих бланков из 15 504. Готов к подключению алгоритма подбора оборудования и интеграции с `prostor-app` / CRM Аквафор-Pro.
+> **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (geocode + AI-verify) + 1.B (normalize) + **Phase 2 (embeddings + endpoint поиска похожих)** + **Phase 4 backend (карта + 4 USP-фичи, 7 endpoints, 8 мая 2026)** закрыты. Endpoint `POST /water-analysis/similar` за ~600 мс возвращает топ-K похожих бланков. Поверх — карта-API: `/heatmap` (тепловая карта 22 параметров), `/predict` (прогноз химии для нового адреса БЕЗ собственного анализа — USP-1), `/depth-map` + `/depth-predict` (карта глубин и прогноз бурения для бурильщиков — USP-4), `/equipment-suggest` (рекомендация фильтра по координатам через cross-domain water→catalog — USP-2 flagship), `/aquifer-stats` (стратифицированная chemistry per водоносный горизонт). Frontend на real backend (Phase 4.5) сейчас в работе у дизайн-агента, далее — интеграция с `prostor-app`.
 
 ---
 
@@ -49,7 +49,7 @@ flowchart LR
 | **Ahunter API** | Геокодирование адресов (РФ-лицензия) | Платная подписка |
 | **PostgreSQL + PostGIS + pgvector** | Хранение, гео-поиск, будущие embeddings | Open-source |
 | **NestJS + Prisma + Docker** | Backend и инфраструктура | Open-source |
-| **TypeScript + Jest** | Нормализатор СанПиН-справочник + endpoint /water-analysis/similar; 128 unit/e2e-тестов | Open-source |
+| **TypeScript + Jest** | Нормализатор СанПиН-справочник + 7 endpoints water-analysis (Phase 2 + Phase 4); 1 101 unit-тест в 64 test suites | Open-source |
 
 ---
 
@@ -79,8 +79,10 @@ flowchart LR
 | ~~Embeddings + endpoint поиска похожих~~ | **$0.29 (сделано)** | ✅ Phase 2 закрыт 2026-05-07: 15 504 embeddings через OpenAI `text-embedding-3-large` (3072 dim) за 176 секунд, endpoint `POST /water-analysis/similar` с фильтрами region / depth / intakeType |
 | Live-запросы (новый клиент → подбор похожих анализов) | **~$0.00002/запрос** (≈0.002 ₽) | Pay-per-use, embedding запроса при поиске. На 100 000 запросов в месяц — ~200 ₽ |
 | Прод-инстанс PostgreSQL + Hetzner | **~50 €/мес** | После запуска фичи в `prostor-app` |
-| Equipment-matcher endpoint (когда специалист задаст правила) | $0 | Phase 3, требует правил «параметр воды → товары» от специалиста Аквафор |
-| Geo-фильтр по радиусу от точки клиента | $0 | Phase 2.5, при появлении prostor-app виджета (нужен конкретный UX-кейс) |
+| ~~Equipment-matcher endpoint~~ | **$0 (сделано)** | ✅ Phase 4 закрыт 2026-05-08: `/water-analysis/equipment-suggest` принимает координаты, делает kNN-прогноз химии воды + per-problem catalog vector search → возвращает targeted рекомендации с reason «Решает явное превышение по железу» |
+| ~~Карта-API (heatmap / predict / depth-map / equipment-suggest)~~ | **$0 (сделано)** | ✅ Phase 4 закрыт 2026-05-08: 7 endpoints + 4 USP-фичи готовы. Подробности — `docs/features/water-analysis.md` |
+| Frontend production карты в `prostor-app` (Phase 4.5) | $0 (своими силами) | В работе у дизайн-агента, далее интеграция в Next.js views/water-map/ |
+| Geo-фильтр по радиусу для `/similar` (старое API Phase 2) | $0 | Опциональный backlog — `/predict + /equipment-suggest` покрывают большинство use-case'ов |
 
 **Главная экономия:** все 15 504 исторических бланка распознаны единоразово — повторно платить не нужно. При росте до 50 000 бланков extraction будет стоить пропорционально (~70 000 ₽).
 
@@ -187,9 +189,14 @@ flowchart LR
 | Глубина источника (для скважин/колодцев) | 55.7% — есть только в новых шаблонах |
 | Дата отбора | 100% |
 
-### Bridge к каталогу оборудования
+### Bridge к каталогу оборудования — реализован 8 мая 2026
 
-Параллельно в slovo уже работает **vision-catalog-search** — 155 товаров Аквафор-Pro с фото, ценами, описаниями (см. `docs/management/vision-catalog-executive-summary.md`). Когда специалист определит правила соответствия «параметр воды → товар», их будет легко связать через семантический поиск на стороне vision-catalog.
+Параллельно в slovo работает **vision-catalog-search** — 155 товаров Аквафор-Pro с фото, ценами, описаниями (см. `docs/management/vision-catalog-executive-summary.md`). На Phase 4 backend связка реализована через **`POST /water-analysis/equipment-suggest`**: клиент даёт координаты → система делает kNN-прогноз химии воды (USP-1) → identifies проблемы по 4-уровневой шкале severity (safe/borderline/concerning/unsafe) → для каждой проблемы делает targeted vector search в каталог через mapping технологий (`iron_total → обезжелезиватель`, `hardness_total → умягчитель ионный обмен`, `tds → обратный осмос`, и т.д.) → возвращает 5 рекомендаций с reason «Решает явное превышение по железу».
+
+**Что нужно от специалиста по водоочистке Аквафор для дальнейшего тюнинга:**
+- Ревью PROBLEM_TO_QUERY mapping (19 пар «параметр → keywords технологии») — убедиться что фразы правильно резонируют с описаниями товаров
+- Ручной разбор 10-15 реальных кейсов: «дан анализ X — какие товары Y подходят» — для regression-теста на качество recommendations
+- Уточнение категорий товаров каталога если нужны отдельные правила для UV / pre-filter / post-filter
 
 ---
 
@@ -224,29 +231,35 @@ flowchart LR
 | Embeddings 15 504 бланков → векторный индекс | OpenAI `text-embedding-3-large` (3072 dim), Flowise Document Store с HNSW pgvector | $0.29 (29 ₽) |
 | Endpoint `POST /water-analysis/similar` | Принимает структурированный анализ + опциональные фильтры (regionContains, localityContains, depthRange, matchIntakeType), возвращает топ-K похожих за ~600 мс | $0 |
 | Throttle 60 запросов/мин/IP | Защита от перегрузки индекса при public deploy | $0 |
-| 128 unit/e2e-тестов | Контракт endpoint'а зафиксирован тестами, регрессия ловится в CI | $0 |
 
-### Phase 2.5 (отложена до prostor-app потребителя)
+### ✅ Phase 4 backend (закрыта 2026-05-08) — карта-API + 4 USP-фичи
 
-| Задача | Когда триггерится |
-|---|---|
-| Geo-фильтр по радиусу от точки клиента (`PostGIS ST_DWithin`) | Когда виджет в prostor-app появится — будет конкретный UX-кейс (radius hard-cutoff vs weighted re-rank по дистанции) |
-| Endpoint `GET /water-analysis/by-region/:region` — статистика воды в районе | Когда понадобится региональная аналитика на витрине |
+| Что сделано | Что даёт | Затраты |
+|---|---|---:|
+| `GET /heatmap` (агрегаты) | Тепловая карта 22 параметров + risk-score через PostGIS bbox+grid (sub-100мс на МО) — фундамент карты в prostor-app | $0 |
+| `GET /predict` (USP-1) | kNN-прогноз 22 параметров химии воды для **нового адреса БЕЗ собственного анализа**. Interval-first (3 уровня уверенности) + 4-level severity (safe/borderline/concerning/unsafe) | $0 |
+| `GET /depth-map` + `GET /depth-predict` (USP-4) | Карта глубин скважин/колодцев + прогноз глубины бурения для нового участка. Аудитория — бурильщики/копатели/гидрогеологи. Coverage 7 884 well + 742 well_dug | $0 |
+| `POST /equipment-suggest` (USP-2 flagship) | Рекомендация фильтра по координатам — cross-domain water→catalog. Per-problem search через mapping технологий, returns matched problem + reason | $0 |
+| `GET /points` + `GET /aquifer-stats` | Individual анализы на high-zoom + стратифицированная chemistry per водоносный горизонт (5 buckets) | $0 |
+| 1101 unit-тест в 64 test suites | Контракт всех endpoints зафиксирован тестами, регрессия ловится в CI | $0 |
+| PII hardening | Координаты обезличены до 0.005°, минимальный grid 0.02°, 5-anonymity для drilling-данных, throttle per-endpoint | $0 |
+
+### Что в работе
+
+**Phase 4.5 frontend** — prostor-app карта на real backend. Дизайн делается через claude design (handoff promt в `docs/management/water-map-design-prompt.md`), интеграция в Next.js views/water-map/. ETA ~5-7 дней.
 
 ### Что нужно от Аквафор (бизнес-сторона)
 
-- **Специалист по водоочистке** — определит правила «параметр воды (или комбинация) → подходящие товары/услуги» на основе данных датасета и знания продуктов. Без этого алгоритм подбора построить нельзя.
-- Доступ к каталогу товаров Аквафор-Pro для bridge с vision-catalog (часть товаров уже в нашей БД, нужны regularupdate).
-- Согласование где встраивать (виджет в `prostor-app` / CRM-карточка / админ-аналитика).
+- **Специалист по водоочистке** — ревью PROBLEM_TO_QUERY mapping (19 пар «параметр → технология»), 10-15 реальных кейсов «анализ → товары» для regression-теста качества recommendations. Алгоритм работает, нужен ручной валидационный sign-off.
+- Согласование где встраивать UI (виджет в `prostor-app` / CRM-карточка / админ-аналитика — карта-first позиционирование уже в `docs/features/prostor-water-pivot.md`).
 
-### Phase 3 (после правил подбора)
+### Backlog (опционально)
 
-- Интеграция с `prostor-app` (виджет «загрузите анализ — увидите похожие случаи и рекомендуемое оборудование»)
-- Интеграция с CRM Аквафор-Pro (карточка клиента видит автоматическую подсказку)
-- Региональная аналитика (карта МО с heatmap по жёсткости/железу/etc.)
+- **Geo-фильтр для `/similar` (Phase 2.5)** — `/predict + /equipment-suggest` покрывают большинство use-case'ов; geo-radius для similar остаётся на CRM-aqua dealer-side истории
+- **Real-time webhooks** — авто-ingest нового анализа из CRM в водо-БД и embedding-индекс
 
 ---
 
 ## Резюме одной фразой
 
-**15 504 бланка анализов воды Аквафор-Pro за 2020-2026 год превращены в структурированный датасет с географической привязкой и векторным индексом; 97% качество нормализации, 93% end-to-end accuracy, 95.9% Mg coverage (с 99.8% в свежих 2024-2026 после pdftotext rescue); стоимость extraction + embeddings ≥ 23 779 ₽ (Anthropic ~21 750 + Ahunter ≥ 2 000 + OpenAI 29 ₽); готов endpoint `POST /water-analysis/similar` отдающий за ~600 мс топ-K похожих с опциональными фильтрами по региону / глубине / типу источника; ждём правил подбора оборудования от специалиста по водоочистке Аквафор.**
+**15 504 бланка анализов воды Аквафор-Pro за 2020-2026 год превращены в структурированный датасет с географической привязкой, векторным индексом и 7 production-API endpoints для prostor-app карты (4 USP-фичи: прогноз химии нового адреса БЕЗ анализа, рекомендация фильтра по координатам, прогноз глубины бурения, стратифицированная chemistry per водоносный горизонт); 97% качество нормализации, 93% end-to-end accuracy, 95.9% Mg coverage (99.8% в свежих 2024-2026 после pdftotext rescue); стоимость extraction + embeddings ≥ 23 779 ₽; 1101 unit-тест зелёные; следующий шаг — frontend production карты в prostor-app (Phase 4.5) и ручной валидационный sign-off PROBLEM_TO_QUERY mapping от специалиста по водоочистке Аквафор.**

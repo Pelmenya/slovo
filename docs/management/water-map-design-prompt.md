@@ -216,7 +216,6 @@
     "type": "Feature",
     "geometry": { "type": "Point", "coordinates": [37.275, 55.67] },  // обезличены до 0.005°
     "properties": {
-      "orderNumber": "22618",
       "intakeType": "well",
       "depthMeters": 120,
       "sampleDate": "2026-04-29",

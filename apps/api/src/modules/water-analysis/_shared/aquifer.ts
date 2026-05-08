@@ -8,9 +8,10 @@ import { percentile } from './math';
 // =============================================================================
 
 /** Минимальное число соседей с известной depth для определения most-likely
- *  aquifer layer. <3 → undefined (мало данных, не показываем чтобы не вводить
- *  в заблуждение). */
-export const AQUIFER_MIN_NEIGHBORS = 3;
+ *  aquifer layer. <5 → undefined (мало данных, не показываем чтобы не вводить
+ *  в заблуждение И не давать k=3 single-property fingerprint при kNN
+ *  с малым radius — security-auditor 2026-05-08 PII hardening). */
+export const AQUIFER_MIN_NEIGHBORS = 5;
 
 /**
  * Most-likely aquifer layer по медиане глубин соседей. Возвращает label

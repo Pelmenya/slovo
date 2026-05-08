@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@slovo/database';
 import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import { Prisma } from '@prisma/client';
@@ -9,6 +9,7 @@ import {
     HEATMAP_REDIS_TOKEN,
     type THeatmapParam,
 } from '../water-analysis.constants';
+import { roundTo, stringifyError, validateBbox } from '../_shared';
 import type { HeatmapQueryDto } from './dto/heatmap.request.dto';
 import type {
     HeatmapFeatureDto,
@@ -54,12 +55,17 @@ export class HeatmapService {
         const resolvedPdk = resolvePdk(param);
         const cacheKey = buildCacheKey(param, dto.west, dto.south, dto.east, dto.north, grid);
 
+        // t0 ловим до cache GET — на cache-hit получим honest «сколько user
+        // ждал» (включая Redis GET round-trip), не закешированное старое
+        // SQL-время. Иначе observability показывает misleading «100мс» когда
+        // реально 1мс из cache.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         const rows = await this.runQuery(param, dto, grid, resolvedPdk);
         const timeTakenMs = Date.now() - t0;
 
@@ -74,12 +80,11 @@ export class HeatmapService {
             cached: false,
         };
 
-        // Cache asynchronously — если Redis сейчас лежит, не блокируем response.
-        // Errors молча проглатываются (см. tryCacheSet) — observability через
-        // отдельный health-check Redis (memory `project_tech_debt` Redis-pool tuning).
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed in tryCacheSet */
-        });
+        // Cache asynchronously — fire-and-forget. tryCacheSet логирует ошибки
+        // через warn внутри (см. _shared/redis-provider rationale + ниже).
+        // `void` явно signals «не ждём результата», observability через
+        // отдельный health-check Redis (memory `project_tech_debt`).
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
@@ -296,30 +301,6 @@ function resolvePdk(param: THeatmapParam): TResolvedPdk {
     };
 }
 
-function validateBbox(dto: HeatmapQueryDto): void {
-    if (dto.west >= dto.east) {
-        throw new BadRequestException(
-            `bbox.west (${dto.west}) должен быть < bbox.east (${dto.east})`,
-        );
-    }
-    if (dto.south >= dto.north) {
-        throw new BadRequestException(
-            `bbox.south (${dto.south}) должен быть < bbox.north (${dto.north})`,
-        );
-    }
-    // Sanity-cap: bbox не больше ~half-globe (~180° lon × 90° lat). Защита от
-    // случайного fetch всей БД при опечатке. Реальный prostor-app шлёт МО
-    // bbox ~2-3° × 2°, желаем-cap.
-    const lonSpan = dto.east - dto.west;
-    const latSpan = dto.north - dto.south;
-    if (lonSpan > 60 || latSpan > 30) {
-        throw new BadRequestException(
-            `bbox слишком большой (lon ${lonSpan.toFixed(1)}°, lat ${latSpan.toFixed(1)}°). ` +
-                `Максимум 60° lon × 30° lat — для overview всей РФ хватит.`,
-        );
-    }
-}
-
 function buildCacheKey(
     param: THeatmapParam,
     west: number,
@@ -379,9 +360,9 @@ function mapRowsToFeatures(
             properties: {
                 param,
                 count: row.count,
-                mean: roundToDigits(row.mean, 4),
-                median: roundToDigits(row.median, 4),
-                p75: roundToDigits(row.p75, 4),
+                mean: roundTo(row.mean, 4),
+                median: roundTo(row.median, 4),
+                p75: roundTo(row.p75, 4),
                 exceedsCount: row.exceeds_count,
                 exceedsPct,
                 status,
@@ -411,15 +392,5 @@ function statusFor(median: number, pdk: TResolvedPdk, isRisk: boolean): THeatmap
     if (ratio <= 1) return 'good';
     if (ratio <= 2) return 'mid';
     return 'bad';
-}
-
-function roundToDigits(value: number, digits: number): number {
-    const factor = Math.pow(10, digits);
-    return Math.round(value * factor) / factor;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }
 

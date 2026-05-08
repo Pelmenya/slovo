@@ -3,7 +3,6 @@ import { PrismaService } from '@slovo/database';
 import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
 import {
-    AQUIFER_LAYERS,
     PREDICT_CACHE_TTL_SECONDS,
     PREDICT_DEFAULT_K,
     PREDICT_DEFAULT_RADIUS_KM,
@@ -11,6 +10,15 @@ import {
     PREDICT_RECENCY_HALF_LIFE_YEARS,
     PREDICT_REDIS_TOKEN,
 } from '../water-analysis.constants';
+import {
+    ageInYears,
+    computeMostLikelyAquiferLayer,
+    medianOfDistances,
+    percentile,
+    roundTo,
+    stringifyError,
+    weightedMean,
+} from '../_shared';
 import type { PredictQueryDto } from './dto/predict.request.dto';
 import type {
     ParamIntervalDto,
@@ -31,7 +39,7 @@ import type {
 //   3. TS aggregation: для каждого paramCode (22 canonical) — extract numeric
 //      values из jsonb, compute distance+recency weighted average + P10/P90
 //      percentile interval из той же выборки.
-//   4. Bonus drilling: если ≥3 соседей-wells/well_dug имели depth — определяем
+//   4. Bonus drilling: если ≥5 соседей-wells/well_dug имели depth — определяем
 //      mostLikelyAquiferLayer по медиане их глубин.
 //   5. Cache set с TTL 5 мин.
 //
@@ -59,12 +67,14 @@ export class PredictService {
         const radiusKm = dto.radiusKm ?? PREDICT_DEFAULT_RADIUS_KM;
         const cacheKey = buildCacheKey(dto.lat, dto.lon, k, radiusKm);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         const rows = await this.fetchNeighbors(dto.lat, dto.lon, radiusKm, k);
         const timeTakenMs = Date.now() - t0;
 
@@ -72,13 +82,13 @@ export class PredictService {
         const aggregated = aggregateNeighbors(rows, today);
         const predicted = buildPredictedRecord(aggregated);
         const byCategory = buildByCategory(predicted);
-        const aquiferLayer = computeMostLikelyAquiferLayer(rows);
+        const aquiferLayer = computeMostLikelyAquiferLayer(extractAquiferDepths(rows));
 
         const response: PredictResponseDto = {
             predicted,
             byCategory,
             nNeighbors: rows.length,
-            medianDistKm: roundTo(medianOfDistances(rows), 2),
+            medianDistKm: roundTo(medianOfDistances(rows.map((r) => r.dist_km)), 2),
             radiusKm,
             insufficientData: rows.length === 0,
             timeTakenMs,
@@ -88,9 +98,8 @@ export class PredictService {
             response.mostLikelyAquiferLayer = aquiferLayer;
         }
 
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed */
-        });
+        // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
@@ -331,16 +340,16 @@ function evaluatePdkStatus(
 }
 
 // =============================================================================
-// Drilling bonus: most-likely aquifer layer
+// Drilling bonus: filter rows → depths для shared computeMostLikelyAquiferLayer
 // =============================================================================
 
-// Минимальное число соседей-скважин с известной глубиной для определения
-// mostLikelyAquiferLayer. <3 → undefined (мало данных, не показываем чтобы не
-// дезинформировать клиента). AQUIFER_LAYERS — shared в `water-analysis.constants.ts`.
-const AQUIFER_MIN_NEIGHBORS = 3;
-
-function computeMostLikelyAquiferLayer(rows: TNeighborRow[]): string | undefined {
-    const depths = rows
+/**
+ * Извлекает глубины wells/well_dug соседей. Shared aquifer-helper принимает
+ * уже отфильтрованный depths[] — фильтр intake_type/finite живёт здесь
+ * (predict-специфичный, у depth-predict SQL уже фильтрует на BD-уровне).
+ */
+function extractAquiferDepths(rows: readonly TNeighborRow[]): number[] {
+    return rows
         .filter(
             (r) =>
                 (r.intake_type === 'well' || r.intake_type === 'well_dug') &&
@@ -348,59 +357,6 @@ function computeMostLikelyAquiferLayer(rows: TNeighborRow[]): string | undefined
                 Number.isFinite(r.depth_meters),
         )
         .map((r) => r.depth_meters as number);
-
-    if (depths.length < AQUIFER_MIN_NEIGHBORS) return undefined;
-
-    const sorted = [...depths].sort((a, b) => a - b);
-    const median = percentile(sorted, 0.5);
-    const layer = AQUIFER_LAYERS.find((l) => median >= l.min && median < l.max);
-    return layer?.label;
-}
-
-// =============================================================================
-// Math helpers
-// =============================================================================
-
-function weightedMean(values: number[], weights: number[]): number {
-    let sumWv = 0;
-    let sumW = 0;
-    for (let i = 0; i < values.length; i++) {
-        sumWv += values[i] * weights[i];
-        sumW += weights[i];
-    }
-    if (sumW === 0) return Number.NaN;
-    return sumWv / sumW;
-}
-
-/**
- * Linear-interpolation percentile из sorted array. p ∈ [0, 1].
- * Возвращает NaN на пустом массиве (caller filtrует).
- */
-function percentile(sorted: number[], p: number): number {
-    if (sorted.length === 0) return Number.NaN;
-    if (sorted.length === 1) return sorted[0];
-    const idx = (sorted.length - 1) * p;
-    const lo = Math.floor(idx);
-    const hi = Math.ceil(idx);
-    if (lo === hi) return sorted[lo];
-    return sorted[lo] * (hi - idx) + sorted[hi] * (idx - lo);
-}
-
-function medianOfDistances(rows: TNeighborRow[]): number {
-    if (rows.length === 0) return 0;
-    const sorted = rows.map((r) => r.dist_km).sort((a, b) => a - b);
-    return percentile(sorted, 0.5);
-}
-
-function ageInYears(today: Date, sampleDate: Date): number {
-    const ms = today.getTime() - sampleDate.getTime();
-    return ms / (1000 * 60 * 60 * 24 * 365.25);
-}
-
-function roundTo(value: number, digits: number): number {
-    if (!Number.isFinite(value)) return 0;
-    const factor = Math.pow(10, digits);
-    return Math.round(value * factor) / factor;
 }
 
 // Cache key округление координат до 0.001° (~111м lat / ~64м lon на 55°).
@@ -409,9 +365,4 @@ function roundTo(value: number, digits: number): number {
 function buildCacheKey(lat: number, lon: number, k: number, radiusKm: number): string {
     const r = (n: number): string => n.toFixed(3);
     return `predict:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }

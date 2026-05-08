@@ -296,14 +296,20 @@ export const POINTS_COORD_ROUND_GRID = 200; // 1° / 200 = 0.005°
 // (`pdkStatus IN ('borderline', 'unsafe')`) → build natural-language query →
 // catalog vector search.
 //
-// Throttle 30/min/IP — mid-cost endpoint (1 predict + 1 catalog search ≈
-// 100-300мс), и use-case узкий (клиент 1-3 запроса при выборе оборудования).
+// Throttle 10/min/IP — обусловлен **budget-amplification** риском (security-auditor
+// 2026-05-08): один cache-miss request = 1 predict SQL + 3 параллельных Flowise
+// vectorstoreQuery × OpenAI text-embedding-3-large. На rotating cache-key (lat
+// 3-знака × lon 3-знака × topK = 20 000 уникальных за 1° квадрат) атакующий
+// тратит ~$1.6/IP/cycle. С 30/min ушло бы ~$160/час на сотне IP, с 10/min ~$53.
+// Legitimate use-case (клиент выбирает фильтр) укладывается в 1-3 запроса/мин.
+// Прежний throttle 30/min изначально ставился без учёта Promise.all-fanout.
+//
 // Cache TTL 10 мин — короче чем predict (5min) потому что зависит от двух
 // stale sources (water archive + catalog), но дольше чем чистый predict
 // смысла нет — координаты не дублируются массово.
 // =============================================================================
 
-export const EQUIPMENT_SUGGEST_THROTTLE_LIMIT = 30;
+export const EQUIPMENT_SUGGEST_THROTTLE_LIMIT = 10;
 export const EQUIPMENT_SUGGEST_THROTTLE_TTL_MS = 60_000;
 export const EQUIPMENT_SUGGEST_CACHE_TTL_SECONDS = 10 * 60;
 export const EQUIPMENT_SUGGEST_REDIS_TOKEN = Symbol('WATER_ANALYSIS_EQUIPMENT_SUGGEST_REDIS');
@@ -311,6 +317,18 @@ export const EQUIPMENT_SUGGEST_REDIS_TOKEN = Symbol('WATER_ANALYSIS_EQUIPMENT_SU
 export const EQUIPMENT_SUGGEST_DEFAULT_TOP_K = 5;
 export const EQUIPMENT_SUGGEST_MIN_TOP_K = 1;
 export const EQUIPMENT_SUGGEST_MAX_TOP_K = 20;
+
+// Per-problem catalog search tuning. Сколько проблем (top-N severity) брать
+// для отдельных targeted queries и сколько top результатов из каждой problem.
+// Произведение MAX_PROBLEM_QUERIES × PER_PROBLEM_K = budget-cap на Flowise
+// vectorstoreQuery round-trips per request (security-auditor 2026-05-08:
+// raw 30/min × 3 queries = 90/min; теперь 10/min × 3 = 30/min).
+//
+// MAX_PROBLEM_QUERIES=3 — баланс targeted-variety и Flowise round-trip latency
+// (3 параллельных через Promise.all ≈ ~600ms wall-clock vs 1.8s sequential).
+// PER_PROBLEM_K=2 — после dedup даёт обычно 4-5 уникальных рекомендаций.
+export const EQUIPMENT_SUGGEST_MAX_PROBLEM_QUERIES = 3;
+export const EQUIPMENT_SUGGEST_PER_PROBLEM_K = 2;
 
 // =============================================================================
 // Aquifer-stats endpoint (4.B.6 USP-4 deep-dive) — стратифицированная статистика

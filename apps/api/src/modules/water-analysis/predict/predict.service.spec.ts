@@ -252,6 +252,8 @@ describe('PredictService', () => {
     // -----------------------------------------------------------------------
 
     describe('mostLikelyAquiferLayer', () => {
+        // Все happy-path сценарии — 5 wells (порог AQUIFER_MIN_NEIGHBORS=5,
+        // поднят с 3 в security-fix 2026-05-08 для PII hardening kNN).
         function wellRow(depth: number, dist = 1): TNeighborRow {
             return buildRow({
                 depth_meters: depth,
@@ -260,48 +262,86 @@ describe('PredictService', () => {
             });
         }
 
-        it('median 10м (3 wells: 5/10/15) → "0-15m / Верховодка"', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(5), wellRow(10), wellRow(15, 2)]);
+        it('median 10м (5 wells: 5/8/10/12/15) → "0-15m / Верховодка"', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(5),
+                wellRow(8),
+                wellRow(10),
+                wellRow(12),
+                wellRow(15, 2),
+            ]);
             const res = await service.predict(buildDto());
-            // median percentile из [5,10,15] на idx=1 → 10. 10 < 15 → Верховодка.
+            // median percentile из [5,8,10,12,15] на idx=2 → 10. 10 < 15 → Верховодка.
             expect(res.mostLikelyAquiferLayer).toBe('0-15m / Верховодка');
         });
 
         it('median ~30м (15-50м диапазон) → "15-50m / Песчаный"', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(20), wellRow(30), wellRow(40)]);
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(20),
+                wellRow(25),
+                wellRow(30),
+                wellRow(35),
+                wellRow(40),
+            ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBe('15-50m / Песчаный');
         });
 
         it('median ~75м → "50-100m / Песчано-известняковый"', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(60), wellRow(75), wellRow(90)]);
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(60),
+                wellRow(70),
+                wellRow(75),
+                wellRow(80),
+                wellRow(90),
+            ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBe('50-100m / Песчано-известняковый');
         });
 
         it('median ~150м → "100-200m / Известняковый"', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(120), wellRow(150), wellRow(180)]);
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(120),
+                wellRow(140),
+                wellRow(150),
+                wellRow(160),
+                wellRow(180),
+            ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBe('100-200m / Известняковый');
         });
 
         it('median 250м → "200m+ / Артезианский"', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(230), wellRow(250), wellRow(270)]);
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(220),
+                wellRow(240),
+                wellRow(250),
+                wellRow(260),
+                wellRow(280),
+            ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBe('200m+ / Артезианский');
         });
 
-        it('< 3 wells с depth → undefined (порог AQUIFER_MIN_NEIGHBORS=3)', async () => {
-            prisma.$queryRaw.mockResolvedValueOnce([wellRow(50), wellRow(60)]);
+        it('< 5 wells с depth → undefined (порог AQUIFER_MIN_NEIGHBORS=5)', async () => {
+            // 4 well — недостаточно для k-anonymity hardening.
+            prisma.$queryRaw.mockResolvedValueOnce([
+                wellRow(50),
+                wellRow(55),
+                wellRow(60),
+                wellRow(65),
+            ]);
             const res = await service.predict(buildDto());
             expect(res.mostLikelyAquiferLayer).toBeUndefined();
         });
 
         it('intake_type=municipal/spring не учитываются в aquifer median', async () => {
-            // 2 well + 1 municipal+1 spring → wells=2, < 3 → undefined.
+            // 4 well + 1 municipal + 1 spring → wells=4, < 5 → undefined.
             prisma.$queryRaw.mockResolvedValueOnce([
                 wellRow(50),
+                wellRow(55),
                 wellRow(60, 2),
+                wellRow(65, 2),
                 buildRow({ depth_meters: 100, intake_type: 'municipal', dist_km: 3 }),
                 buildRow({ depth_meters: 200, intake_type: 'spring', dist_km: 4 }),
             ]);
@@ -310,10 +350,12 @@ describe('PredictService', () => {
         });
 
         it('well_dug учитывается наравне с well', async () => {
-            // 3 well_dug → должно быть достаточно для aquifer.
+            // 5 well_dug → достаточно для aquifer (порог 5 после security-fix 2026-05-08).
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ depth_meters: 5, intake_type: 'well_dug', dist_km: 1 }),
+                buildRow({ depth_meters: 7, intake_type: 'well_dug', dist_km: 1.5 }),
                 buildRow({ depth_meters: 8, intake_type: 'well_dug', dist_km: 2 }),
+                buildRow({ depth_meters: 9, intake_type: 'well_dug', dist_km: 2.5 }),
                 buildRow({ depth_meters: 10, intake_type: 'well_dug', dist_km: 3 }),
             ]);
             const res = await service.predict(buildDto());

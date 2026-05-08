@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@slovo/database';
 import type Redis from 'ioredis';
@@ -9,6 +9,7 @@ import {
     AQUIFER_STATS_SAMPLE_LIMIT,
     type TDepthMapIntakeFilter,
 } from '../water-analysis.constants';
+import { percentile, roundTo, stringifyError, validateBbox } from '../_shared';
 import type { AquiferStatsQueryDto } from './dto/aquifer-stats.request.dto';
 import type {
     AquiferLayerStatsDto,
@@ -47,12 +48,14 @@ export class AquiferStatsService {
         const intakeType: TDepthMapIntakeFilter = dto.intakeType ?? 'all';
         const cacheKey = buildCacheKey(intakeType, dto.west, dto.south, dto.east, dto.north);
 
+        // t0 ловим до cache GET — см. heatmap.service rationale.
+        const t0 = Date.now();
+
         const cached = await this.tryCacheGet(cacheKey);
         if (cached) {
-            return { ...cached, cached: true };
+            return { ...cached, cached: true, timeTakenMs: Date.now() - t0 };
         }
 
-        const t0 = Date.now();
         const rows = await this.fetchRows(intakeType, dto);
         const layers = aggregateLayers(rows);
         const dominantLayerId = computeDominantLayerId(layers);
@@ -69,9 +72,8 @@ export class AquiferStatsService {
             cached: false,
         };
 
-        this.tryCacheSet(cacheKey, response).catch(() => {
-            /* swallowed */
-        });
+        // fire-and-forget: tryCacheSet логирует cache-set ошибки внутри.
+        void this.tryCacheSet(cacheKey, response);
 
         return response;
     }
@@ -200,43 +202,6 @@ function computeDominantLayerId(layers: AquiferLayerStatsDto[]): string | null {
     return layers.reduce((best, cur) => (cur.count > best.count ? cur : best)).id;
 }
 
-function percentile(sorted: number[], p: number): number {
-    if (sorted.length === 0) return Number.NaN;
-    if (sorted.length === 1) return sorted[0];
-    const idx = (sorted.length - 1) * p;
-    const lo = Math.floor(idx);
-    const hi = Math.ceil(idx);
-    if (lo === hi) return sorted[lo];
-    return sorted[lo] * (hi - idx) + sorted[hi] * (idx - lo);
-}
-
-function roundTo(value: number, digits: number): number {
-    if (!Number.isFinite(value)) return 0;
-    const factor = Math.pow(10, digits);
-    return Math.round(value * factor) / factor;
-}
-
-function validateBbox(dto: AquiferStatsQueryDto): void {
-    if (dto.west >= dto.east) {
-        throw new BadRequestException(
-            `bbox.west (${dto.west}) должен быть < bbox.east (${dto.east})`,
-        );
-    }
-    if (dto.south >= dto.north) {
-        throw new BadRequestException(
-            `bbox.south (${dto.south}) должен быть < bbox.north (${dto.north})`,
-        );
-    }
-    const lonSpan = dto.east - dto.west;
-    const latSpan = dto.north - dto.south;
-    if (lonSpan > 60 || latSpan > 30) {
-        throw new BadRequestException(
-            `bbox слишком большой (lon ${lonSpan.toFixed(1)}°, lat ${latSpan.toFixed(1)}°). ` +
-                `Максимум 60° lon × 30° lat.`,
-        );
-    }
-}
-
 function buildCacheKey(
     intakeType: TDepthMapIntakeFilter,
     west: number,
@@ -246,9 +211,4 @@ function buildCacheKey(
 ): string {
     const r = (n: number): string => n.toFixed(4);
     return `aquifer-stats:${intakeType}:${r(west)}:${r(south)}:${r(east)}:${r(north)}`;
-}
-
-function stringifyError(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    return typeof err === 'string' ? err : JSON.stringify(err);
 }

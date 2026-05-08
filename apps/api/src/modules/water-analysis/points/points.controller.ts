@@ -31,7 +31,7 @@ export class PointsController {
         summary: 'Отдельные анализы воды в bbox для high-zoom детализации карты',
         description:
             'GeoJSON FeatureCollection с individual точками анализов. Каждая Feature содержит ' +
-            '22 параметра + risk + meta (orderNumber, intakeType, depthMeters, sampleDate, region, locality). ' +
+            '22 параметра + risk + meta (intakeType, depthMeters, sampleDate, region, locality). ' +
             'Координаты обезличены до 0.005° (~500м) для PII protection.\n\n' +
             'Сценарий: фронт zoom\'ит карту до уровня района — heatmap aggregation становится coarser ' +
             'чем нужно для UX, отдаём individual points с popup\'ами. ORDER BY sample_date DESC LIMIT N — ' +
