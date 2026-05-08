@@ -161,9 +161,11 @@
 
 **Acceptance:** клиент видит outline-каплю «Вода» в bottom-nav, тапает → попадает на placeholder-страницу с hero-каплей (filled gradient + sparkle) и описанием будущей фичи. Light/Dark theme работают. Burger-menu не блокируется. ✅
 
-### Phase 4 — Backend ручки + flagship USP (8-12 дней)
+### Phase 4 — Backend ручки + flagship USP — ✅ ЗАКРЫТ (8 мая 2026)
 
 **Pivot 8 мая 2026:** делаем **backend-first** — без real data фронт-дизайн уходит в воздух. Frontend production отложен в Phase 4.5 после закрытия 4.A. Прототип `prostor-heatmap-mobile-standalone.html` остаётся reference, точечно подгоним под реальные данные когда они будут.
+
+**Итог:** все 6 endpoints Tier 1 (4.A) + 1 endpoint Tier 2 (4.B.6 aquifer-stats) закрыты за один день. 997 unit-тестов зелёные (60 test suites). 4 USP-фичи реализованы, 4 интеллектуальные доработки (severity-4 / per-problem search / reason / byCategory) добавлены поверх базы.
 
 #### USP-фичи — что отличает PROSTOR от любого магазина фильтров
 
@@ -179,32 +181,18 @@
 - 21 параметр химии × geo × дата × лаборатория × источник × **глубина** × дилер
 - Coverage `depth_meters`: well 76.7% (7 884), well_dug 41.2% (742) — **gold для drilling-domain**
 
-#### 4.A Tier 1: фундамент карты + flagship USP (5-7 дней)
+#### 4.A Tier 1: фундамент карты + flagship USP — ✅ ЗАКРЫТО (8 мая 2026)
 
-- [ ] **4.A.1** `GET /water-analysis/heatmap?param=&bbox=&grid=0.05`
-  - Prisma raw SQL: `ST_SnapToGrid(geo_point, $grid)` → `AVG/MEDIAN/P75 (params->>$param)` + `pct_exceeds_pdk`
-  - Response: GeoJSON FeatureCollection
-  - Redis cache TTL 24ч
-- [ ] **4.A.2** `GET /water-analysis/predict?lat=&lon=&k=20` (USP-1)
-  - kNN top-K ближайших в радиусе с weighted average по distance + recency
-  - Возвращает 21 параметр + confidence interval (PhD-фундамент interval analysis играет — «iron 0.30-0.55 мг/л 80% CI» вместо точечного значения)
-  - Redis cache TTL 5мин (на координаты)
-- [ ] **4.A.3** `GET /water-analysis/depth-map?bbox=&grid=&intakeType=` (USP-4 base)
-  - Median/P25/P75 глубины по grid (только wells/well_dug)
-  - **Стратификация по водоносным горизонтам** в response: bucket-распределение `aquiferLayers` (0-15м верховодка, 15-50м песчаный, 50-100м песчано-известняковый, 100-200м известняковый, 200м+ артезианский) + count + intakeTypes по слою
-  - Heatmap «где какие водоносные слои в МО»
-- [ ] **4.A.4** `GET /water-analysis/depth-predict?lat=&lon=&intakeType=&k=20` (USP-4)
-  - kNN-прогноз глубины бурения для нового адреса с CI
-  - «У тебя по соседям типично 35-55м, медиана 42м, 90%-перцентиль 75м»
-  - **`mostLikelyLayer`** в response — наиболее вероятный водоносный горизонт + распределение `layerDistribution` по соседним скважинам
-  - Redis cache TTL 5мин
-- [ ] **4.A.5** `GET /water-analysis/points?bbox=&limit=`
-  - Точки анализов с values + risk + дата + intakeType + depth (для high-zoom детализация)
-  - GeoJSON cluster при низком zoom через ST_ClusterDBSCAN
-- [ ] **4.A.6** `POST /water-analysis/equipment-suggest` (USP-2 flagship cross-domain)
-  - Body: `{lat, lon}`. Шаги: predict химии → identify problems > ПДК → match catalog (text-embedding-3-large + categories filter)
-  - Response: top-N оборудования с обоснованием «у тебя по соседям hardness 8.5 + iron 0.45 → нужен умягчитель + обезжелезиватель»
-  - Главный продающий аргумент для разговора с руководителем Аквафор
+- [x] **4.A.1** `GET /water-analysis/heatmap` — commit `909d49e`. 22 canonical paramCodes + risk, polymorphic ПДК (single/range/none), GeoJSON, sub-100мс на МО, cache 24ч, 42 unit-теста
+- [x] **4.A.2** `GET /water-analysis/predict` (USP-1) — commit `a730dbe` + `27ac3d0`. kNN + weighted IDW + recency. **Interval-first** (3 уровня P10-P90 / IQR / hardRange + pointEstimate). **4-level pdkStatus** (safe/borderline/concerning/unsafe — interval-aware с median tipping point). **`byCategory`** — pre-grouped 5 buckets для UI shortcut. 59 unit-тестов
+- [x] **4.A.3** `GET /water-analysis/depth-map` (USP-4 base) — commit `2d31a3a`. Per-cell median/P25/P75 + **5 aquifer-buckets** + dominantLayerId + pctWell, single SQL с CASE-агрегацией. 39 unit-тестов
+- [x] **4.A.4** `GET /water-analysis/depth-predict` (USP-4) — commit `a0b9a69`. **Interval-first 3 levels** (primary/iqr/hardRange) + pointEstimate + mostLikelyAquiferLayer. 33 unit-теста
+- [x] **4.A.5** `GET /water-analysis/points` — commit `a0b9a69`. Individual анализы high-zoom + risk score + 22 параметра. Координаты обезличены 0.005°. ORDER BY sample_date DESC LIMIT N+1 (truncated флаг)
+- [x] **4.A.6** `POST /water-analysis/equipment-suggest` (USP-2 flagship) — commit `985ef10` + `27ac3d0`. **Per-problem catalog search** (top-3 problems × PER_PROBLEM_K=2 targeted queries из PROBLEM_TO_QUERY mapping → dedup) + **matchedProblem + reason** в каждой recommendation. На smoke МО: 5 RO-систем для unsafe nitrites вместо generic корпусов. 51 unit-тест
+
+**Реальные smoke результаты МО centre (55.756, 37.617):**
+- /predict.byCategory: `{ unsafe: [nitrites], concerning: [color, turbidity, hardness, manganese], borderline: [4 params], safe: [5 params], unmonitored: [4 params] }`
+- /equipment-suggest: 5 рекомендаций с reason «Решает явное превышение «Нитриты»» + «Решает вероятное превышение «Цветность»»
 
 #### 4.B Tier 2: дополнительные insights (3-4 дня)
 
@@ -213,11 +201,10 @@
 - [ ] **4.B.3** `GET /water-analysis/depth-history?district=&intakeType=` — изменение глубин 2020→2026 (climate-change angle)
 - [ ] **4.B.4** `GET /water-analysis/quality-by-depth?bbox=&param=` — связь глубина↔качество для drilling-консультации
 - [ ] **4.B.5** `GET /water-analysis/hotspots?param=&top=20` — топ точек с превышением ПДК (драматичные цифры)
-- [ ] **4.B.6** `GET /water-analysis/aquifer-stats?bbox=&intakeType=` (USP-4 deep-dive)
-  - Стратифицированная статистика по горизонтам в bbox: % скважин на каждом, типичная химия (median 21 параметра) по слою — «верховодка TDS 200, песчаный TDS 380, артезианский TDS 720»
-  - **GMM (Gaussian Mixture Model)** на distribution `depth_meters` для **data-driven aquifer detection** вместо хардкода 15-50м/50-100м — сам dataset показывает «полки» глубин в МО (3-5 типичных кластеров по геологии)
-  - PhD-фундамент interval analysis + clustering играет
-  - Audience: drillers, гидрогеологи, девелоперы
+- [x] **4.B.6** `GET /water-analysis/aquifer-stats?bbox=&intakeType=` (USP-4 deep-dive) — commit `27ac3d0` ✅
+  - Per layer (5 buckets): count + pct + medianDepth + pctWell + **medianChemistry** (median 22 параметров)
+  - Smoke МО (5000 точек, all): dominant `sandy_limestone` (41%), drilling signal — «бури глубже = чище вода». Верховодка nitrates 4.3 ⚠ → артезианский nitrates 0.8 ✓
+  - GMM data-driven aquifer detection — отложено в backlog (fixed buckets из AQUIFER_LAYERS работают на МО гидрогеологии достаточно)
 
 #### 4.C Tier 3: advanced/time (2-3 дня)
 
