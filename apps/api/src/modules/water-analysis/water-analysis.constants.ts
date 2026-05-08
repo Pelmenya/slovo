@@ -363,6 +363,33 @@ export const AQUIFER_STATS_REDIS_TOKEN = Symbol('WATER_ANALYSIS_AQUIFER_STATS_RE
 // это значит мы пропустим самые старые ~3.5K — ОК для типичной chemistry.
 export const AQUIFER_STATS_SAMPLE_LIMIT = 5000;
 
+// =============================================================================
+// Heatmap cell-detail endpoint — детали отдельной cell для popup на карте
+// (popup открывается при тапе по cell, отдаёт breakdown 22 параметров с
+// per-paramу exceedsCount/max/median/pdk).
+//
+// Используется фронтом prostor-app для popup на карте — клиент тапает на
+// зону, видит «вот эти 3 параметра превышают, эти 19 в норме, можно подобрать
+// фильтр». Cheap operation — single cell query, 1× per click event.
+//
+// Throttle 60/min/IP (легче heatmap — popup редкий event, не браузинг).
+// Cache TTL 1 час (данные стабильные derived dataset).
+// =============================================================================
+
+export const CELL_DETAIL_THROTTLE_LIMIT = 60;
+export const CELL_DETAIL_THROTTLE_TTL_MS = 60_000;
+export const CELL_DETAIL_CACHE_TTL_SECONDS = 60 * 60;
+export const CELL_DETAIL_REDIS_TOKEN = Symbol('WATER_ANALYSIS_CELL_DETAIL_REDIS');
+
+// Сколько top-N проблемных параметров возвращать в `topProblems[]`. 5 покрывает
+// типичный кейс «1-3 проблемы» с запасом — больше 5 на popup'е визуально шум.
+export const CELL_DETAIL_TOP_PROBLEMS_N = 5;
+
+// Cap на rows внутри cell — fetch'им до 200 анализов в bbox cell для aggregation.
+// На реальных данных типично 1-30 анализов в cell (grid 0.05° = ~5×5км). 200 —
+// safety upper для случая когда юзер тапает на огромную cell (grid=0.5°).
+export const CELL_DETAIL_MAX_ROWS = 200;
+
 export const HEATMAP_PARAMS = [
     // Органолептические
     'odor',

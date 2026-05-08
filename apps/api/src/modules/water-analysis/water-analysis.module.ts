@@ -5,6 +5,7 @@ import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client'
 import type { TAppEnv } from '@slovo/common';
 import {
     AQUIFER_STATS_REDIS_TOKEN,
+    CELL_DETAIL_REDIS_TOKEN,
     DEPTH_MAP_REDIS_TOKEN,
     DEPTH_PREDICT_REDIS_TOKEN,
     EQUIPMENT_SUGGEST_REDIS_TOKEN,
@@ -16,6 +17,8 @@ import {
 import { createWaterAnalysisRedisProvider } from './_shared';
 import { AquiferStatsController } from './aquifer-stats/aquifer-stats.controller';
 import { AquiferStatsService } from './aquifer-stats/aquifer-stats.service';
+import { CellDetailController } from './cell-detail/cell-detail.controller';
+import { CellDetailService } from './cell-detail/cell-detail.service';
 import { DepthMapController } from './depth-map/depth-map.controller';
 import { DepthMapService } from './depth-map/depth-map.service';
 import { DepthPredictController } from './depth-predict/depth-predict.controller';
@@ -68,6 +71,7 @@ const redisProviders: Provider[] = [
     POINTS_REDIS_TOKEN,
     EQUIPMENT_SUGGEST_REDIS_TOKEN,
     AQUIFER_STATS_REDIS_TOKEN,
+    CELL_DETAIL_REDIS_TOKEN,
 ].map(createWaterAnalysisRedisProvider);
 
 @Module({
@@ -81,6 +85,7 @@ const redisProviders: Provider[] = [
         PointsController,
         EquipmentSuggestController,
         AquiferStatsController,
+        CellDetailController,
     ],
     providers: [
         flowiseClientProvider,
@@ -93,6 +98,7 @@ const redisProviders: Provider[] = [
         PointsService,
         EquipmentSuggestService,
         AquiferStatsService,
+        CellDetailService,
     ],
 })
 export class WaterAnalysisModule {}
