@@ -6,9 +6,17 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { PrismaService } from '@slovo/database';
 import request from 'supertest';
 import {
+    AQUIFER_STATS_REDIS_TOKEN,
+    DEPTH_MAP_REDIS_TOKEN,
+    DEPTH_PREDICT_REDIS_TOKEN,
+    EQUIPMENT_SUGGEST_REDIS_TOKEN,
     FLOWISE_CLIENT_TOKEN,
+    HEATMAP_REDIS_TOKEN,
+    POINTS_REDIS_TOKEN,
+    PREDICT_REDIS_TOKEN,
     WATER_ANALYSIS_AQUAPHOR_STORE_NAME,
 } from '../src/modules/water-analysis/water-analysis.constants';
 import { SimilarSearchService } from '../src/modules/water-analysis/similar/similar.service';
@@ -25,6 +33,17 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
 
     beforeAll(async () => {
         flowise = { request: jest.fn() };
+        // 7 Redis tokens из Phase 4 endpoints — Similar их не использует, но
+        // WaterAnalysisModule инстанцирует все провайдеры в app.init(); каждый
+        // factory требует REDIS_HOST из ConfigService → override на mock.
+        const redisMock = {
+            get: jest.fn().mockResolvedValue(null),
+            set: jest.fn().mockResolvedValue('OK'),
+        };
+
+        // PrismaService мокается — Phase 4 endpoints в WaterAnalysisModule
+        // делают $queryRaw, для similar (Flowise-only) не нужен.
+        const prismaMock = { $queryRaw: jest.fn().mockResolvedValue([]) };
 
         const moduleRef: TestingModule = await Test.createTestingModule({
             imports: [
@@ -33,8 +52,24 @@ describe('Water-analysis similar search endpoint (e2e)', () => {
                 WaterAnalysisModule,
             ],
         })
+            .overrideProvider(PrismaService)
+            .useValue(prismaMock)
             .overrideProvider(FLOWISE_CLIENT_TOKEN)
             .useValue(flowise)
+            .overrideProvider(HEATMAP_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(PREDICT_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(DEPTH_MAP_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(DEPTH_PREDICT_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(POINTS_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(EQUIPMENT_SUGGEST_REDIS_TOKEN)
+            .useValue(redisMock)
+            .overrideProvider(AQUIFER_STATS_REDIS_TOKEN)
+            .useValue(redisMock)
             .compile();
 
         app = moduleRef.createNestApplication();

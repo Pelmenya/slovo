@@ -1,22 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-
-/**
- * Один interval-уровень. Используется как primary 80% (P10-P90), IQR 50% (P25-P75)
- * или hardRange 100% (observed extremes).
- */
-export class ParamIntervalDto {
-    @ApiProperty({ description: 'Нижняя граница диапазона (в единицах параметра).', example: 0.18 })
-    lower!: number;
-
-    @ApiProperty({ description: 'Верхняя граница.', example: 0.72 })
-    upper!: number;
-
-    @ApiProperty({
-        description: 'Уровень доверия в %. 80 для primary (P10-P90), 50 для IQR, 100 для hardRange.',
-        example: 80,
-    })
-    confidence!: number;
-}
+// `IntervalDto` из `_shared` — единый interval-DTO для всех predict-endpoints
+// (chemistry/depth). Раньше был ParamIntervalDto-дубликат, объединён 2026-05-08.
+import { IntervalDto } from '../../_shared';
 
 /**
  * Status относительно ПДК. Interval-aware с 4 уровнями (severity gradation):
@@ -66,21 +51,21 @@ export type TPdkStatus = 'safe' | 'borderline' | 'concerning' | 'unsafe';
 export class PredictParamEstimateDto {
     @ApiProperty({
         description: 'Primary interval (80% confidence) — диапазон P10..P90. Главный для оценки.',
-        type: ParamIntervalDto,
+        type: IntervalDto,
     })
-    interval!: ParamIntervalDto;
+    interval!: IntervalDto;
 
     @ApiProperty({
         description: 'IQR (50% confidence) — узкий типичный диапазон P25..P75.',
-        type: ParamIntervalDto,
+        type: IntervalDto,
     })
-    iqr!: ParamIntervalDto;
+    iqr!: IntervalDto;
 
     @ApiProperty({
         description: 'Observed hardRange (min..max выборки, 100% confidence).',
-        type: ParamIntervalDto,
+        type: IntervalDto,
     })
-    hardRange!: ParamIntervalDto;
+    hardRange!: IntervalDto;
 
     @ApiProperty({
         description:

@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IntervalDto } from '../../_shared';
 
 /**
  * Идентифицированная проблема воды по конкретному параметру.
@@ -23,8 +24,13 @@ export class WaterProblemDto {
     })
     severity!: 'borderline' | 'concerning' | 'unsafe';
 
-    @ApiProperty({ description: 'Primary interval (P10-P90) — ожидаемый диапазон.', example: { lower: 0.5, upper: 1.5 } })
-    interval!: { lower: number; upper: number };
+    @ApiProperty({
+        description:
+            'Primary interval (P10-P90, 80% confidence) — ожидаемый диапазон параметра у соседей. ' +
+            'lower/upper в единицах параметра (мг/л для chemistry).',
+        type: IntervalDto,
+    })
+    interval!: IntervalDto;
 
     @ApiProperty({ description: 'ПДК этого параметра по СанПиН (для context UI).', example: 0.3 })
     pdk!: number | { min: number; max: number };

@@ -7,9 +7,8 @@ import {
     DEPTH_MAP_CACHE_TTL_SECONDS,
     DEPTH_MAP_REDIS_TOKEN,
     GRID_DEFAULT_DEG,
-    type TDepthMapIntakeFilter,
 } from '../water-analysis.constants';
-import { roundTo, stringifyError, validateBbox } from '../_shared';
+import { roundTo, stringifyError, type TIntakeTypeFilter, validateBbox } from '../_shared';
 import type { DepthMapQueryDto } from './dto/depth-map.request.dto';
 import type {
     AquiferLayerCountDto,
@@ -75,7 +74,7 @@ export class DepthMapService {
     }
 
     private async runQuery(
-        intakeType: TDepthMapIntakeFilter,
+        intakeType: TIntakeTypeFilter,
         dto: DepthMapQueryDto,
         grid: number,
     ): Promise<TRawRow[]> {
@@ -141,7 +140,7 @@ export class DepthMapService {
      * Prisma.Sql фрагмент для intake_type фильтра. Возвращается как готовый
      * boolean expression вставляемый в WHERE через template-tag interpolation.
      */
-    private buildIntakeFilter(intakeType: TDepthMapIntakeFilter): Prisma.Sql {
+    private buildIntakeFilter(intakeType: TIntakeTypeFilter): Prisma.Sql {
         if (intakeType === 'well') {
             return Prisma.sql`intake_type = 'well'`;
         }
@@ -194,7 +193,7 @@ type TRawRow = {
 };
 
 function buildCacheKey(
-    intakeType: TDepthMapIntakeFilter,
+    intakeType: TIntakeTypeFilter,
     west: number,
     south: number,
     east: number,

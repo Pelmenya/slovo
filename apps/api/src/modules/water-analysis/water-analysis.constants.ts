@@ -225,8 +225,11 @@ export const DEPTH_MAP_REDIS_TOKEN = Symbol('WATER_ANALYSIS_DEPTH_MAP_REDIS');
 // (municipal/spring/river depth не имеет смысла). Default 'well' — самый
 // частый use-case для бурильщиков. 'well_dug' — для колодцев (мелкие, в МО
 // обычно <15м).
-export const DEPTH_MAP_INTAKE_FILTER = ['all', 'well', 'well_dug'] as const;
-export type TDepthMapIntakeFilter = (typeof DEPTH_MAP_INTAKE_FILTER)[number];
+//
+// Унифицированный shared `INTAKE_TYPE_FILTER_VALUES` + `TIntakeTypeFilter`
+// в `_shared/intake-filter.ts` используется во всех drilling-endpoints
+// (depth-map, depth-predict, aquifer-stats) — раньше было 2 дубликата
+// + чужой namespace в aquifer-stats. Объединено 2026-05-08.
 
 // =============================================================================
 // Depth-predict endpoint (4.A.4, USP-4) — kNN-прогноз глубины бурения для нового
@@ -254,12 +257,11 @@ export const DEPTH_PREDICT_MAX_RADIUS_KM = 200;
 export const DEPTH_PREDICT_IDW_SCALE_KM = 10;
 export const DEPTH_PREDICT_RECENCY_HALF_LIFE_YEARS = 5;
 
-// intakeType filter — для depth-predict обычно бурильщику интересен один тип.
+// intakeType filter — используется через shared `INTAKE_TYPE_FILTER_VALUES` /
+// `TIntakeTypeFilter` из `_shared/intake-filter.ts` (унифицировано 2026-05-08).
 // Default 'well' — самая частая drilling-задача (скважина 30-80м). 'well_dug'
 // для копателей колодцев (мелкие 5-15м, артель копает а не бурит). 'all' —
 // общий обзор без preference.
-export const DEPTH_PREDICT_INTAKE_FILTER = ['all', 'well', 'well_dug'] as const;
-export type TDepthPredictIntakeFilter = (typeof DEPTH_PREDICT_INTAKE_FILTER)[number];
 
 // =============================================================================
 // Points endpoint (4.A.5) — отдельные анализы (не агрегаты) для high-zoom

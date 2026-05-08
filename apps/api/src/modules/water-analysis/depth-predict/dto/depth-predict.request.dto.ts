@@ -4,13 +4,12 @@ import { IsIn, IsInt, IsLatitude, IsLongitude, IsNumber, IsOptional, Max, Min } 
 import {
     DEPTH_PREDICT_DEFAULT_K,
     DEPTH_PREDICT_DEFAULT_RADIUS_KM,
-    DEPTH_PREDICT_INTAKE_FILTER,
     DEPTH_PREDICT_MAX_K,
     DEPTH_PREDICT_MAX_RADIUS_KM,
     DEPTH_PREDICT_MIN_K,
     DEPTH_PREDICT_MIN_RADIUS_KM,
-    type TDepthPredictIntakeFilter,
 } from '../../water-analysis.constants';
+import { INTAKE_TYPE_FILTER_VALUES, type TIntakeTypeFilter } from '../../_shared';
 
 /**
  * Прогноз глубины бурения для нового адреса (USP-4).
@@ -40,12 +39,12 @@ export class DepthPredictQueryDto {
         description:
             'Тип источника. `well` — скважины (default, drilling). `well_dug` — копаные колодцы. ' +
             '`all` — оба типа без preference.',
-        enum: DEPTH_PREDICT_INTAKE_FILTER,
+        enum: INTAKE_TYPE_FILTER_VALUES,
         default: 'well',
     })
     @IsOptional()
-    @IsIn(DEPTH_PREDICT_INTAKE_FILTER)
-    intakeType?: TDepthPredictIntakeFilter;
+    @IsIn(INTAKE_TYPE_FILTER_VALUES)
+    intakeType?: TIntakeTypeFilter;
 
     @ApiPropertyOptional({
         description: 'Кол-во ближайших соседей. Меньше → больше шум. Больше → захватываются другие горизонты.',

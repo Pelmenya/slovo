@@ -26,6 +26,7 @@ import type {
     EquipmentSuggestResponseDto,
     WaterProblemDto,
 } from './dto/equipment-suggest.response.dto';
+import { getTargetedQueryForParam } from './queries';
 
 // =============================================================================
 // EquipmentSuggestService — flagship USP-2 cross-domain.
@@ -260,55 +261,13 @@ export class EquipmentSuggestService {
     }
 }
 
-// =============================================================================
-// Per-problem catalog search mapping
-// (Tuning constants — в water-analysis.constants.ts: EQUIPMENT_SUGGEST_*)
-// =============================================================================
-
-/**
- * paramCode → targeted natural-language query для catalog vector search.
- *
- * Запросы написаны так чтобы embedding попал в semantic neighborhood vision-
- * augmented описаний из catalog (которые vision-augmenter генерил с упоминанием
- * технологий типа «обезжелезиватель», «умягчитель», «обратный осмос»).
- *
- * Mapping curated на основе common practitioner-knowledge водоподготовки:
- * - Железо/марганец → катализная окислительная фильтрация (BIRM, MnO2)
- * - Жёсткость (Ca/Mg) → ионный обмен (Na-катионирование) или RO
- * - Анионы (нитраты/сульфаты/фториды/хлориды) → RO или анионообмен
- * - Сероводород/запах → угольная фильтрация / аэрация
- * - Аммоний → специальная ионообменная или RO
- * - Мутность/цветность → механический фильтр / коагуляция
- * - Permanganate oxidizability (общая органика) → угольный фильтр
- *
- * Параметры без специфичной технологии (ph, temperature, etc) → generic.
- */
-const PROBLEM_TO_QUERY: Record<string, string> = {
-    iron_total: 'обезжелезиватель удаление растворённого железа из воды',
-    manganese: 'обезмарганцевание удаление марганца окислительная фильтрация',
-    hardness_total: 'умягчитель смягчение жёсткой воды ионный обмен',
-    magnesium: 'умягчение снижение жёсткости магний кальций',
-    calcium: 'умягчение снижение жёсткости магний кальций',
-    tds: 'обратный осмос снижение TDS общей минерализации',
-    nitrates: 'обратный осмос удаление нитратов',
-    nitrites: 'обратный осмос удаление нитритов',
-    sulfates: 'обратный осмос удаление сульфатов',
-    chlorides: 'обратный осмос удаление хлоридов',
-    fluorides: 'обратный осмос удаление фторидов',
-    sulfides: 'угольный фильтр удаление сероводорода и сульфидов',
-    hydrogen_sulfide: 'угольный фильтр аэрация удаление сероводорода запах',
-    ammonium: 'ионообменный фильтр удаление аммиака аммония',
-    turbidity: 'механический фильтр осветление мутной воды',
-    color: 'осветление цветной воды коагуляция фильтрация',
-    odor: 'угольный фильтр устранение запаха воды',
-    permanganate_oxidizability: 'угольный фильтр снижение перманганатной окисляемости органика',
-    ph: 'нейтрализация pH корректировка кислотности воды',
-};
-
-const GENERIC_FALLBACK_QUERY = 'фильтр для очистки питьевой воды';
+// PROBLEM_TO_QUERY mapping + GENERIC_FALLBACK_QUERY вынесены в `./queries.ts`
+// (это prompt-context, не код — отдельный файл для A/B-теста wording).
+// Tuning constants (MAX_PROBLEM_QUERIES / PER_PROBLEM_K) — в
+// water-analysis.constants.ts: EQUIPMENT_SUGGEST_*.
 
 function buildTargetedQuery(problem: WaterProblemDto): string {
-    return PROBLEM_TO_QUERY[problem.paramCode] ?? GENERIC_FALLBACK_QUERY;
+    return getTargetedQueryForParam(problem.paramCode);
 }
 
 // =============================================================================
@@ -324,7 +283,7 @@ function extractProblems(
     predicted: Record<
         string,
         {
-            interval: { lower: number; upper: number };
+            interval: { lower: number; upper: number; confidence: number };
             n: number;
             pdkStatus: TPdkStatus | null;
         }
@@ -347,7 +306,9 @@ function extractProblems(
         problems.push({
             paramCode,
             severity: est.pdkStatus,
-            interval: { lower: est.interval.lower, upper: est.interval.upper },
+            // est.interval — IntervalDto (lower/upper/confidence). Spread
+            // сохраняет confidence для UI «80% соседей в этом диапазоне».
+            interval: { ...est.interval },
             pdk: meta.pdk,
             n: est.n,
         });

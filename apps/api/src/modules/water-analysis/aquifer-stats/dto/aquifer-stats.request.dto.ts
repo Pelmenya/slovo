@@ -6,9 +6,8 @@ import {
     BBOX_LAT_MIN,
     BBOX_LON_MAX,
     BBOX_LON_MIN,
-    DEPTH_MAP_INTAKE_FILTER,
-    type TDepthMapIntakeFilter,
 } from '../../water-analysis.constants';
+import { INTAKE_TYPE_FILTER_VALUES, type TIntakeTypeFilter } from '../../_shared';
 
 /**
  * Запрос «дай статистику по водоносным горизонтам в bbox» (USP-4 deep-dive).
@@ -25,12 +24,12 @@ import {
 export class AquiferStatsQueryDto {
     @ApiPropertyOptional({
         description: 'Тип источника. all (default) | well | well_dug — те же варианты что в /depth-map.',
-        enum: DEPTH_MAP_INTAKE_FILTER,
+        enum: INTAKE_TYPE_FILTER_VALUES,
         default: 'all',
     })
     @IsOptional()
-    @IsIn(DEPTH_MAP_INTAKE_FILTER)
-    intakeType?: TDepthMapIntakeFilter;
+    @IsIn(INTAKE_TYPE_FILTER_VALUES)
+    intakeType?: TIntakeTypeFilter;
 
     @ApiProperty({ description: 'BBox west.', example: 36.5 })
     @Type(() => Number)

@@ -5,8 +5,8 @@ import {
     AQUIFER_LAYERS,
     AQUIFER_STATS_CACHE_TTL_SECONDS,
     AQUIFER_STATS_REDIS_TOKEN,
-    type TDepthMapIntakeFilter,
 } from '../water-analysis.constants';
+import type { TIntakeTypeFilter } from '../_shared';
 import { AquiferStatsService } from './aquifer-stats.service';
 import type { AquiferStatsQueryDto } from './dto/aquifer-stats.request.dto';
 import type { AquiferStatsResponseDto } from './dto/aquifer-stats.response.dto';
@@ -543,7 +543,7 @@ describe('AquiferStatsService', () => {
 
         it('разные intakeType при том же bbox → разные cache-keys (изоляция фильтра)', async () => {
             prisma.$queryRaw.mockResolvedValue([]);
-            const variants: TDepthMapIntakeFilter[] = ['all', 'well', 'well_dug'];
+            const variants: TIntakeTypeFilter[] = ['all', 'well', 'well_dug'];
             for (const v of variants) {
                 await service.query(buildDto({ intakeType: v }));
             }

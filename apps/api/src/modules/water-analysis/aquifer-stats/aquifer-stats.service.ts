@@ -7,9 +7,8 @@ import {
     AQUIFER_STATS_CACHE_TTL_SECONDS,
     AQUIFER_STATS_REDIS_TOKEN,
     AQUIFER_STATS_SAMPLE_LIMIT,
-    type TDepthMapIntakeFilter,
 } from '../water-analysis.constants';
-import { percentile, roundTo, stringifyError, validateBbox } from '../_shared';
+import { percentile, roundTo, stringifyError, type TIntakeTypeFilter, validateBbox } from '../_shared';
 import type { AquiferStatsQueryDto } from './dto/aquifer-stats.request.dto';
 import type {
     AquiferLayerStatsDto,
@@ -45,7 +44,7 @@ export class AquiferStatsService {
     async query(dto: AquiferStatsQueryDto): Promise<AquiferStatsResponseDto> {
         validateBbox(dto);
 
-        const intakeType: TDepthMapIntakeFilter = dto.intakeType ?? 'all';
+        const intakeType: TIntakeTypeFilter = dto.intakeType ?? 'all';
         const cacheKey = buildCacheKey(intakeType, dto.west, dto.south, dto.east, dto.north);
 
         // t0 ловим до cache GET — см. heatmap.service rationale.
@@ -79,7 +78,7 @@ export class AquiferStatsService {
     }
 
     private async fetchRows(
-        intakeType: TDepthMapIntakeFilter,
+        intakeType: TIntakeTypeFilter,
         dto: AquiferStatsQueryDto,
     ): Promise<TRawRow[]> {
         const intakeFilter = this.buildIntakeFilter(intakeType);
@@ -103,7 +102,7 @@ export class AquiferStatsService {
         `;
     }
 
-    private buildIntakeFilter(intakeType: TDepthMapIntakeFilter): Prisma.Sql {
+    private buildIntakeFilter(intakeType: TIntakeTypeFilter): Prisma.Sql {
         if (intakeType === 'well') return Prisma.sql`intake_type = 'well'`;
         if (intakeType === 'well_dug') return Prisma.sql`intake_type = 'well_dug'`;
         return Prisma.sql`intake_type IN ('well', 'well_dug')`;
@@ -203,7 +202,7 @@ function computeDominantLayerId(layers: AquiferLayerStatsDto[]): string | null {
 }
 
 function buildCacheKey(
-    intakeType: TDepthMapIntakeFilter,
+    intakeType: TIntakeTypeFilter,
     west: number,
     south: number,
     east: number,

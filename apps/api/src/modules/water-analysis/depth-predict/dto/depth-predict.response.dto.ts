@@ -1,4 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+// `IntervalDto` из `_shared` — единый interval-DTO для всех predict-endpoints
+// (chemistry/depth). Раньше был DepthIntervalDto-дубликат, объединён 2026-05-08.
+import { IntervalDto } from '../../_shared';
 
 /**
  * Interval-валюированный прогноз глубины бурения. Главный объект для UI.
@@ -29,39 +32,29 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  * быть точным для нондетерминированного процесса. Interval — корректная
  * семантика прогноза. Drilling — типичный нондетерминированный кейс.
  */
-export class DepthIntervalDto {
-    @ApiProperty({ description: 'Нижняя граница диапазона (м).', example: 25 })
-    lower!: number;
-
-    @ApiProperty({ description: 'Верхняя граница диапазона (м).', example: 95 })
-    upper!: number;
-
-    @ApiProperty({
-        description: 'Уровень доверия в %. 80 для primary interval (P10-P90), 50 для IQR (P25-P75), 100 для hardRange.',
-        example: 80,
-    })
-    confidence!: number;
-}
 
 export class DepthEstimateDto {
     @ApiProperty({
-        description: 'Primary interval (80% confidence) — диапазон P10..P90. Главный объект для drilling-планирования.',
-        type: DepthIntervalDto,
+        description:
+            'Primary interval (80% confidence) — диапазон P10..P90 в метрах. Главный объект ' +
+            'для drilling-планирования (lower/upper в метрах, например 25..95).',
+        type: IntervalDto,
     })
-    interval!: DepthIntervalDto;
+    interval!: IntervalDto;
 
     @ApiProperty({
-        description: 'IQR (50% confidence) — узкий типичный диапазон P25..P75. Для UI показать «но половина соседей вот тут».',
-        type: DepthIntervalDto,
+        description: 'IQR (50% confidence) — узкий типичный диапазон P25..P75 (метры).',
+        type: IntervalDto,
     })
-    iqr!: DepthIntervalDto;
+    iqr!: IntervalDto;
 
     @ApiProperty({
         description:
-            'Observed hardRange — абсолютные min/max из выборки. Worst-case safety bound. confidence=100 (это observed).',
-        type: DepthIntervalDto,
+            'Observed hardRange (метры) — абсолютные min/max из выборки. Worst-case safety bound. ' +
+            'confidence=100 (это observed, не оценка).',
+        type: IntervalDto,
     })
-    hardRange!: DepthIntervalDto;
+    hardRange!: IntervalDto;
 
     @ApiProperty({
         description:

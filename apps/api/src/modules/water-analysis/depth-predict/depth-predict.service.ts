@@ -10,7 +10,6 @@ import {
     DEPTH_PREDICT_IDW_SCALE_KM,
     DEPTH_PREDICT_RECENCY_HALF_LIFE_YEARS,
     DEPTH_PREDICT_REDIS_TOKEN,
-    type TDepthPredictIntakeFilter,
 } from '../water-analysis.constants';
 import {
     ageInYears,
@@ -19,6 +18,7 @@ import {
     percentile,
     roundTo,
     stringifyError,
+    type TIntakeTypeFilter,
 } from '../_shared';
 import type { DepthPredictQueryDto } from './dto/depth-predict.request.dto';
 import type {
@@ -54,7 +54,7 @@ export class DepthPredictService {
     async predict(dto: DepthPredictQueryDto): Promise<DepthPredictResponseDto> {
         const k = dto.k ?? DEPTH_PREDICT_DEFAULT_K;
         const radiusKm = dto.radiusKm ?? DEPTH_PREDICT_DEFAULT_RADIUS_KM;
-        const intakeType: TDepthPredictIntakeFilter = dto.intakeType ?? 'well';
+        const intakeType: TIntakeTypeFilter = dto.intakeType ?? 'well';
         const cacheKey = buildCacheKey(dto.lat, dto.lon, k, radiusKm, intakeType);
 
         // t0 ловим до cache GET — см. heatmap.service rationale.
@@ -99,7 +99,7 @@ export class DepthPredictService {
         lon: number,
         radiusKm: number,
         k: number,
-        intakeType: TDepthPredictIntakeFilter,
+        intakeType: TIntakeTypeFilter,
     ): Promise<TNeighborRow[]> {
         const intakeFilter = this.buildIntakeFilter(intakeType);
 
@@ -127,7 +127,7 @@ export class DepthPredictService {
         `;
     }
 
-    private buildIntakeFilter(intakeType: TDepthPredictIntakeFilter): Prisma.Sql {
+    private buildIntakeFilter(intakeType: TIntakeTypeFilter): Prisma.Sql {
         if (intakeType === 'well') {
             return Prisma.sql`intake_type = 'well'`;
         }
@@ -229,7 +229,7 @@ function buildCacheKey(
     lon: number,
     k: number,
     radiusKm: number,
-    intakeType: TDepthPredictIntakeFilter,
+    intakeType: TIntakeTypeFilter,
 ): string {
     const r = (n: number): string => n.toFixed(3);
     return `depth-predict:${intakeType}:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;

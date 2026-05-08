@@ -48,7 +48,7 @@ describe('EquipmentSuggestController', () => {
                 {
                     paramCode: 'iron_total',
                     severity: 'unsafe',
-                    interval: { lower: 0.5, upper: 1.5 },
+                    interval: { lower: 0.5, upper: 1.5, confidence: 80 },
                     pdk: 0.3,
                     n: 18,
                 },

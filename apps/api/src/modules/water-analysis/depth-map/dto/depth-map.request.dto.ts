@@ -6,12 +6,11 @@ import {
     BBOX_LAT_MIN,
     BBOX_LON_MAX,
     BBOX_LON_MIN,
-    DEPTH_MAP_INTAKE_FILTER,
     GRID_DEFAULT_DEG,
     GRID_MAX_DEG,
     GRID_MIN_DEG,
-    type TDepthMapIntakeFilter,
 } from '../../water-analysis.constants';
+import { INTAKE_TYPE_FILTER_VALUES, type TIntakeTypeFilter } from '../../_shared';
 
 /**
  * Карта глубин скважин/колодцев по grid (USP-4 base).
@@ -27,12 +26,12 @@ export class DepthMapQueryDto {
         description:
             'Тип источника. `well` — скважины (mean 49м, max 300м). `well_dug` — колодцы (mean 8м, max 39м). ' +
             '`all` — оба типа (default). municipal/spring/river depth не имеет смысла, отфильтровываются.',
-        enum: DEPTH_MAP_INTAKE_FILTER,
+        enum: INTAKE_TYPE_FILTER_VALUES,
         default: 'all',
     })
     @IsOptional()
-    @IsIn(DEPTH_MAP_INTAKE_FILTER)
-    intakeType?: TDepthMapIntakeFilter;
+    @IsIn(INTAKE_TYPE_FILTER_VALUES)
+    intakeType?: TIntakeTypeFilter;
 
     @ApiProperty({ description: 'BBox west (минимальная долгота, WGS84).', example: 36.5 })
     @Type(() => Number)

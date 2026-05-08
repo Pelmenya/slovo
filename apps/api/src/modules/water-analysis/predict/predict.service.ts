@@ -20,8 +20,8 @@ import {
     weightedMean,
 } from '../_shared';
 import type { PredictQueryDto } from './dto/predict.request.dto';
+import type { IntervalDto } from '../_shared';
 import type {
-    ParamIntervalDto,
     PredictByCategoryDto,
     PredictParamEstimateDto,
     PredictResponseDto,
@@ -215,17 +215,17 @@ function buildPredictedRecord(
 
         const sorted = [...samples.values].sort((a, b) => a - b);
         const median = percentile(sorted, 0.5);
-        const interval: ParamIntervalDto = {
+        const interval: IntervalDto = {
             lower: roundTo(percentile(sorted, 0.1), 4),
             upper: roundTo(percentile(sorted, 0.9), 4),
             confidence: 80,
         };
-        const iqr: ParamIntervalDto = {
+        const iqr: IntervalDto = {
             lower: roundTo(percentile(sorted, 0.25), 4),
             upper: roundTo(percentile(sorted, 0.75), 4),
             confidence: 50,
         };
-        const hardRange: ParamIntervalDto = {
+        const hardRange: IntervalDto = {
             lower: roundTo(sorted[0], 4),
             upper: roundTo(sorted[sorted.length - 1], 4),
             confidence: 100,
@@ -310,7 +310,7 @@ function buildByCategory(
  */
 function evaluatePdkStatus(
     paramCode: string,
-    interval: ParamIntervalDto,
+    interval: IntervalDto,
     median: number,
 ): TPdkStatus | null {
     const meta = WATER_PARAMS_BY_CODE[paramCode];
