@@ -332,10 +332,19 @@ describe('PredictService', () => {
     });
 
     // -----------------------------------------------------------------------
-    // pdkStatus — interval-aware (заменяет old exceedsPdk boolean)
+    // pdkStatus — interval-aware, 4-level severity (safe/borderline/concerning/unsafe)
+    //
+    // Пограничные случаи покрываем по обеим осям:
+    //   - single ПДК (iron 0.3, manganese 0.1): четыре исхода
+    //   - range ПДК (ph 6-9): четыре исхода
+    //   - non-regulated (temperature, electrical_conductivity, unknown): null
+    //
+    // Концептуальное различие borderline vs concerning — медиана:
+    //   crosses & median ≤ pdk → borderline   (большинство в норме)
+    //   crosses & median > pdk → concerning   (большинство превышает)
     // -----------------------------------------------------------------------
 
-    describe('pdkStatus — interval-aware', () => {
+    describe('pdkStatus — interval-aware (4-level severity)', () => {
         // -------- single-pdk параметры (iron_total: 0.3) --------
 
         it('iron_total: все соседи < 0.3 (interval upper ≤ 0.3) → safe', async () => {
@@ -368,21 +377,48 @@ describe('PredictService', () => {
             expect(iron.pdkStatus).toBe('unsafe');
         });
 
-        it('iron_total: interval пересекает ПДК (часть ниже / часть выше) → borderline', async () => {
-            // values от 0.05 до 0.8 — interval [~0.06, ~0.74] пересекает 0.3.
+        it('iron_total: crosses ПДК + median ≤ pdk → borderline (большинство в норме)', async () => {
+            // sorted=[0.05, 0.1, 0.15, 0.2, 0.6] (n=5).
+            //   P10 idx=0.4 → 0.05*0.6 + 0.1*0.4 = 0.07
+            //   P50 idx=2   → 0.15  (≤ 0.3 → borderline ветка)
+            //   P90 idx=3.6 → 0.2*0.4 + 0.6*0.6 = 0.44
+            // interval=[0.07, 0.44] crosses 0.3, median=0.15 ≤ 0.3 → borderline.
             const sampleDate = new Date('2026-05-01');
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.05 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.1 }, dist_km: 1, sample_date: sampleDate }),
                 buildRow({ params: { iron_total: 0.15 }, dist_km: 1, sample_date: sampleDate }),
-                buildRow({ params: { iron_total: 0.3 }, dist_km: 1, sample_date: sampleDate }),
-                buildRow({ params: { iron_total: 0.5 }, dist_km: 1, sample_date: sampleDate }),
-                buildRow({ params: { iron_total: 0.8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.2 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.6 }, dist_km: 1, sample_date: sampleDate }),
             ]);
             const res = await service.predict(buildDto());
             const iron = res.predicted.iron_total;
             expect(iron.interval.lower).toBeLessThanOrEqual(0.3);
             expect(iron.interval.upper).toBeGreaterThan(0.3);
             expect(iron.pdkStatus).toBe('borderline');
+        });
+
+        it('iron_total: crosses ПДК + median > pdk → concerning (большинство превышает)', async () => {
+            // sorted=[0.05, 0.1, 0.5, 0.6, 0.8, 1.0, 1.2] (n=7).
+            //   P10 idx=0.6 → 0.05*0.4 + 0.1*0.6 = 0.08
+            //   P50 idx=3   → 0.6  (> 0.3 → concerning ветка)
+            //   P90 idx=5.4 → 1.0*0.6 + 1.2*0.4 = 1.08
+            // interval=[0.08, 1.08] crosses 0.3, median=0.6 > 0.3 → concerning.
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.05 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.1 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.6 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 1.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 1.2 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const iron = res.predicted.iron_total;
+            expect(iron.interval.lower).toBeLessThanOrEqual(0.3);
+            expect(iron.interval.upper).toBeGreaterThan(0.3);
+            expect(iron.pdkStatus).toBe('concerning');
         });
 
         it('manganese: interval upper ≤ 0.1 → safe (single-pdk 0.1)', async () => {
@@ -393,6 +429,45 @@ describe('PredictService', () => {
             ]);
             const res = await service.predict(buildDto());
             expect(res.predicted.manganese.pdkStatus).toBe('safe');
+        });
+
+        it('manganese: crosses 0.1 + median > 0.1 → concerning', async () => {
+            // sorted=[0.02, 0.05, 0.12, 0.15, 0.2, 0.25, 0.3] (n=7), pdk=0.1.
+            //   P10 idx=0.6 → 0.02*0.4 + 0.05*0.6 = 0.038
+            //   P50 idx=3   → 0.15  (> 0.1 → concerning)
+            //   P90 idx=5.4 → 0.25*0.6 + 0.3*0.4 = 0.27
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { manganese: 0.02 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.05 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.12 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.15 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.2 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.25 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { manganese: 0.3 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const mn = res.predicted.manganese;
+            expect(mn.interval.lower).toBeLessThanOrEqual(0.1);
+            expect(mn.interval.upper).toBeGreaterThan(0.1);
+            expect(mn.pdkStatus).toBe('concerning');
+        });
+
+        it('boundary: median ровно равна pdk → borderline (median > pdk = false)', async () => {
+            // sorted=[0.05, 0.15, 0.3, 0.5, 0.8] (n=5), pdk=0.3.
+            //   P50 idx=2 → 0.3   (median == pdk, оператор ">", не ">=" → borderline)
+            // Тонкий boundary edge: подтверждаем что условие median > pdk строгое.
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.05 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.15 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.3 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.8 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const iron = res.predicted.iron_total;
+            expect(iron.pdkStatus).toBe('borderline');
         });
 
         // -------- range-pdk параметры (ph: [6, 9]) --------
@@ -443,7 +518,11 @@ describe('PredictService', () => {
             expect(ph.pdkStatus).toBe('unsafe');
         });
 
-        it('ph: interval частично вне [6, 9] (5.5-7.5) → borderline', async () => {
+        it('ph: crosses border + median внутри range (5.5-7.5) → borderline', async () => {
+            // sorted=[5.5, 6.0, 6.5, 7.0, 7.5] (n=5), range=[6, 9].
+            //   P10 idx=0.4 → 5.5*0.6 + 6.0*0.4 = 5.7  (< 6 → crosses min)
+            //   P50 idx=2   → 6.5  (внутри [6, 9] → borderline ветка)
+            //   P90 idx=3.6 → 7.0*0.4 + 7.5*0.6 = 7.3
             const sampleDate = new Date('2026-05-01');
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { ph: 5.5 }, dist_km: 1, sample_date: sampleDate }),
@@ -454,8 +533,53 @@ describe('PredictService', () => {
             ]);
             const res = await service.predict(buildDto());
             const ph = res.predicted.ph;
-            // Часть ниже 6, часть в диапазоне → borderline.
             expect(ph.pdkStatus).toBe('borderline');
+        });
+
+        it('ph: crosses border + median вне range → concerning', async () => {
+            // sorted=[3, 4, 4.5, 5, 5.5, 7, 7.5] (n=7), range=[6, 9].
+            //   P10 idx=0.6 → 3*0.4 + 4*0.6 = 3.6
+            //   P50 idx=3   → 5.0  (5 < 6 → median вне → concerning ветка)
+            //   P90 idx=5.4 → 7*0.6 + 7.5*0.4 = 7.2  (внутри → crosses, не unsafe)
+            // interval=[3.6, 7.2] crosses min=6, median=5 < 6 → concerning.
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 3 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 4 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 4.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 5.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.5 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            expect(ph.interval.lower).toBeLessThan(6);
+            expect(ph.interval.upper).toBeLessThanOrEqual(9);
+            expect(ph.pdkStatus).toBe('concerning');
+        });
+
+        it('ph: crosses border сверху + median выше max → concerning', async () => {
+            // Симметричный кейс: интервал перешагнул верхнюю границу 9, медиана > 9.
+            // sorted=[7, 8, 9, 10, 10.5, 11, 11.5] (n=7), range=[6, 9].
+            //   P10 idx=0.6 → 7*0.4 + 8*0.6 = 7.6  (внутри → crosses max, не unsafe)
+            //   P50 idx=3   → 10  (> 9 → median вне → concerning ветка)
+            //   P90 idx=5.4 → 11*0.6 + 11.5*0.4 = 11.2
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 7 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 9 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 10 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 10.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 11 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 11.5 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            expect(ph.interval.lower).toBeLessThanOrEqual(9);
+            expect(ph.interval.upper).toBeGreaterThan(9);
+            expect(ph.pdkStatus).toBe('concerning');
         });
 
         // -------- non-regulated параметры --------
@@ -486,6 +610,107 @@ describe('PredictService', () => {
     });
 
     // -----------------------------------------------------------------------
+    // byCategory — UI shortcut: paramCodes сгруппированы по pdkStatus
+    // -----------------------------------------------------------------------
+
+    describe('byCategory (group paramCodes by pdkStatus)', () => {
+        it('5 buckets всегда возвращаются (unsafe/concerning/borderline/safe/unmonitored)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.1 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+
+            expect(res.byCategory).toBeDefined();
+            expect(res.byCategory.unsafe).toEqual(expect.any(Array));
+            expect(res.byCategory.concerning).toEqual(expect.any(Array));
+            expect(res.byCategory.borderline).toEqual(expect.any(Array));
+            expect(res.byCategory.safe).toEqual(expect.any(Array));
+            expect(res.byCategory.unmonitored).toEqual(expect.any(Array));
+        });
+
+        it('распределение paramCodes по 5 buckets соответствует pdkStatus', async () => {
+            // Mix: iron_total safe (n=1, 0.1 < 0.3); manganese unsafe (один сосед 0.5 > 0.1);
+            // temperature unmonitored (нет ПДК).
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({
+                    params: { iron_total: 0.1, manganese: 0.5, temperature: 12 },
+                    dist_km: 1,
+                }),
+            ]);
+            const res = await service.predict(buildDto());
+
+            expect(res.byCategory.safe).toContain('iron_total');
+            expect(res.byCategory.unsafe).toContain('manganese');
+            expect(res.byCategory.unmonitored).toContain('temperature');
+        });
+
+        it('параметр без данных у соседей НЕ попадает ни в один bucket', async () => {
+            // Только iron_total передан → manganese / hardness_total etc отсутствуют
+            // в predicted, значит не должны быть в buckets.
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.1 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+
+            const allCodes = [
+                ...res.byCategory.unsafe,
+                ...res.byCategory.concerning,
+                ...res.byCategory.borderline,
+                ...res.byCategory.safe,
+                ...res.byCategory.unmonitored,
+            ];
+            expect(allCodes).toEqual(['iron_total']);
+        });
+
+        it('проблемные buckets (unsafe/concerning/borderline) sorted by pointEstimate desc', async () => {
+            // 2 unsafe-параметра: iron_total (point ≈ 1.0) и manganese (point ≈ 0.6).
+            // Ожидаем: byCategory.unsafe = ['iron_total', 'manganese'] (более тяжёлый первым).
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({
+                    params: { iron_total: 1.0, manganese: 0.6 },
+                    dist_km: 1,
+                }),
+            ]);
+            const res = await service.predict(buildDto());
+
+            expect(res.byCategory.unsafe).toEqual(['iron_total', 'manganese']);
+        });
+
+        it('safe/unmonitored buckets sorted by paramCode alphabetically', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                // 2 safe + 2 unmonitored
+                buildRow({
+                    params: {
+                        manganese: 0.02,
+                        iron_total: 0.05,
+                        temperature: 12,
+                        electrical_conductivity: 800,
+                    },
+                    dist_km: 1,
+                }),
+            ]);
+            const res = await service.predict(buildDto());
+
+            // Alphabetical: iron_total < manganese, electrical_conductivity < temperature.
+            expect(res.byCategory.safe).toEqual(['iron_total', 'manganese']);
+            expect(res.byCategory.unmonitored).toEqual(['electrical_conductivity', 'temperature']);
+        });
+
+        it('insufficientData (no neighbors) → все 5 buckets пустые', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([]);
+            const res = await service.predict(buildDto());
+
+            expect(res.byCategory).toEqual({
+                unsafe: [],
+                concerning: [],
+                borderline: [],
+                safe: [],
+                unmonitored: [],
+            });
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // Cache hit / miss / errors
     // -----------------------------------------------------------------------
 
@@ -501,6 +726,13 @@ describe('PredictService', () => {
                         n: 18,
                         pdkStatus: 'borderline',
                     },
+                },
+                byCategory: {
+                    unsafe: [],
+                    concerning: [],
+                    borderline: ['iron_total'],
+                    safe: [],
+                    unmonitored: [],
                 },
                 nNeighbors: 18,
                 medianDistKm: 1.5,
@@ -788,7 +1020,7 @@ describe('PredictService', () => {
                     }),
                     pointEstimate: expect.any(Number),
                     n: 1,
-                    // pdkStatus: либо строка ('safe'/'borderline'/'unsafe') либо null.
+                    // pdkStatus: либо строка ('safe'/'borderline'/'concerning'/'unsafe') либо null.
                     pdkStatus: expect.anything(),
                 }),
             );

@@ -19,19 +19,25 @@ export class ParamIntervalDto {
 }
 
 /**
- * Status относительно ПДК. Interval-aware: оценивается весь interval, не точка.
+ * Status относительно ПДК. Interval-aware с 4 уровнями (severity gradation):
  *
- * - `'safe'` — весь primary interval внутри норматива.
- * - `'borderline'` — interval пересекает ПДК (часть выше, часть ниже). Honest signal
- *   что данных не хватает чтобы дать однозначный ответ — нужен реальный анализ.
- * - `'unsafe'` — весь interval вне норматива (точно превышает / точно вне range).
+ * - `'safe'` — весь primary interval внутри норматива (upper ≤ ПДК).
+ * - `'borderline'` — interval пересекает ПДК но **median ≤ ПДК**. Большинство
+ *   соседей в норме, но есть выбросы выше — может или не может быть проблемой.
+ *   «Возможно норма».
+ * - `'concerning'` — interval пересекает ПДК и **median > ПДК**. Большинство
+ *   соседей превышает норматив. Реальный анализ почти точно покажет проблему.
+ *   «Скорее всего проблема».
+ * - `'unsafe'` — весь interval вне норматива (lower > ПДК). 100% соседей
+ *   превышают — точно нужна фильтрация.
  * - `null` — параметр не нормируется СанПиН (temperature, electrical_conductivity).
  *
- * Это **гораздо честнее** boolean `exceedsPdk`: для нондетерминированного процесса
- * (вода) точка прогноза 0.42 говорит «превышает», но interval [0.18, 0.72] показывает
- * что 30% соседей — ниже ПДК, 70% — выше. Правда — `borderline`.
+ * 4 уровня вместо 3 — потому что binary borderline-vs-unsafe не различает
+ * случаи когда interval [1, 70] median 50 при ПДК 20 (явная проблема) от
+ * [1, 25] median 5 при ПДК 20 (скорее норма). Оба crosses, но семантически
+ * разные. `concerning` — недостающее звено.
  */
-export type TPdkStatus = 'safe' | 'borderline' | 'unsafe';
+export type TPdkStatus = 'safe' | 'borderline' | 'concerning' | 'unsafe';
 
 /**
  * Прогноз одного параметра — interval-валуированный (PhD interval analysis).
@@ -88,14 +94,62 @@ export class PredictParamEstimateDto {
 
     @ApiProperty({
         description:
-            'Interval-aware status относительно ПДК. `safe` — весь interval ниже норматива. ' +
-            '`borderline` — interval пересекает ПДК (нужен реальный анализ для уверенности). ' +
-            '`unsafe` — весь interval превышает. `null` — параметр не нормируется.',
-        enum: ['safe', 'borderline', 'unsafe'],
+            'Interval-aware status относительно ПДК. 4 уровня severity: ' +
+            '`safe` — весь interval ниже норматива; ' +
+            '`borderline` — interval пересекает ПДК, median ≤ ПДК (возможно норма); ' +
+            '`concerning` — interval пересекает ПДК, median > ПДК (скорее всего проблема); ' +
+            '`unsafe` — весь interval превышает (100% соседей вне нормы). ' +
+            '`null` — параметр не нормируется.',
+        enum: ['safe', 'borderline', 'concerning', 'unsafe'],
         nullable: true,
-        example: 'borderline',
+        example: 'concerning',
     })
     pdkStatus!: TPdkStatus | null;
+}
+
+/**
+ * Группировка paramCodes по pdkStatus — UI shortcut для рендера секций
+ * без итерации по 22 параметрам. Все 5 buckets всегда возвращаются (могут быть
+ * пустыми). Внутри bucket sorted: для проблем — по pointEstimate desc (сильнее
+ * первыми), для safe/unmonitored — по paramCode alphabetically.
+ *
+ * Семантически:
+ *  - `unsafe` — точно требует фильтра (100% соседей вне нормы)
+ *  - `concerning` — скорее всего требует (median вне)
+ *  - `borderline` — может или нет (выбросы вне, но median в норме)
+ *  - `safe` — норма у соседей
+ *  - `unmonitored` — не нормируется СанПиН (temperature, electrical_conductivity)
+ */
+export class PredictByCategoryDto {
+    @ApiProperty({
+        description: 'paramCodes с unsafe pdkStatus. Для UI секции «срочные проблемы» (красный).',
+        example: ['nitrites', 'iron_total'],
+    })
+    unsafe!: string[];
+
+    @ApiProperty({
+        description: 'paramCodes с concerning pdkStatus. Для UI «вероятные проблемы» (оранжевый).',
+        example: ['manganese', 'turbidity'],
+    })
+    concerning!: string[];
+
+    @ApiProperty({
+        description: 'paramCodes с borderline pdkStatus. Для UI «на границе» (жёлтый).',
+        example: ['color', 'odor'],
+    })
+    borderline!: string[];
+
+    @ApiProperty({
+        description: 'paramCodes с safe pdkStatus. Для UI «всё ок» (зелёный).',
+        example: ['hardness_total', 'ph'],
+    })
+    safe!: string[];
+
+    @ApiProperty({
+        description: 'paramCodes которые не нормируются СанПиН (temperature, electrical_conductivity). Для UI «справочно» (серый).',
+        example: ['temperature', 'electrical_conductivity'],
+    })
+    unmonitored!: string[];
 }
 
 export class PredictResponseDto {
@@ -110,11 +164,20 @@ export class PredictResponseDto {
                 hardRange: { lower: 0.05, upper: 1.5, confidence: 100 },
                 pointEstimate: 0.42,
                 n: 18,
-                pdkStatus: 'borderline',
+                pdkStatus: 'concerning',
             },
         },
     })
     predicted!: Record<string, PredictParamEstimateDto>;
+
+    @ApiProperty({
+        description:
+            'Группировка paramCodes из `predicted` по pdkStatus — UI shortcut для рендера секций ' +
+            'без iteration по 22 параметрам. Sorted внутри: проблемы по pointEstimate desc, ' +
+            'safe/unmonitored по name alphabetically.',
+        type: PredictByCategoryDto,
+    })
+    byCategory!: PredictByCategoryDto;
 
     @ApiProperty({ description: 'Сколько всего соседей найдено в радиусе.', example: 18 })
     nNeighbors!: number;

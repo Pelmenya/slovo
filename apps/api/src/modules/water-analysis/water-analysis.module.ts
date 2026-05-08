@@ -5,6 +5,7 @@ import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client'
 import type { TAppEnv } from '@slovo/common';
 import Redis from 'ioredis';
 import {
+    AQUIFER_STATS_REDIS_TOKEN,
     DEPTH_MAP_REDIS_TOKEN,
     DEPTH_PREDICT_REDIS_TOKEN,
     EQUIPMENT_SUGGEST_REDIS_TOKEN,
@@ -13,6 +14,8 @@ import {
     POINTS_REDIS_TOKEN,
     PREDICT_REDIS_TOKEN,
 } from './water-analysis.constants';
+import { AquiferStatsController } from './aquifer-stats/aquifer-stats.controller';
+import { AquiferStatsService } from './aquifer-stats/aquifer-stats.service';
 import { DepthMapController } from './depth-map/depth-map.controller';
 import { DepthMapService } from './depth-map/depth-map.service';
 import { DepthPredictController } from './depth-predict/depth-predict.controller';
@@ -188,6 +191,26 @@ const equipmentSuggestRedisProvider: Provider = {
     },
 };
 
+// Aquifer-stats Redis instance — TTL 24ч (стабильные данные), command-timeout 3s.
+const aquiferStatsRedisProvider: Provider = {
+    provide: AQUIFER_STATS_REDIS_TOKEN,
+    inject: [ConfigService],
+    useFactory: (config: ConfigService<TAppEnv, true>): Redis => {
+        const host = config.getOrThrow('REDIS_HOST', { infer: true });
+        const port = config.getOrThrow('REDIS_PORT', { infer: true });
+        const password = config.get('REDIS_PASSWORD', { infer: true });
+        return new Redis({
+            host,
+            port,
+            password: password || undefined,
+            lazyConnect: false,
+            maxRetriesPerRequest: 2,
+            connectTimeout: 5_000,
+            commandTimeout: 3_000,
+        });
+    },
+};
+
 @Module({
     imports: [DatabaseModule],
     controllers: [
@@ -198,6 +221,7 @@ const equipmentSuggestRedisProvider: Provider = {
         DepthPredictController,
         PointsController,
         EquipmentSuggestController,
+        AquiferStatsController,
     ],
     providers: [
         flowiseClientProvider,
@@ -207,6 +231,7 @@ const equipmentSuggestRedisProvider: Provider = {
         depthPredictRedisProvider,
         pointsRedisProvider,
         equipmentSuggestRedisProvider,
+        aquiferStatsRedisProvider,
         SimilarSearchService,
         HeatmapService,
         PredictService,
@@ -214,6 +239,7 @@ const equipmentSuggestRedisProvider: Provider = {
         DepthPredictService,
         PointsService,
         EquipmentSuggestService,
+        AquiferStatsService,
     ],
 })
 export class WaterAnalysisModule {}

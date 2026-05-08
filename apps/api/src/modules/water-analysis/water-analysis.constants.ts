@@ -312,6 +312,37 @@ export const EQUIPMENT_SUGGEST_DEFAULT_TOP_K = 5;
 export const EQUIPMENT_SUGGEST_MIN_TOP_K = 1;
 export const EQUIPMENT_SUGGEST_MAX_TOP_K = 20;
 
+// =============================================================================
+// Aquifer-stats endpoint (4.B.6 USP-4 deep-dive) — стратифицированная статистика
+// по 5 водоносным горизонтам в bbox.
+//
+// Audience: drilling-юзеры (бурильщики/копатели/гидрогеологи) которые хотят
+// знать «какая обычно вода на каждом горизонте в этом районе» до бурения.
+//
+// Per layer:
+//   - count + pct (% от total wells/well_dug в bbox)
+//   - median depth (в каком диапазоне типично бурят на этом слое)
+//   - typical chemistry (median 22 параметров) — что ожидать на этой глубине
+//
+// Использует те же AQUIFER_LAYERS bucket'ы что /depth-map, /predict (mostLikelyLayer),
+// /depth-predict (layerDistribution). Это **deep-dive** версия: добавляет
+// типичную химию per layer, не только counts.
+//
+// Throttle 60/min/IP — endpoint heavier чем depth-map (20+ aggregations per bucket
+// в TS), но light read overall (~150-300мс). Cache TTL 24ч (стабильные данные).
+// =============================================================================
+
+export const AQUIFER_STATS_THROTTLE_LIMIT = 60;
+export const AQUIFER_STATS_THROTTLE_TTL_MS = 60_000;
+export const AQUIFER_STATS_CACHE_TTL_SECONDS = 24 * 60 * 60;
+export const AQUIFER_STATS_REDIS_TOKEN = Symbol('WATER_ANALYSIS_AQUIFER_STATS_REDIS');
+
+// Sample limit для aggregation. SQL pull лимитирован чтобы avoid huge JSON
+// responses — при 8000+ точек и 20+ params на каждой это ~10MB jsonb. Берём
+// 5000 максимум, ORDER BY sample_date DESC — свежие важнее. На 8626 точек МО
+// это значит мы пропустим самые старые ~3.5K — ОК для типичной chemistry.
+export const AQUIFER_STATS_SAMPLE_LIMIT = 5000;
+
 export const HEATMAP_PARAMS = [
     // Органолептические
     'odor',

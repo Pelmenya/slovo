@@ -3,23 +3,25 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 /**
  * Идентифицированная проблема воды по конкретному параметру.
  *
- * Severity:
- * - `unsafe` — весь interval превышает ПДК (точно проблема)
- * - `borderline` — interval пересекает ПДК (неоднозначно, нужен реальный анализ
- *   но рекомендация уже релевантна)
+ * Severity (4 уровня, см. TPdkStatus в /predict):
+ * - `unsafe` — весь interval превышает ПДК (100% соседей вне нормы, точно проблема)
+ * - `concerning` — interval crosses ПДК, **median > ПДК** (большинство соседей превышают)
+ * - `borderline` — interval crosses ПДК, median ≤ ПДК (большинство в норме, выбросы выше)
  *
- * `safe` параметры в response.problems не попадают.
+ * `safe` параметры в response.problems не попадают (нечего рекомендовать).
  */
 export class WaterProblemDto {
     @ApiProperty({ description: 'Canonical paramCode (iron_total/manganese/...).', example: 'iron_total' })
     paramCode!: string;
 
     @ApiProperty({
-        description: 'Северити проблемы. См. interval-aware pdkStatus в /predict.',
-        enum: ['borderline', 'unsafe'],
-        example: 'unsafe',
+        description:
+            'Severity проблемы. unsafe (100% соседей вне нормы) → concerning (median вне) → ' +
+            'borderline (median в норме, есть выбросы). См. TPdkStatus в /predict.',
+        enum: ['borderline', 'concerning', 'unsafe'],
+        example: 'concerning',
     })
-    severity!: 'borderline' | 'unsafe';
+    severity!: 'borderline' | 'concerning' | 'unsafe';
 
     @ApiProperty({ description: 'Primary interval (P10-P90) — ожидаемый диапазон.', example: { lower: 0.5, upper: 1.5 } })
     interval!: { lower: number; upper: number };
@@ -46,6 +48,22 @@ export class EquipmentRecommendationDto {
         example: 'Колонна для удаления растворённого железа методом каталитического окисления...',
     })
     description!: string;
+
+    @ApiProperty({
+        description:
+            'Канонический paramCode проблемы для которой матчили этот товар (через PROBLEM_TO_QUERY ' +
+            'mapping). UI использует для группировки рекомендаций и highlight связи problem → product.',
+        example: 'iron_total',
+    })
+    matchedProblem!: string;
+
+    @ApiProperty({
+        description:
+            'Human-readable объяснение «почему этот товар» — UI показывает под названием. ' +
+            'Различается по severity matched problem.',
+        example: 'Решает явное превышение «Железо (Fe, суммарно)»',
+    })
+    reason!: string;
 
     @ApiPropertyOptional({
         description: 'URL изображения (presigned S3) — если есть в metadata. UI рендерит preview.',

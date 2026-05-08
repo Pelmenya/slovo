@@ -52,6 +52,13 @@ describe('PredictController', () => {
                     pdkStatus: 'borderline',
                 },
             },
+            byCategory: {
+                unsafe: [],
+                concerning: [],
+                borderline: ['iron_total'],
+                safe: [],
+                unmonitored: [],
+            },
             nNeighbors: 18,
             medianDistKm: 1.5,
             radiusKm: 50,
@@ -89,6 +96,13 @@ describe('PredictController', () => {
     it('возвращает Promise (async signature)', () => {
         serviceMock.predict.mockResolvedValueOnce({
             predicted: {},
+            byCategory: {
+                unsafe: [],
+                concerning: [],
+                borderline: [],
+                safe: [],
+                unmonitored: [],
+            },
             nNeighbors: 0,
             medianDistKm: 0,
             radiusKm: 50,

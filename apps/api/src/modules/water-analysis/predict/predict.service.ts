@@ -14,6 +14,7 @@ import {
 import type { PredictQueryDto } from './dto/predict.request.dto';
 import type {
     ParamIntervalDto,
+    PredictByCategoryDto,
     PredictParamEstimateDto,
     PredictResponseDto,
     TPdkStatus,
@@ -70,10 +71,12 @@ export class PredictService {
         const today = new Date();
         const aggregated = aggregateNeighbors(rows, today);
         const predicted = buildPredictedRecord(aggregated);
+        const byCategory = buildByCategory(predicted);
         const aquiferLayer = computeMostLikelyAquiferLayer(rows);
 
         const response: PredictResponseDto = {
             predicted,
+            byCategory,
             nNeighbors: rows.length,
             medianDistKm: roundTo(medianOfDistances(rows), 2),
             radiusKm,
@@ -202,6 +205,7 @@ function buildPredictedRecord(
         if (samples.values.length === 0) continue;
 
         const sorted = [...samples.values].sort((a, b) => a - b);
+        const median = percentile(sorted, 0.5);
         const interval: ParamIntervalDto = {
             lower: roundTo(percentile(sorted, 0.1), 4),
             upper: roundTo(percentile(sorted, 0.9), 4),
@@ -218,7 +222,7 @@ function buildPredictedRecord(
             confidence: 100,
         };
         const pointEstimate = roundTo(weightedMean(samples.values, samples.weights), 4);
-        const pdkStatus = evaluatePdkStatus(paramCode, interval);
+        const pdkStatus = evaluatePdkStatus(paramCode, interval, median);
 
         result[paramCode] = {
             interval,
@@ -234,19 +238,72 @@ function buildPredictedRecord(
 }
 
 /**
- * Interval-aware PDK status. Сравнивает primary interval (P10-P90) с нормативом
- * из СанПиН справочника:
- *   - single ПДК (iron 0.3, manganese 0.1, ...): safe если upper ≤ pdk,
- *     unsafe если lower > pdk, иначе borderline (interval пересекает ПДК).
- *   - range ПДК (pH 6-9): safe если interval целиком внутри [min, max],
- *     unsafe если interval целиком вне, borderline иначе.
- *   - не нормируется (temperature, electrical_conductivity): null.
+ * Группировка paramCodes по pdkStatus + sorting для UI shortcut.
  *
- * Это **значимо честнее** чем boolean exceedsPdk(value): для нондетерминированного
- * процесса interval естественно может пересекать threshold и это ВАЖНАЯ информация.
- * `borderline` — сигнал «нужен реальный анализ, прогноз неоднозначен».
+ * Для проблем (unsafe/concerning/borderline) — sort по pointEstimate desc
+ * (сильнее превышения первыми). Для safe/unmonitored — alphabetically (стабильно
+ * для UI render). Все 5 buckets всегда возвращаются (могут быть пустыми).
  */
-function evaluatePdkStatus(paramCode: string, interval: ParamIntervalDto): TPdkStatus | null {
+function buildByCategory(
+    predicted: Record<string, PredictParamEstimateDto>,
+): PredictByCategoryDto {
+    const buckets: PredictByCategoryDto = {
+        unsafe: [],
+        concerning: [],
+        borderline: [],
+        safe: [],
+        unmonitored: [],
+    };
+
+    for (const [code, est] of Object.entries(predicted)) {
+        if (est.pdkStatus === null) {
+            buckets.unmonitored.push(code);
+        } else {
+            buckets[est.pdkStatus].push(code);
+        }
+    }
+
+    // Sort: проблемы по pointEstimate desc, safe/unmonitored alphabetically.
+    const sortByPointDesc = (a: string, b: string): number =>
+        (predicted[b]?.pointEstimate ?? 0) - (predicted[a]?.pointEstimate ?? 0);
+    const sortByName = (a: string, b: string): number => a.localeCompare(b);
+
+    buckets.unsafe.sort(sortByPointDesc);
+    buckets.concerning.sort(sortByPointDesc);
+    buckets.borderline.sort(sortByPointDesc);
+    buckets.safe.sort(sortByName);
+    buckets.unmonitored.sort(sortByName);
+
+    return buckets;
+}
+
+/**
+ * Interval-aware PDK status. 4-level severity gradation для honest signal:
+ *
+ *   Single ПДК (iron 0.3, manganese 0.1, ...):
+ *     - `safe` — interval.upper ≤ pdk (все ниже)
+ *     - `unsafe` — interval.lower > pdk (все выше)
+ *     - `concerning` — crosses pdk, **median > pdk** (большинство соседей превышают)
+ *     - `borderline` — crosses pdk, median ≤ pdk (большинство в норме)
+ *
+ *   Range ПДК (pH 6-9):
+ *     - `safe` — interval целиком внутри [min, max]
+ *     - `unsafe` — interval целиком вне (completely below или above)
+ *     - `concerning` — crosses border + median вне range
+ *     - `borderline` — crosses border + median внутри
+ *
+ *   null — параметр не нормируется (temperature, electrical_conductivity).
+ *
+ * 4-level вместо 3 — реальные данные показывают что binary borderline-vs-unsafe
+ * не различает случаи: `color [1.34, 69.76]` median 50 при ПДК 20 явно `concerning`,
+ * а `odor [0, 3.1]` median 1.5 при ПДК 2 действительно `borderline`. Median —
+ * tipping point.
+ */
+function evaluatePdkStatus(
+    paramCode: string,
+    interval: ParamIntervalDto,
+    median: number,
+): TPdkStatus | null {
     const meta = WATER_PARAMS_BY_CODE[paramCode];
     if (!meta || !meta.regulated || meta.pdk === null) return null;
 
@@ -254,7 +311,8 @@ function evaluatePdkStatus(paramCode: string, interval: ParamIntervalDto): TPdkS
         const pdk = meta.pdk;
         if (interval.upper <= pdk) return 'safe';
         if (interval.lower > pdk) return 'unsafe';
-        return 'borderline';
+        // Crosses ПДК — различаем по медиане
+        return median > pdk ? 'concerning' : 'borderline';
     }
 
     // Range-type ПДК (pH 6-9 и подобные).
@@ -267,7 +325,9 @@ function evaluatePdkStatus(paramCode: string, interval: ParamIntervalDto): TPdkS
     const completelyAbove = interval.lower > max;
     if (completelyBelow || completelyAbove) return 'unsafe';
 
-    return 'borderline';
+    // Crosses border — медиана внутри range = borderline, вне = concerning
+    const medianInside = median >= min && median <= max;
+    return medianInside ? 'borderline' : 'concerning';
 }
 
 // =============================================================================

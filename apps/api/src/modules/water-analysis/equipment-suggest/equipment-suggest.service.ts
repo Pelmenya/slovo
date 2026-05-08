@@ -96,13 +96,22 @@ export class EquipmentSuggestService {
         const problems = extractProblems(prediction.predicted);
         const searchQuery = buildSearchQuery(problems);
 
-        // Step 5: catalog vector search. Если problems пустой — query тоже
-        // пустой/слабый, smoke-search всё равно вернёт generic фильтры.
-        // Решение: при отсутствии problems пропускаем catalog search и отдаём
-        // empty recommendations — UI скажет «вода в норме, дополнительная
-        // фильтрация необязательна».
+        // Step 5: per-problem catalog search для **targeted** рекомендаций.
+        // Раньше делали один общий query → catalog vector search возвращал
+        // generic фильтры (Кристалл Н, Викинг Миди корпус, и т.п.) которые
+        // matched по semantic similarity к концу natural-language query, но
+        // не to specific problems.
+        //
+        // Теперь: для каждой problem делаем отдельный targeted query
+        // (например для iron_total — «обезжелезиватель удаление железа»),
+        // берём top-2-3 результата, мерджим уникально по SKU/name.
+        // Per-problem queries используют technology-keywords из mapping
+        // PROBLEM_TO_QUERY ниже — они попадают в semantic neighborhood
+        // соответствующих product descriptions vision-augmenter'а.
+        //
+        // Если problems пустой — empty recommendations (вода в норме).
         const recommendations =
-            problems.length === 0 ? [] : await this.runCatalogSearch(searchQuery, topK);
+            problems.length === 0 ? [] : await this.runPerProblemCatalogSearch(problems, topK);
 
         const timeTakenMs = Date.now() - t0;
         const response: EquipmentSuggestResponseDto = {
@@ -122,17 +131,60 @@ export class EquipmentSuggestService {
         return response;
     }
 
-    private async runCatalogSearch(
-        query: string,
+    /**
+     * Per-problem targeted catalog search. Для каждой problem (в порядке severity)
+     * делаем отдельный vector query с technology-keywords (PROBLEM_TO_QUERY mapping).
+     * Берём top-PER_PROBLEM_K из каждого, дедупим по `name`+`sku` (один и тот же
+     * товар не повторяем), сохраняем порядок (severity-ordered).
+     *
+     * Cap по итоговому topK — клиент получит ровно столько уникальных рекомендаций
+     * сколько просил, не больше.
+     */
+    private async runPerProblemCatalogSearch(
+        problems: WaterProblemDto[],
         topK: number,
     ): Promise<EquipmentRecommendationDto[]> {
         const storeId = await this.resolveCatalogStoreId();
-        const response = await this.flowise.request<TFlowiseQueryResponse>(
-            ENDPOINTS.vectorstoreQuery,
-            { method: 'POST', body: { storeId, query, topK } },
-        );
 
-        return response.docs.map(mapDocToRecommendation);
+        // Ограничиваем кол-во per-problem запросов к Flowise чтобы не делать
+        // 7 round-trips при наличии 7 проблем (latency cap). Топ-3 проблемы
+        // (severity-ordered) обычно дают достаточно targeted variety.
+        const topProblems = problems.slice(0, MAX_PROBLEM_QUERIES);
+
+        // Track matched problem на каждый doc — для UI «почему этот товар».
+        // Используем `{ doc, problem }` пар чтобы дедуп сохранял **первую**
+        // matched problem (severity-ordered preserves: для doc найденного через
+        // unsafe-iron а потом через borderline-manganese — оставляем iron, т.к.
+        // более серьёзная проблема приоритет).
+        const allMatches: Array<{ doc: TFlowiseQueryDoc; problem: WaterProblemDto }> = [];
+        for (const problem of topProblems) {
+            const targetedQuery = buildTargetedQuery(problem);
+            const response = await this.flowise.request<TFlowiseQueryResponse>(
+                ENDPOINTS.vectorstoreQuery,
+                {
+                    method: 'POST',
+                    body: { storeId, query: targetedQuery, topK: PER_PROBLEM_K },
+                },
+            );
+            for (const doc of response.docs) {
+                allMatches.push({ doc, problem });
+            }
+        }
+
+        // Dedup по составному ключу (name + orderNumber/sku), keep первое
+        // появление с его matched problem (severity-ordered preserves importance).
+        const seen = new Set<string>();
+        const uniqueRecommendations: EquipmentRecommendationDto[] = [];
+        for (const { doc, problem } of allMatches) {
+            const rec = mapDocToRecommendation(doc, problem);
+            const key = `${rec.name}::${rec.sku}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            uniqueRecommendations.push(rec);
+            if (uniqueRecommendations.length >= topK) break;
+        }
+
+        return uniqueRecommendations;
     }
 
     private resolveCatalogStoreId(): Promise<string> {
@@ -188,13 +240,74 @@ export class EquipmentSuggestService {
 }
 
 // =============================================================================
+// Per-problem catalog search constants + mapping
+// =============================================================================
+
+// Сколько проблем (top-N severity) брать для per-problem catalog queries.
+// 3 — баланс targeted-variety и Flowise round-trip latency. Если у клиента 7
+// проблем (как в МО centre выборке) — берём 3 самые серьёзные. Остальные
+// проблемы UI покажет в `problems[]` чтобы клиент видел полную картину.
+const MAX_PROBLEM_QUERIES = 3;
+
+// Сколько top результатов из catalog забирать на каждую problem. 2 — после
+// dedup даёт обычно 4-5 уникальных рекомендаций (некоторые товары matched
+// несколькими problems, dedup убирает повторы).
+const PER_PROBLEM_K = 2;
+
+/**
+ * paramCode → targeted natural-language query для catalog vector search.
+ *
+ * Запросы написаны так чтобы embedding попал в semantic neighborhood vision-
+ * augmented описаний из catalog (которые vision-augmenter генерил с упоминанием
+ * технологий типа «обезжелезиватель», «умягчитель», «обратный осмос»).
+ *
+ * Mapping curated на основе common practitioner-knowledge водоподготовки:
+ * - Железо/марганец → катализная окислительная фильтрация (BIRM, MnO2)
+ * - Жёсткость (Ca/Mg) → ионный обмен (Na-катионирование) или RO
+ * - Анионы (нитраты/сульфаты/фториды/хлориды) → RO или анионообмен
+ * - Сероводород/запах → угольная фильтрация / аэрация
+ * - Аммоний → специальная ионообменная или RO
+ * - Мутность/цветность → механический фильтр / коагуляция
+ * - Permanganate oxidizability (общая органика) → угольный фильтр
+ *
+ * Параметры без специфичной технологии (ph, temperature, etc) → generic.
+ */
+const PROBLEM_TO_QUERY: Record<string, string> = {
+    iron_total: 'обезжелезиватель удаление растворённого железа из воды',
+    manganese: 'обезмарганцевание удаление марганца окислительная фильтрация',
+    hardness_total: 'умягчитель смягчение жёсткой воды ионный обмен',
+    magnesium: 'умягчение снижение жёсткости магний кальций',
+    calcium: 'умягчение снижение жёсткости магний кальций',
+    tds: 'обратный осмос снижение TDS общей минерализации',
+    nitrates: 'обратный осмос удаление нитратов',
+    nitrites: 'обратный осмос удаление нитритов',
+    sulfates: 'обратный осмос удаление сульфатов',
+    chlorides: 'обратный осмос удаление хлоридов',
+    fluorides: 'обратный осмос удаление фторидов',
+    sulfides: 'угольный фильтр удаление сероводорода и сульфидов',
+    hydrogen_sulfide: 'угольный фильтр аэрация удаление сероводорода запах',
+    ammonium: 'ионообменный фильтр удаление аммиака аммония',
+    turbidity: 'механический фильтр осветление мутной воды',
+    color: 'осветление цветной воды коагуляция фильтрация',
+    odor: 'угольный фильтр устранение запаха воды',
+    permanganate_oxidizability: 'угольный фильтр снижение перманганатной окисляемости органика',
+    ph: 'нейтрализация pH корректировка кислотности воды',
+};
+
+const GENERIC_FALLBACK_QUERY = 'фильтр для очистки питьевой воды';
+
+function buildTargetedQuery(problem: WaterProblemDto): string {
+    return PROBLEM_TO_QUERY[problem.paramCode] ?? GENERIC_FALLBACK_QUERY;
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
 /**
- * Извлечь проблемы из predict-output: только параметры с `pdkStatus` ∈
- * {'borderline', 'unsafe'}. Sort by severity (unsafe сначала, потом borderline)
- * + дополнительно по n (больше соседей = выше уверенность).
+ * Извлечь проблемы из predict-output: pdkStatus ∈ {borderline, concerning, unsafe}
+ * (safe не попадает — нечего рекомендовать). Sort by severity (unsafe → concerning →
+ * borderline), затем по n (больше соседей = выше уверенность).
  */
 function extractProblems(
     predicted: Record<
@@ -209,7 +322,13 @@ function extractProblems(
     const problems: WaterProblemDto[] = [];
 
     for (const [paramCode, est] of Object.entries(predicted)) {
-        if (est.pdkStatus !== 'unsafe' && est.pdkStatus !== 'borderline') continue;
+        if (
+            est.pdkStatus !== 'unsafe' &&
+            est.pdkStatus !== 'concerning' &&
+            est.pdkStatus !== 'borderline'
+        ) {
+            continue;
+        }
 
         const meta = WATER_PARAMS_BY_CODE[paramCode];
         if (!meta || meta.pdk === null) continue;
@@ -223,10 +342,16 @@ function extractProblems(
         });
     }
 
+    const SEVERITY_RANK: Record<TPdkStatus, number> = {
+        unsafe: 0,
+        concerning: 1,
+        borderline: 2,
+        safe: 3, // never в этой выборке, но нужен для type-completeness
+    };
+
     return problems.sort((a, b) => {
-        if (a.severity !== b.severity) {
-            return a.severity === 'unsafe' ? -1 : 1;
-        }
+        const rankDiff = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+        if (rankDiff !== 0) return rankDiff;
         return b.n - a.n;
     });
 }
@@ -249,16 +374,21 @@ function buildSearchQuery(problems: WaterProblemDto[]): string {
         const intervalStr = `${problem.interval.lower}-${problem.interval.upper}${unit ? ' ' + unit : ''}`;
 
         if (problem.severity === 'unsafe') {
-            parts.push(`превышение по показателю «${label}» (${intervalStr})`);
+            parts.push(`явное превышение «${label}» (${intervalStr})`);
+        } else if (problem.severity === 'concerning') {
+            parts.push(`вероятное превышение «${label}» (${intervalStr})`);
         } else {
-            parts.push(`${label} на границе ПДК (${intervalStr})`);
+            parts.push(`«${label}» на границе ПДК (${intervalStr})`);
         }
     }
 
     return `Подобрать оборудование для воды с проблемами: ${parts.join('; ')}.`;
 }
 
-function mapDocToRecommendation(doc: TFlowiseQueryDoc): EquipmentRecommendationDto {
+function mapDocToRecommendation(
+    doc: TFlowiseQueryDoc,
+    matchedProblem: WaterProblemDto,
+): EquipmentRecommendationDto {
     const meta = doc.metadata;
     const sku = stringOr(meta.orderNumber, stringOr(meta.sku, 'unknown'));
     const name = stringOr(meta.name, stringOr(meta.title, 'Без названия'));
@@ -268,9 +398,33 @@ function mapDocToRecommendation(doc: TFlowiseQueryDoc): EquipmentRecommendationD
     const description = doc.pageContent.slice(0, 280);
     const imageUrl = stringOrUndefined(meta.imageUrl);
 
-    return imageUrl
-        ? { sku, name, relevance, description, imageUrl }
-        : { sku, name, relevance, description };
+    const reason = buildReason(matchedProblem);
+    const base: EquipmentRecommendationDto = {
+        sku,
+        name,
+        relevance,
+        description,
+        matchedProblem: matchedProblem.paramCode,
+        reason,
+    };
+    return imageUrl ? { ...base, imageUrl } : base;
+}
+
+/**
+ * Human-readable объяснение «почему этот товар» — UI показывает под названием.
+ * Формат: severity-aware фраза + русский label параметра.
+ */
+function buildReason(problem: WaterProblemDto): string {
+    const meta = WATER_PARAMS_BY_CODE[problem.paramCode];
+    const label = meta?.nameRu ?? problem.paramCode;
+
+    if (problem.severity === 'unsafe') {
+        return `Решает явное превышение «${label}»`;
+    }
+    if (problem.severity === 'concerning') {
+        return `Решает вероятное превышение «${label}»`;
+    }
+    return `Подходит для «${label}» на границе ПДК`;
 }
 
 function stringOr(value: unknown, fallback: string): string {
