@@ -161,31 +161,105 @@
 
 **Acceptance:** клиент видит outline-каплю «Вода» в bottom-nav, тапает → попадает на placeholder-страницу с hero-каплей (filled gradient + sparkle) и описанием будущей фичи. Light/Dark theme работают. Burger-menu не блокируется. ✅
 
-### Phase 4 — Heatmap production (3-4 дня)
+### Phase 4 — Backend ручки + flagship USP (8-12 дней)
 
-#### Backend (slovo-api)
+**Pivot 8 мая 2026:** делаем **backend-first** — без real data фронт-дизайн уходит в воздух. Frontend production отложен в Phase 4.5 после закрытия 4.A. Прототип `prostor-heatmap-mobile-standalone.html` остаётся reference, точечно подгоним под реальные данные когда они будут.
 
-- [ ] Endpoint `GET /water-analysis/heatmap?param=...&bbox=...&grid=0.05`
-- [ ] Prisma raw SQL: `ST_SnapToGrid(geo_point, $grid)` → `AVG(params->>$param)` + `pct_exceeds_pdk`
-- [ ] DTO + class-validator для query params
-- [ ] Response: GeoJSON FeatureCollection с агрегированными cells
-- [ ] Кэш в Redis (TTL 24 ч — данные меняются медленно)
-- [ ] Throttle 60/min/IP (как `/water-analysis/similar`)
-- [ ] Unit + e2e тесты (≥10 кейсов)
-- [ ] Документация в Swagger
-- [ ] PR + review-агенты
+#### USP-фичи — что отличает PROSTOR от любого магазина фильтров
 
-#### Frontend (prostor-app)
+| # | Фича | Endpoint | Аудитория |
+|---|---|---|---|
+| **USP-1** | **Прогноз химии воды для нового адреса БЕЗ анализа** (kNN regression по 6-летнему архиву) | `/predict` | Конечные клиенты |
+| **USP-2** | **Equipment-suggest по координатам** — рекомендация фильтра под адрес даже без анализа (вода→каталог cross-domain) | `/equipment-suggest` | Конечные клиенты + дилеры (как продающий аргумент) |
+| **USP-3** | **Anomaly detection** — точки с локальным загрязнением (z-score>3 относительно соседей) | `/anomalies` | Дилеры, исследователи, демо для руководителя |
+| **USP-4** | **Прогноз глубины скважины или колодца** для нового адреса (kNN на 7 884 точек well + 742 well_dug) | `/depth-predict` | **B2B №2: бурильщики, копатели колодцев, гидрогеологи, девелоперы** |
 
-- [ ] Заменить inline mock GeoJSON на live fetch к `/water-analysis/heatmap`
-- [ ] TanStack Query для caching + optimistic updates на параметр-toggle
-- [ ] Error states: 503 (бэк down) / empty (нет данных в bbox) / loading (skeleton)
-- [ ] Pills параметра — горизонтальный scroll snap на mobile
-- [ ] Click cell → popup с метриками + CTA «Подобрать оборудование» → `/catalog?related=<param>`
+**Уникальность данных** (никто не имеет такого dataset на 8 мая 2026):
+- 15 504 анализов воды частных адресов МО за 2020-2026 (97.6% c координатами)
+- 21 параметр химии × geo × дата × лаборатория × источник × **глубина** × дилер
+- Coverage `depth_meters`: well 76.7% (7 884), well_dug 41.2% (742) — **gold для drilling-domain**
+
+#### 4.A Tier 1: фундамент карты + flagship USP (5-7 дней)
+
+- [ ] **4.A.1** `GET /water-analysis/heatmap?param=&bbox=&grid=0.05`
+  - Prisma raw SQL: `ST_SnapToGrid(geo_point, $grid)` → `AVG/MEDIAN/P75 (params->>$param)` + `pct_exceeds_pdk`
+  - Response: GeoJSON FeatureCollection
+  - Redis cache TTL 24ч
+- [ ] **4.A.2** `GET /water-analysis/predict?lat=&lon=&k=20` (USP-1)
+  - kNN top-K ближайших в радиусе с weighted average по distance + recency
+  - Возвращает 21 параметр + confidence interval (PhD-фундамент interval analysis играет — «iron 0.30-0.55 мг/л 80% CI» вместо точечного значения)
+  - Redis cache TTL 5мин (на координаты)
+- [ ] **4.A.3** `GET /water-analysis/depth-map?bbox=&grid=&intakeType=` (USP-4 base)
+  - Median/P25/P75 глубины по grid (только wells/well_dug)
+  - **Стратификация по водоносным горизонтам** в response: bucket-распределение `aquiferLayers` (0-15м верховодка, 15-50м песчаный, 50-100м песчано-известняковый, 100-200м известняковый, 200м+ артезианский) + count + intakeTypes по слою
+  - Heatmap «где какие водоносные слои в МО»
+- [ ] **4.A.4** `GET /water-analysis/depth-predict?lat=&lon=&intakeType=&k=20` (USP-4)
+  - kNN-прогноз глубины бурения для нового адреса с CI
+  - «У тебя по соседям типично 35-55м, медиана 42м, 90%-перцентиль 75м»
+  - **`mostLikelyLayer`** в response — наиболее вероятный водоносный горизонт + распределение `layerDistribution` по соседним скважинам
+  - Redis cache TTL 5мин
+- [ ] **4.A.5** `GET /water-analysis/points?bbox=&limit=`
+  - Точки анализов с values + risk + дата + intakeType + depth (для high-zoom детализация)
+  - GeoJSON cluster при низком zoom через ST_ClusterDBSCAN
+- [ ] **4.A.6** `POST /water-analysis/equipment-suggest` (USP-2 flagship cross-domain)
+  - Body: `{lat, lon}`. Шаги: predict химии → identify problems > ПДК → match catalog (text-embedding-3-large + categories filter)
+  - Response: top-N оборудования с обоснованием «у тебя по соседям hardness 8.5 + iron 0.45 → нужен умягчитель + обезжелезиватель»
+  - Главный продающий аргумент для разговора с руководителем Аквафор
+
+#### 4.B Tier 2: дополнительные insights (3-4 дня)
+
+- [ ] **4.B.1** `GET /water-analysis/districts` — top-N худших районов по параметру + count + medians
+- [ ] **4.B.2** `GET /water-analysis/anomalies?bbox=&param=` (USP-3) — z-score>3 точки
+- [ ] **4.B.3** `GET /water-analysis/depth-history?district=&intakeType=` — изменение глубин 2020→2026 (climate-change angle)
+- [ ] **4.B.4** `GET /water-analysis/quality-by-depth?bbox=&param=` — связь глубина↔качество для drilling-консультации
+- [ ] **4.B.5** `GET /water-analysis/hotspots?param=&top=20` — топ точек с превышением ПДК (драматичные цифры)
+- [ ] **4.B.6** `GET /water-analysis/aquifer-stats?bbox=&intakeType=` (USP-4 deep-dive)
+  - Стратифицированная статистика по горизонтам в bbox: % скважин на каждом, типичная химия (median 21 параметра) по слою — «верховодка TDS 200, песчаный TDS 380, артезианский TDS 720»
+  - **GMM (Gaussian Mixture Model)** на distribution `depth_meters` для **data-driven aquifer detection** вместо хардкода 15-50м/50-100м — сам dataset показывает «полки» глубин в МО (3-5 типичных кластеров по геологии)
+  - PhD-фундамент interval analysis + clustering играет
+  - Audience: drillers, гидрогеологи, девелоперы
+
+#### 4.C Tier 3: advanced/time (2-3 дня)
+
+- [ ] **4.C.1** `GET /water-analysis/timeseries?district=&param=` — тренд по году (для time-lapse heatmap)
+- [ ] **4.C.2** `GET /water-analysis/clusters?lat=&lon=` — HDBSCAN-кластеры по 21-D, тип воды для адреса
+- [ ] **4.C.3** `GET /water-analysis/test-kit?lat=&lon=` — какие 5 параметров стоит реально мерить (эконом)
+- [ ] **4.C.4** `GET /water-analysis/labs?bbox=` — распределение лабораторий
+- [ ] **4.C.5** `GET /water-analysis/effectiveness?address=` — кейсы «до/после» установки оборудования (если найдём адреса с >1 анализом)
+
+#### Каждый endpoint включает
+
+- Prisma raw SQL (PostGIS / pgvector / window funcs где нужно)
+- DTO + class-validator
+- Throttle 60/min/IP (как `/water-analysis/similar`)
+- Redis cache с TTL по типу (heatmap/depth-map 24ч, predict 5мин, hotspots 1ч)
+- Unit + e2e тесты ≥10 кейсов на endpoint
+- Swagger documentation
+- PR + review-агенты (`prisma-pgvector-reviewer` обязательно)
+
+**Acceptance Phase 4:** все Tier 1 endpoint'ы в проде, smoke через Swagger UI + Playwright. Каждая USP-фича верифицирована на ≥3 реальных адресах. После закрытия — переход в Phase 4.5 Frontend.
+
+### Phase 4.5 — Frontend production (3-5 дней)
+
+> Стартует после закрытия Phase 4.A Tier 1. Фронт пилится на **real data**, не на mock — это даёт верифицированный UX.
+
+- [ ] Top-bar с layer-icon (по прототипу `prostor-heatmap-mobile-standalone.html`)
+- [ ] Bottom-sheet с layer-toggles (default OFF):
+  - [ ] Качество воды в районе (heatmap по 5 параметрам)
+  - [ ] Похожие анализы рядом (radius circle от пина клиента)
+  - [ ] **Глубина скважин и колодцев** (depth-map + bar chart горизонтов внизу карты + range-slider filter «показать только 30-100м» + popup с распределением по горизонтам)
+  - [ ] **3D-режим скважин/колодцев** (extruded columns: высота = mean depth, цвет = aquifer layer — стретч-фича для wow-демо руководителю Аквафор)
+  - [ ] Аномалии (anomaly markers)
+  - [ ] Sub-filter intakeType: well / well_dug / both (для drilling-юзеров релевантен только нужный тип)
+- [ ] Пин клиента + radius circle (geolocation + fallback на real-estate координаты)
+- [ ] Click cell → popup с метриками + CTA «Подобрать оборудование» → equipment-suggest endpoint
 - [ ] Onboarding overlay (FTUX) для первого запуска: 3-шаговый tour
-- [ ] Auto-zoom на real-estate координаты клиента если есть (через `entities/real-estate`)
+- [ ] Dark theme map style (Voyager → Dark Matter по `[data-theme]`)
+- [ ] 3D-tilt включён
+- [ ] Responsive: mobile bottom-sheet / iPad slide-drawer / desktop sidebar
+- [ ] TanStack Query для всех endpoint'ов с corresponding TTL
 
-**Acceptance:** на карте видны heatmap по реальным данным slovo-архива, клиент может переключать параметры и видит мотивирующие метрики.
+**Acceptance Phase 4.5:** на карте видны live-данные, клиент может toggle слои, видит свои координаты, получает USP-1/2/4 рекомендации в realtime.
 
 ### Phase 5 — Smart landing redirect (1 день)
 
