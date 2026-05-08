@@ -11,10 +11,11 @@ import type { PredictResponseDto } from './dto/predict.response.dto';
 import { PredictService } from './predict.service';
 
 // =============================================================================
-// PredictService unit-тесты — мокаем Prisma.$queryRaw + Redis (get/set),
+// PredictService unit-тесты — interval-first философия (3 уровня intervals
+// + pointEstimate + interval-aware pdkStatus). Мокаем Prisma.$queryRaw + Redis,
 // проверяем internal helpers (weightedMean / percentile / ageInYears /
-// roundTo / aggregateNeighbors / mostLikelyAquiferLayer / buildCacheKey)
-// через public API service.predict().
+// roundTo / aggregateNeighbors / mostLikelyAquiferLayer / buildCacheKey
+// / evaluatePdkStatus) через public API service.predict().
 //
 // Real PostgreSQL + PostGIS НЕ нужны (e2e под отдельный testcontainer setup).
 // =============================================================================
@@ -90,14 +91,14 @@ describe('PredictService', () => {
     });
 
     // -----------------------------------------------------------------------
-    // kNN aggregation: distance & recency weighting
+    // kNN aggregation: distance & recency weighting (pointEstimate)
     // -----------------------------------------------------------------------
 
-    describe('kNN aggregation — distance weighting', () => {
-        it('ближайшие соседи имеют больший вклад (predicted ближе к value ближайшего)', async () => {
+    describe('kNN aggregation — distance weighting (pointEstimate)', () => {
+        it('ближайшие соседи имеют больший вклад (pointEstimate ближе к value ближайшего)', async () => {
             // Same sample_date — recency=1 для обоих → отличие только в distance.
             // Closest dist=0.5 (weight≈0.952), far dist=50 (weight≈0.167).
-            // Mean = (10*0.952 + 0*0.167)/(0.952+0.167) ≈ 8.51 → round 4 знака.
+            // Mean = (10*0.952 + 0*0.167)/(0.952+0.167) ≈ 8.51.
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({
                     params: { iron_total: 10 },
@@ -116,15 +117,14 @@ describe('PredictService', () => {
 
             expect(iron).toBeDefined();
             // Ожидаем заметный bias к ближайшему: > 7 (середина была бы 5).
-            expect(iron.value).toBeGreaterThan(7);
-            expect(iron.value).toBeLessThan(10);
+            expect(iron.pointEstimate).toBeGreaterThan(7);
+            expect(iron.pointEstimate).toBeLessThan(10);
             expect(iron.n).toBe(2);
         });
 
         it('свежие анализы имеют больший вклад чем старые при равной дистанции', async () => {
             // Same dist → distWeight равны. Recent = today (recency=1),
             // old = 10 years ago (recency = exp(-2) ≈ 0.135).
-            // Mean = (10*1 + 0*0.135)/(1+0.135) ≈ 8.81.
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({
                     params: { iron_total: 10 },
@@ -142,29 +142,30 @@ describe('PredictService', () => {
             const iron = res.predicted.iron_total;
 
             // Без recency-веса было бы ровно 5; с recency сдвиг к 10.
-            expect(iron.value).toBeGreaterThan(7);
+            expect(iron.pointEstimate).toBeGreaterThan(7);
         });
 
-        it('weightedMean симметричен — два одинаковых соседа дают то же value', async () => {
+        it('weightedMean симметричен — два одинаковых соседа дают тот же pointEstimate', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.4 }, dist_km: 1 }),
                 buildRow({ params: { iron_total: 0.4 }, dist_km: 1 }),
             ]);
             const res = await service.predict(buildDto());
-            expect(res.predicted.iron_total.value).toBe(0.4);
+            expect(res.predicted.iron_total.pointEstimate).toBe(0.4);
         });
     });
 
     // -----------------------------------------------------------------------
-    // CI percentile (P10/P90) из values
+    // 3 уровня intervals (interval=P10..P90, iqr=P25..P75, hardRange=min..max)
     // -----------------------------------------------------------------------
 
-    describe('CI percentile (P10/P90)', () => {
-        it('values=[0.1, 0.2, 0.3, 0.4, 0.5] → ciLow=0.14, ciHigh=0.46', async () => {
-            // percentile linear-interp: P10 idx=0.4 между sorted[0]=0.1 и sorted[1]=0.2
-            //   → 0.1*0.6 + 0.2*0.4 = 0.14.
-            // P90 idx=3.6 между sorted[3]=0.4 и sorted[4]=0.5
-            //   → 0.4*0.4 + 0.5*0.6 = 0.46.
+    describe('intervals (P10/P25/P75/P90 + hardRange)', () => {
+        it('values=[0.1, 0.2, 0.3, 0.4, 0.5] → interval=[0.14,0.46], iqr=[0.2,0.4], hardRange=[0.1,0.5]', async () => {
+            // percentile linear-interp:
+            //   P10 idx=0.4 между sorted[0]=0.1 и sorted[1]=0.2 → 0.1*0.6+0.2*0.4 = 0.14
+            //   P25 idx=1.0 → sorted[1] = 0.2
+            //   P75 idx=3.0 → sorted[3] = 0.4
+            //   P90 idx=3.6 между sorted[3]=0.4 и sorted[4]=0.5 → 0.4*0.4+0.5*0.6 = 0.46
             const sampleDate = new Date('2026-05-01');
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.1 }, dist_km: 1, sample_date: sampleDate }),
@@ -177,20 +178,55 @@ describe('PredictService', () => {
             const res = await service.predict(buildDto());
             const iron = res.predicted.iron_total;
 
-            expect(iron.ciLow).toBeCloseTo(0.14, 4);
-            expect(iron.ciHigh).toBeCloseTo(0.46, 4);
+            expect(iron.interval.lower).toBeCloseTo(0.14, 4);
+            expect(iron.interval.upper).toBeCloseTo(0.46, 4);
+            expect(iron.interval.confidence).toBe(80);
+
+            expect(iron.iqr.lower).toBeCloseTo(0.2, 4);
+            expect(iron.iqr.upper).toBeCloseTo(0.4, 4);
+            expect(iron.iqr.confidence).toBe(50);
+
+            expect(iron.hardRange.lower).toBe(0.1);
+            expect(iron.hardRange.upper).toBe(0.5);
+            expect(iron.hardRange.confidence).toBe(100);
+
             expect(iron.n).toBe(5);
         });
 
-        it('одно значение → ciLow = ciHigh = value', async () => {
+        it('одно значение → все 3 интервала схлопываются в [value, value]', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.42 }, dist_km: 1 }),
             ]);
             const res = await service.predict(buildDto());
             const iron = res.predicted.iron_total;
-            expect(iron.value).toBe(0.42);
-            expect(iron.ciLow).toBe(0.42);
-            expect(iron.ciHigh).toBe(0.42);
+            expect(iron.pointEstimate).toBe(0.42);
+            expect(iron.interval.lower).toBe(0.42);
+            expect(iron.interval.upper).toBe(0.42);
+            expect(iron.iqr.lower).toBe(0.42);
+            expect(iron.iqr.upper).toBe(0.42);
+            expect(iron.hardRange.lower).toBe(0.42);
+            expect(iron.hardRange.upper).toBe(0.42);
+        });
+
+        it('hardRange всегда содержит min/max sorted (даже когда interval уже)', async () => {
+            // Outliers попадают в hardRange но не в interval/iqr.
+            const sampleDate = new Date('2026-05-01');
+            const values = [0.05, 0.2, 0.25, 0.3, 0.35, 0.4, 1.5];
+            prisma.$queryRaw.mockResolvedValueOnce(
+                values.map((v) =>
+                    buildRow({ params: { iron_total: v }, dist_km: 1, sample_date: sampleDate }),
+                ),
+            );
+            const res = await service.predict(buildDto());
+            const iron = res.predicted.iron_total;
+            expect(iron.hardRange.lower).toBe(0.05);
+            expect(iron.hardRange.upper).toBe(1.5);
+            // interval ≠ hardRange (outliers исключены)
+            expect(iron.interval.lower).toBeGreaterThan(0.05);
+            expect(iron.interval.upper).toBeLessThan(1.5);
+            // iqr ⊆ interval
+            expect(iron.iqr.lower).toBeGreaterThanOrEqual(iron.interval.lower);
+            expect(iron.iqr.upper).toBeLessThanOrEqual(iron.interval.upper);
         });
     });
 
@@ -296,32 +332,156 @@ describe('PredictService', () => {
     });
 
     // -----------------------------------------------------------------------
-    // exceedsPdk флаг
+    // pdkStatus — interval-aware (заменяет old exceedsPdk boolean)
     // -----------------------------------------------------------------------
 
-    describe('exceedsPdk флаг', () => {
-        it('iron_total с predicted=0.5 (>0.3 ПДК) → exceedsPdk=true', async () => {
+    describe('pdkStatus — interval-aware', () => {
+        // -------- single-pdk параметры (iron_total: 0.3) --------
+
+        it('iron_total: все соседи < 0.3 (interval upper ≤ 0.3) → safe', async () => {
+            // values [0.05..0.15] → interval ~ [0.054, 0.146], упор < 0.3 → safe.
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.05 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.08 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.1 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.12 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.15 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+            const iron = res.predicted.iron_total;
+            expect(iron.interval.upper).toBeLessThanOrEqual(0.3);
+            expect(iron.pdkStatus).toBe('safe');
+        });
+
+        it('iron_total: все соседи > 0.3 (interval lower > 0.3) → unsafe', async () => {
+            // values [0.5..1.0] → interval lower > 0.3 → unsafe.
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.5 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.6 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.7 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.8 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 1.0 }, dist_km: 1 }),
             ]);
             const res = await service.predict(buildDto());
-            expect(res.predicted.iron_total.exceedsPdk).toBe(true);
+            const iron = res.predicted.iron_total;
+            expect(iron.interval.lower).toBeGreaterThan(0.3);
+            expect(iron.pdkStatus).toBe('unsafe');
         });
 
-        it('iron_total с predicted=0.1 (<0.3 ПДК) → exceedsPdk=false', async () => {
+        it('iron_total: interval пересекает ПДК (часть ниже / часть выше) → borderline', async () => {
+            // values от 0.05 до 0.8 — interval [~0.06, ~0.74] пересекает 0.3.
+            const sampleDate = new Date('2026-05-01');
             prisma.$queryRaw.mockResolvedValueOnce([
-                buildRow({ params: { iron_total: 0.1 }, dist_km: 1 }),
+                buildRow({ params: { iron_total: 0.05 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.15 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.3 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { iron_total: 0.8 }, dist_km: 1, sample_date: sampleDate }),
             ]);
             const res = await service.predict(buildDto());
-            expect(res.predicted.iron_total.exceedsPdk).toBe(false);
+            const iron = res.predicted.iron_total;
+            expect(iron.interval.lower).toBeLessThanOrEqual(0.3);
+            expect(iron.interval.upper).toBeGreaterThan(0.3);
+            expect(iron.pdkStatus).toBe('borderline');
         });
 
-        it('temperature (без ПДК) → exceedsPdk=null', async () => {
+        it('manganese: interval upper ≤ 0.1 → safe (single-pdk 0.1)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { manganese: 0.02 }, dist_km: 1 }),
+                buildRow({ params: { manganese: 0.04 }, dist_km: 1 }),
+                buildRow({ params: { manganese: 0.05 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+            expect(res.predicted.manganese.pdkStatus).toBe('safe');
+        });
+
+        // -------- range-pdk параметры (ph: [6, 9]) --------
+
+        it('ph: соседи в [6, 9] (например 7-8) → safe', async () => {
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 7.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.3 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 8.0 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            expect(ph.interval.lower).toBeGreaterThanOrEqual(6);
+            expect(ph.interval.upper).toBeLessThanOrEqual(9);
+            expect(ph.pdkStatus).toBe('safe');
+        });
+
+        it('ph: completely below 6 (все 5.0) → unsafe', async () => {
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 4.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 4.8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 5.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 5.2 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 5.5 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            expect(ph.interval.upper).toBeLessThan(6);
+            expect(ph.pdkStatus).toBe('unsafe');
+        });
+
+        it('ph: completely above 9 (все 10.5) → unsafe', async () => {
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 10.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 10.3 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 10.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 10.8 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 11.0 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            expect(ph.interval.lower).toBeGreaterThan(9);
+            expect(ph.pdkStatus).toBe('unsafe');
+        });
+
+        it('ph: interval частично вне [6, 9] (5.5-7.5) → borderline', async () => {
+            const sampleDate = new Date('2026-05-01');
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 5.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 6.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 6.5 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.0 }, dist_km: 1, sample_date: sampleDate }),
+                buildRow({ params: { ph: 7.5 }, dist_km: 1, sample_date: sampleDate }),
+            ]);
+            const res = await service.predict(buildDto());
+            const ph = res.predicted.ph;
+            // Часть ниже 6, часть в диапазоне → borderline.
+            expect(ph.pdkStatus).toBe('borderline');
+        });
+
+        // -------- non-regulated параметры --------
+
+        it('temperature (не нормируется СанПиН) → pdkStatus=null', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { temperature: 12 }, dist_km: 1 }),
             ]);
             const res = await service.predict(buildDto());
-            expect(res.predicted.temperature.exceedsPdk).toBeNull();
+            expect(res.predicted.temperature.pdkStatus).toBeNull();
+        });
+
+        it('electrical_conductivity (не нормируется) → pdkStatus=null', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { electrical_conductivity: 800 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+            expect(res.predicted.electrical_conductivity.pdkStatus).toBeNull();
+        });
+
+        it('unknown paramCode → pdkStatus=null (нет meta в WATER_PARAMS_BY_CODE)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { totally_unknown_param: 0.42 }, dist_km: 1 }),
+            ]);
+            const res = await service.predict(buildDto());
+            expect(res.predicted.totally_unknown_param.pdkStatus).toBeNull();
         });
     });
 
@@ -333,7 +493,14 @@ describe('PredictService', () => {
         it('cache hit: redis.get → valid JSON → response.cached=true, нет SQL', async () => {
             const cached: PredictResponseDto = {
                 predicted: {
-                    iron_total: { value: 0.42, ciLow: 0.18, ciHigh: 0.72, n: 18, exceedsPdk: true },
+                    iron_total: {
+                        interval: { lower: 0.18, upper: 0.72, confidence: 80 },
+                        iqr: { lower: 0.25, upper: 0.55, confidence: 50 },
+                        hardRange: { lower: 0.05, upper: 1.5, confidence: 100 },
+                        pointEstimate: 0.42,
+                        n: 18,
+                        pdkStatus: 'borderline',
+                    },
                 },
                 nNeighbors: 18,
                 medianDistKm: 1.5,
@@ -348,7 +515,8 @@ describe('PredictService', () => {
 
             expect(res.cached).toBe(true);
             expect(res.nNeighbors).toBe(18);
-            expect(res.predicted.iron_total.value).toBe(0.42);
+            expect(res.predicted.iron_total.pointEstimate).toBe(0.42);
+            expect(res.predicted.iron_total.pdkStatus).toBe('borderline');
             expect(prisma.$queryRaw).not.toHaveBeenCalled();
         });
 
@@ -516,7 +684,7 @@ describe('PredictService', () => {
             ]);
             const res = await service.predict(buildDto());
             expect(res.predicted.iron_total.n).toBe(1);
-            expect(res.predicted.iron_total.value).toBe(0.4);
+            expect(res.predicted.iron_total.pointEstimate).toBe(0.4);
         });
 
         it('neighbor без iron_total → не считается, predicted.iron_total отсутствует', async () => {
@@ -536,7 +704,7 @@ describe('PredictService', () => {
             ]);
             const res = await service.predict(buildDto());
             expect(res.predicted.iron_total.n).toBe(1);
-            expect(res.predicted.iron_total.value).toBe(0.5);
+            expect(res.predicted.iron_total.pointEstimate).toBe(0.5);
         });
 
         it('Infinity → пропускается (Number.isFinite фильтр)', async () => {
@@ -546,7 +714,7 @@ describe('PredictService', () => {
             ]);
             const res = await service.predict(buildDto());
             expect(res.predicted.iron_total.n).toBe(1);
-            expect(res.predicted.iron_total.value).toBe(0.3);
+            expect(res.predicted.iron_total.pointEstimate).toBe(0.3);
         });
     });
 
@@ -555,15 +723,20 @@ describe('PredictService', () => {
     // -----------------------------------------------------------------------
 
     describe('roundTo (4 digits)', () => {
-        it('predicted.value округляется до 4 знаков', async () => {
+        it('pointEstimate и intervals округляются до 4 знаков', async () => {
             // value=0.123456789 у одного соседа → round → 0.1235.
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.123456789 }, dist_km: 1 }),
             ]);
             const res = await service.predict(buildDto());
-            expect(res.predicted.iron_total.value).toBe(0.1235);
-            expect(res.predicted.iron_total.ciLow).toBe(0.1235);
-            expect(res.predicted.iron_total.ciHigh).toBe(0.1235);
+            const iron = res.predicted.iron_total;
+            expect(iron.pointEstimate).toBe(0.1235);
+            expect(iron.interval.lower).toBe(0.1235);
+            expect(iron.interval.upper).toBe(0.1235);
+            expect(iron.iqr.lower).toBe(0.1235);
+            expect(iron.iqr.upper).toBe(0.1235);
+            expect(iron.hardRange.lower).toBe(0.1235);
+            expect(iron.hardRange.upper).toBe(0.1235);
         });
     });
 
@@ -590,7 +763,7 @@ describe('PredictService', () => {
             expect(res.timeTakenMs).toBeGreaterThanOrEqual(0);
         });
 
-        it('содержит все required поля при наличии соседей', async () => {
+        it('содержит все required поля при наличии соседей (interval-first shape)', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([
                 buildRow({ params: { iron_total: 0.4, manganese: 0.05 }, dist_km: 1 }),
             ]);
@@ -598,11 +771,25 @@ describe('PredictService', () => {
 
             expect(res.predicted.iron_total).toEqual(
                 expect.objectContaining({
-                    value: expect.any(Number),
-                    ciLow: expect.any(Number),
-                    ciHigh: expect.any(Number),
+                    interval: expect.objectContaining({
+                        lower: expect.any(Number),
+                        upper: expect.any(Number),
+                        confidence: 80,
+                    }),
+                    iqr: expect.objectContaining({
+                        lower: expect.any(Number),
+                        upper: expect.any(Number),
+                        confidence: 50,
+                    }),
+                    hardRange: expect.objectContaining({
+                        lower: expect.any(Number),
+                        upper: expect.any(Number),
+                        confidence: 100,
+                    }),
+                    pointEstimate: expect.any(Number),
                     n: 1,
-                    exceedsPdk: expect.any(Boolean),
+                    // pdkStatus: либо строка ('safe'/'borderline'/'unsafe') либо null.
+                    pdkStatus: expect.anything(),
                 }),
             );
             expect(res.predicted.manganese).toBeDefined();

@@ -6,14 +6,20 @@ import type { TAppEnv } from '@slovo/common';
 import Redis from 'ioredis';
 import {
     DEPTH_MAP_REDIS_TOKEN,
+    DEPTH_PREDICT_REDIS_TOKEN,
     FLOWISE_CLIENT_TOKEN,
     HEATMAP_REDIS_TOKEN,
+    POINTS_REDIS_TOKEN,
     PREDICT_REDIS_TOKEN,
 } from './water-analysis.constants';
 import { DepthMapController } from './depth-map/depth-map.controller';
 import { DepthMapService } from './depth-map/depth-map.service';
+import { DepthPredictController } from './depth-predict/depth-predict.controller';
+import { DepthPredictService } from './depth-predict/depth-predict.service';
 import { HeatmapController } from './heatmap/heatmap.controller';
 import { HeatmapService } from './heatmap/heatmap.service';
+import { PointsController } from './points/points.controller';
+import { PointsService } from './points/points.service';
 import { PredictController } from './predict/predict.controller';
 import { PredictService } from './predict/predict.service';
 import { SimilarSearchController } from './similar/similar.controller';
@@ -117,6 +123,48 @@ const depthMapRedisProvider: Provider = {
     },
 };
 
+// Depth-predict Redis instance — те же параметры что predict (TTL 5 мин,
+// command-timeout 3s).
+const depthPredictRedisProvider: Provider = {
+    provide: DEPTH_PREDICT_REDIS_TOKEN,
+    inject: [ConfigService],
+    useFactory: (config: ConfigService<TAppEnv, true>): Redis => {
+        const host = config.getOrThrow('REDIS_HOST', { infer: true });
+        const port = config.getOrThrow('REDIS_PORT', { infer: true });
+        const password = config.get('REDIS_PASSWORD', { infer: true });
+        return new Redis({
+            host,
+            port,
+            password: password || undefined,
+            lazyConnect: false,
+            maxRetriesPerRequest: 2,
+            connectTimeout: 5_000,
+            commandTimeout: 3_000,
+        });
+    },
+};
+
+// Points Redis instance — TTL 1ч, такой же command-timeout. Per-feature
+// observability + connection pool isolation.
+const pointsRedisProvider: Provider = {
+    provide: POINTS_REDIS_TOKEN,
+    inject: [ConfigService],
+    useFactory: (config: ConfigService<TAppEnv, true>): Redis => {
+        const host = config.getOrThrow('REDIS_HOST', { infer: true });
+        const port = config.getOrThrow('REDIS_PORT', { infer: true });
+        const password = config.get('REDIS_PASSWORD', { infer: true });
+        return new Redis({
+            host,
+            port,
+            password: password || undefined,
+            lazyConnect: false,
+            maxRetriesPerRequest: 2,
+            connectTimeout: 5_000,
+            commandTimeout: 3_000,
+        });
+    },
+};
+
 @Module({
     imports: [DatabaseModule],
     controllers: [
@@ -124,16 +172,22 @@ const depthMapRedisProvider: Provider = {
         HeatmapController,
         PredictController,
         DepthMapController,
+        DepthPredictController,
+        PointsController,
     ],
     providers: [
         flowiseClientProvider,
         heatmapRedisProvider,
         predictRedisProvider,
         depthMapRedisProvider,
+        depthPredictRedisProvider,
+        pointsRedisProvider,
         SimilarSearchService,
         HeatmapService,
         PredictService,
         DepthMapService,
+        DepthPredictService,
+        PointsService,
     ],
 })
 export class WaterAnalysisModule {}

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@slovo/database';
-import { exceedsPdk } from '@slovo/water-blank-extraction';
+import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
 import {
     AQUIFER_LAYERS,
@@ -13,8 +13,10 @@ import {
 } from '../water-analysis.constants';
 import type { PredictQueryDto } from './dto/predict.request.dto';
 import type {
+    ParamIntervalDto,
     PredictParamEstimateDto,
     PredictResponseDto,
+    TPdkStatus,
 } from './dto/predict.response.dto';
 
 // =============================================================================
@@ -199,22 +201,73 @@ function buildPredictedRecord(
     for (const [paramCode, samples] of buckets) {
         if (samples.values.length === 0) continue;
 
-        const value = weightedMean(samples.values, samples.weights);
         const sorted = [...samples.values].sort((a, b) => a - b);
-        const ciLow = percentile(sorted, 0.1);
-        const ciHigh = percentile(sorted, 0.9);
-        const exceeds = exceedsPdk(paramCode, value);
+        const interval: ParamIntervalDto = {
+            lower: roundTo(percentile(sorted, 0.1), 4),
+            upper: roundTo(percentile(sorted, 0.9), 4),
+            confidence: 80,
+        };
+        const iqr: ParamIntervalDto = {
+            lower: roundTo(percentile(sorted, 0.25), 4),
+            upper: roundTo(percentile(sorted, 0.75), 4),
+            confidence: 50,
+        };
+        const hardRange: ParamIntervalDto = {
+            lower: roundTo(sorted[0], 4),
+            upper: roundTo(sorted[sorted.length - 1], 4),
+            confidence: 100,
+        };
+        const pointEstimate = roundTo(weightedMean(samples.values, samples.weights), 4);
+        const pdkStatus = evaluatePdkStatus(paramCode, interval);
 
         result[paramCode] = {
-            value: roundTo(value, 4),
-            ciLow: roundTo(ciLow, 4),
-            ciHigh: roundTo(ciHigh, 4),
+            interval,
+            iqr,
+            hardRange,
+            pointEstimate,
             n: samples.values.length,
-            exceedsPdk: exceeds,
+            pdkStatus,
         };
     }
 
     return result;
+}
+
+/**
+ * Interval-aware PDK status. Сравнивает primary interval (P10-P90) с нормативом
+ * из СанПиН справочника:
+ *   - single ПДК (iron 0.3, manganese 0.1, ...): safe если upper ≤ pdk,
+ *     unsafe если lower > pdk, иначе borderline (interval пересекает ПДК).
+ *   - range ПДК (pH 6-9): safe если interval целиком внутри [min, max],
+ *     unsafe если interval целиком вне, borderline иначе.
+ *   - не нормируется (temperature, electrical_conductivity): null.
+ *
+ * Это **значимо честнее** чем boolean exceedsPdk(value): для нондетерминированного
+ * процесса interval естественно может пересекать threshold и это ВАЖНАЯ информация.
+ * `borderline` — сигнал «нужен реальный анализ, прогноз неоднозначен».
+ */
+function evaluatePdkStatus(paramCode: string, interval: ParamIntervalDto): TPdkStatus | null {
+    const meta = WATER_PARAMS_BY_CODE[paramCode];
+    if (!meta || !meta.regulated || meta.pdk === null) return null;
+
+    if (typeof meta.pdk === 'number') {
+        const pdk = meta.pdk;
+        if (interval.upper <= pdk) return 'safe';
+        if (interval.lower > pdk) return 'unsafe';
+        return 'borderline';
+    }
+
+    // Range-type ПДК (pH 6-9 и подобные).
+    const { min, max } = meta.pdk;
+    const insideMin = interval.lower >= min;
+    const insideMax = interval.upper <= max;
+    if (insideMin && insideMax) return 'safe';
+
+    const completelyBelow = interval.upper < min;
+    const completelyAbove = interval.lower > max;
+    if (completelyBelow || completelyAbove) return 'unsafe';
+
+    return 'borderline';
 }
 
 // =============================================================================

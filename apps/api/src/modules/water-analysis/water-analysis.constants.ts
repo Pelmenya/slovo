@@ -228,6 +228,90 @@ export const DEPTH_MAP_REDIS_TOKEN = Symbol('WATER_ANALYSIS_DEPTH_MAP_REDIS');
 export const DEPTH_MAP_INTAKE_FILTER = ['all', 'well', 'well_dug'] as const;
 export type TDepthMapIntakeFilter = (typeof DEPTH_MAP_INTAKE_FILTER)[number];
 
+// =============================================================================
+// Depth-predict endpoint (4.A.4, USP-4) — kNN-прогноз глубины бурения для нового
+// адреса. Reuses тот же подход что /predict (top-K + IDW + recency weighting +
+// percentile interval), но aggregation поверх depth_meters single column.
+//
+// Дефолты те же что /predict (5min cache, 60/min throttle, k=20, radius=50км,
+// IDW=10км, recency=5yr). Дублируем константы для per-endpoint независимой
+// настройки в будущем (drilling-юзеры могут хотеть другой k или radius).
+// =============================================================================
+
+export const DEPTH_PREDICT_THROTTLE_LIMIT = 60;
+export const DEPTH_PREDICT_THROTTLE_TTL_MS = 60_000;
+export const DEPTH_PREDICT_CACHE_TTL_SECONDS = 5 * 60;
+export const DEPTH_PREDICT_REDIS_TOKEN = Symbol('WATER_ANALYSIS_DEPTH_PREDICT_REDIS');
+
+export const DEPTH_PREDICT_DEFAULT_K = 20;
+export const DEPTH_PREDICT_MIN_K = 5;
+export const DEPTH_PREDICT_MAX_K = 100;
+
+export const DEPTH_PREDICT_DEFAULT_RADIUS_KM = 50;
+export const DEPTH_PREDICT_MIN_RADIUS_KM = 1;
+export const DEPTH_PREDICT_MAX_RADIUS_KM = 200;
+
+export const DEPTH_PREDICT_IDW_SCALE_KM = 10;
+export const DEPTH_PREDICT_RECENCY_HALF_LIFE_YEARS = 5;
+
+// intakeType filter — для depth-predict обычно бурильщику интересен один тип.
+// Default 'well' — самая частая drilling-задача (скважина 30-80м). 'well_dug'
+// для копателей колодцев (мелкие 5-15м, артель копает а не бурит). 'all' —
+// общий обзор без preference.
+export const DEPTH_PREDICT_INTAKE_FILTER = ['all', 'well', 'well_dug'] as const;
+export type TDepthPredictIntakeFilter = (typeof DEPTH_PREDICT_INTAKE_FILTER)[number];
+
+// =============================================================================
+// Points endpoint (4.A.5) — отдельные анализы (не агрегаты) для high-zoom
+// детализации карты. UI рисует individual точки с popup'ом когда юзер
+// зумит на район.
+//
+// Throttle 120/min/IP (как heatmap — лёгкий read-endpoint).
+// Cache TTL 1 час — данные derived обновляются ручным запуском normalize, но
+// `/points` отдаёт «свежее» что в БД, поэтому короче чем heatmap (24ч).
+// =============================================================================
+
+export const POINTS_THROTTLE_LIMIT = 120;
+export const POINTS_THROTTLE_TTL_MS = 60_000;
+export const POINTS_CACHE_TTL_SECONDS = 60 * 60;
+export const POINTS_REDIS_TOKEN = Symbol('WATER_ANALYSIS_POINTS_REDIS');
+
+// Limit bounds. Default 200 — достаточно для one viewport detailed view (~grid
+// 0.01-0.05°, не больше 200 пинов помещается на экране без caos). Max 500 —
+// API max, чтобы не отвечать 5MB JSON. Min 10 — sanity.
+export const POINTS_DEFAULT_LIMIT = 200;
+export const POINTS_MIN_LIMIT = 10;
+export const POINTS_MAX_LIMIT = 500;
+
+// Coordinate rounding для PII protection — те же 0.005° (~500м) что в /similar,
+// см. memory `project_water_analysis_pii_strategy`. На /points это критично
+// потому что отдаём отдельные анализы, не aggregated cells.
+export const POINTS_COORD_ROUND_GRID = 200; // 1° / 200 = 0.005°
+
+// =============================================================================
+// Equipment-suggest endpoint (4.A.6 USP-2 flagship cross-domain) — рекомендация
+// фильтра по координатам через kNN-прогноз химии + catalog vector search.
+//
+// Pipeline: координаты → predict (interval-aware) → identify problems
+// (`pdkStatus IN ('borderline', 'unsafe')`) → build natural-language query →
+// catalog vector search.
+//
+// Throttle 30/min/IP — mid-cost endpoint (1 predict + 1 catalog search ≈
+// 100-300мс), и use-case узкий (клиент 1-3 запроса при выборе оборудования).
+// Cache TTL 10 мин — короче чем predict (5min) потому что зависит от двух
+// stale sources (water archive + catalog), но дольше чем чистый predict
+// смысла нет — координаты не дублируются массово.
+// =============================================================================
+
+export const EQUIPMENT_SUGGEST_THROTTLE_LIMIT = 30;
+export const EQUIPMENT_SUGGEST_THROTTLE_TTL_MS = 60_000;
+export const EQUIPMENT_SUGGEST_CACHE_TTL_SECONDS = 10 * 60;
+export const EQUIPMENT_SUGGEST_REDIS_TOKEN = Symbol('WATER_ANALYSIS_EQUIPMENT_SUGGEST_REDIS');
+
+export const EQUIPMENT_SUGGEST_DEFAULT_TOP_K = 5;
+export const EQUIPMENT_SUGGEST_MIN_TOP_K = 1;
+export const EQUIPMENT_SUGGEST_MAX_TOP_K = 20;
+
 export const HEATMAP_PARAMS = [
     // Органолептические
     'odor',
