@@ -125,7 +125,7 @@
 - [x] Заменить `prostor-app/src/app/favicon.ico` на `src/app/icon.png` (Next.js File Conventions)
 - [x] Создать `src/app/apple-icon.png` (180×180, Next.js auto-routed)
 - [x] Обновить `prostor-app/public/manifest.json` — название «PROSTOR — клуб чистой воды», theme_color #1c4ed8, добавлены maskable icons
-- [ ] Smoke test PWA install на Android Chrome + iOS Safari (на этапе live testing разработчиком)
+- [x] Smoke test PWA install — iOS Safari ✅ (8 мая 2026, капля с gradient на homescreen, тёмный фон от темы системы)
 - [x] Commit в ветку `feature/water-pivot` + push на origin
 
 **Реализация:** ветка `feature/water-pivot` в prostor-app (commit 8 мая 2026). PR создавать после полного завершения всех Phases или по этапу — на усмотрение разработчика.
@@ -136,20 +136,30 @@
 
 **Acceptance:** PWA устанавливается с каплей-иконкой на homescreen, favicon в табе. ⏳ ожидает live PWA-тест в браузере разработчика.
 
-### Phase 3 — Bottom-nav «Вода» (2-3 дня)
+### Phase 3 — Bottom-nav «Вода» (2-3 дня) — ✅ ЗАКРЫТ
 
-- [ ] Создать компонент `widgets/bottom-nav-water/` (или расширить существующий footer)
-- [ ] FAB-style центральная кнопка — капля 56×56 px с gradient + sparkle
-- [ ] States: idle (gradient) / active (outline + filled label) / pressed (scale 0.95)
-- [ ] Sparkle анимация на mount (subtle, opacity 0.5 → 1.0 за 800мс)
-- [ ] Route `/water` — заглушка с прототипом heatmap (порт `prostor-heatmap-mobile-standalone.html`)
-- [ ] Подключить inline mock GeoJSON к maplibre (без бэка пока)
-- [ ] 3 viewport адаптация: bottom-sheet (mobile) / drawer (iPad) / sidebar (desktop)
-- [ ] Touch target FAB ≥ 56×56 (Apple HIG +12 для primary)
-- [ ] E2E тест Cypress / Playwright: tap FAB → /water route
-- [ ] Commit + staging
+- [x] Создать компонент `WaterDrop` в `shared/ui/icons/water-drop.tsx` — переиспользуемый brand-mark
+  - 2 варианта: `outline` (currentColor stroke в стиле heroicons) и `filled` (gradient + sparkle)
+  - Props: `size?` (px или 100% inherit), `animated`, `variant`, `className`
+  - SSR-friendly (фиксированные defs id, без Math.random)
+- [x] Расширить `widgets/footer` — добавлена 3-я вкладка «Вода» с `WaterDrop variant=outline`
+- [x] Стиль outline-капли match heroicons: strokeWidth=3 на viewBox=48 (визуально = 1.5 на viewBox=24), strokeLinecap=round, strokeLinejoin=round
+- [x] Анимация sparkle — точная копия CSS из оригинала Smart-Search mockup: `@keyframes wdspark` (opacity 0.7→1.0 + scale 0.95→1.05 + rotate 0→8°, 2.4s ease-in-out infinite). Selector `.waterdrop-anim .wd-spark` — opt-in через class
+- [x] Route `/water` — заглушка `views/water-map/water-map-page.tsx` с hero-каплей, PageTitle «Карта качества воды · 15 504 анализа», skeleton-background и списком будущих фич
+- [x] Light/Dark theme support — класс `.water-map-skeleton-bg` имеет варианты для `[data-theme='dark']`
+- [x] Z-index не ломает burger-меню и footer — упрощённый layout без overflow-hidden / relative wrappers
+- [x] Использован стандартный `PageTitle` из `shared/ui` для consistency с другими страницами prostor-app
+- [x] Commit + push в `feature/water-pivot` (commit 6c56f04, 8 мая 2026)
+- [ ] 3 viewport адаптация (iPad drawer / Desktop sidebar) — отложено в Phase 4 вместе с реальным maplibre
+- [ ] E2E тест навигации — после Phase 4 (live карта)
+- [ ] Подключение inline mock GeoJSON к maplibre — Phase 4 (требует maplibre setup в prostor-app)
 
-**Acceptance:** клиент видит каплю в bottom-nav, тапает → попадает на карту с прототипным heatmap'ом.
+**Что отличается от изначального плана:**
+- ❌ FAB-стиль центральной кнопки **отвергнут разработчиком** — «не перегружать», обычная 3-я вкладка в стиле других иконок
+- ❌ Sparkle на active state в nav — также убран по запросу разработчика «капля без sparkle, как корзина outline»
+- ✅ Filled+sparkle оставлен только для hero/header страниц (где это brand-mark, не nav-icon)
+
+**Acceptance:** клиент видит outline-каплю «Вода» в bottom-nav, тапает → попадает на placeholder-страницу с hero-каплей (filled gradient + sparkle) и описанием будущей фичи. Light/Dark theme работают. Burger-menu не блокируется. ✅
 
 ### Phase 4 — Heatmap production (3-4 дня)
 
