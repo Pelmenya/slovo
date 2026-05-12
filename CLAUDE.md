@@ -432,12 +432,19 @@ claude mcp list
   - Target ≥95% **недостижим** без extraction `samplingPoint` из Docling row 3
     handwritten ИЛИ Vision-fallback на ~10% no-depth+no-hint бланков.
   - **240/240 tests** в libs. 14 immutable run-*.json snapshots в `experiments/water-analysis-dataset/data/intake-tuning/`.
-- ⏳ **NEXT**: Slice 4.2 (canonical best-of-both merge Vision+Docling на 15504,
-  **только новая таблица / JSON-artifact** — existing `water_analysis` не трогаем,
-  downstream API работает без перерывов) → Slice 4.3 (re-geocode ~4600 changed
-  adresses, ~600₽ Ahunter) → Slice 4.2.5 (re-embed merged params, ~$0.30 OpenAI) →
-  Slice 3 (Prisma additive migration: новая `WaterAnalysisCanonical` table +
-  `extraction_engine` + `intake_source` columns + `03b-extract-docling.ts`).
+- ✅ **Slice 4.2 закрыт (2026-05-12)** — canonical best-of-three merge на 15504:
+  `experiments/.../data/canonical/canonical_full.jsonl` (25.2 MB, isolated artifact,
+  БД не тронута). Per-field provenance в `_source` + `_diff` для review.
+  Docling улучшения: +562 gained depths (3.6%), +47 sampleDate-bugfix,
+  +1599 addresses where derived null. 2941 (19%) бланков с param-disagreement —
+  кандидаты для re-embed. intakeType 100% derived (Vision checkbox), appearance
+  98% docling (richer multi-checkbox). Decision matrix в migration.md.
+- ⏳ **NEXT**: Slice 4.2.1 (smart diff report — FIAS vs raw address compare,
+  params disagreement breakdown, exceedsPdk shift, shortlists для re-geocode +
+  re-embed) → Slice 4.3 (re-geocode shortlist через Ahunter) → Slice 4.2.5
+  (re-embed merged params, ~$0.30 OpenAI) → Slice 3 (Prisma additive migration:
+  новая `WaterAnalysisCanonical` table + `extraction_engine` + `intake_source`
+  columns + `03b-extract-docling.ts`).
 
 **Discoveries (важно):**
 - **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.

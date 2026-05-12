@@ -8,7 +8,7 @@
 1. **Где docling-service:** `apps/docling/` (CPU + GPU Dockerfile, compose-файлы, FastAPI). Сервис **deployed and validated**.
 2. **Где raw данные:** `experiments/water-analysis-dataset/data/docling-raw/` (gitignored, ~280MB). Содержит **15504 Docling-output'ов** + Vision-payload dump + parsed structured fields.
 3. **Где отчёты:** `docs/experiments/water-analysis/2026-05-12-*.md` (migration plan, compare, params, sanpin-matrix).
-4. **Текущий Slice:** **Slice 1.5 ✅ ЗАКРЫТ** (после Slice 1). Tuning `deriveIntakeType` на 15504 Vision-labels: threshold 25→15, `parseDepthMeters` range fix, `deriveIntakeTypeWithSource()` для observability. **Best accuracy 73.34% / 73.60% (slovo/domain-truth)** на Strategy C (hint + threshold=15). 240 tests in lib. **NEXT: Slice 4.2** (canonical best-of-both merge Vision+Docling) → **Slice 4.3** (re-geocode ~4600 changed addresses) → **Slice 4.2.5** (re-embed merged params, ~$0.30) → **Slice 3** (Prisma migration `extraction_engine` + `03b-extract-docling.ts`).
+4. **Текущий Slice:** **Slice 4.2 ✅ ЗАКРЫТ** (после Slice 1 + 1.5). Canonical best-of-three merge (raw / derived / docling) на 15504 → `canonical_full.jsonl` (25.2 MB, isolated, БД не тронута). Docling реальные улучшения: +562 gained depths (3.6%), +47 sampleDate-bugfix, +1599 addresses where derived был null. 2941 (19%) бланков с param-disagreement, 169 (1.1%) depth-disagreement. **NEXT: Slice 4.2.1** (smart diff report — FIAS vs raw address, params disagreement breakdown, exceedsPdk shift, re-geocode/re-embed shortlists) → **Slice 4.3** (re-geocode shortlist через Ahunter) → **Slice 4.2.5** (re-embed merged params, ~$0.30) → **Slice 3** (Prisma additive: new WaterAnalysisCanonical table + extraction_engine + intake_source columns + `03b-extract-docling.ts`).
 
 ## Что сделано (timeline сжато)
 
@@ -26,7 +26,8 @@
 | 1.3 | deriveIntakeType + spec в slovo lib (22 tests) | ✅ |
 | 1.4 | PARAM_SYNONYMS расширение (+6 entries) + normalizer tests | ✅ |
 | 1.5 | Tune deriveIntakeType на 15504 Vision-labels → **73.34% acc (Strategy C, threshold=15м)** | ✅ |
-| 4.2 | Build canonical "best-of-both" dataset | ⏳ NEXT |
+| 4.2 | Canonical best-of-three merge → `canonical_full.jsonl` (25.2 MB, 15504 records, isolated) | ✅ |
+| 4.2.1 | Smart diff report (FIAS vs raw address, param disagreement, re-geocode/re-embed shortlists) | ⏳ NEXT |
 | 4.3 | Re-geocode changed addresses (~4600 бланков, ~600₽ Ahunter) | ⏳ |
 | 4.2.5 | Re-embed merged params (~$0.30 OpenAI, 3 мин) | ⏳ |
 | 3 | Schema migration extraction_engine + intake_source + 03b-extract-docling.ts | ⏳ |

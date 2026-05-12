@@ -330,6 +330,27 @@ flowchart TD
 - **22:10** — **Корректировка Vision baseline:** исходный апрельский Vision-парс не 85 часов как я предполагал — там был API rate limit (Anthropic Tier 2 = 90 calls/min), значит реальное время ~2.9 часа на 15504. **Главный win Docling-миграции — НЕ скорость (~1.9× vs Vision), а COST + determinism** ($220 → $0, плюс Docling детерминирован, не галлюцинирует).
 - [next] — `analyze_unique_names.mjs` на final 15504 → обновить coverage метрики. Параллельно: исследовать 10 zero-table PDF — что это (сканы / битый text-layer / другой шаблон).
 
+### 2026-05-12 (ночь) — Slice 4.2 ✅ закрыт
+
+- **Canonical best-of-three merge** на 15504 ордеров через `100-build-canonical.ts`:
+  - Источники: raw (Vision OCR) + derived (slovo-normalized) + docling (parseDoclingTables) + filename
+  - Per-field decision matrix:
+    - `intakeType` → 100% derived (Vision checkbox = gold)
+    - `depthMeters` → 93.3% agree, +562 gained from docling, +63 range-fix
+    - `objectAddress` → 77% derived (FIAS canonical form), 13% agree, 10.3% docling-only
+    - `sampleDate` → 99.7% derived, +47 docling Vision-duplicate-bugfix
+    - `appearance` → 98% docling (richer multi-checkbox arrays)
+    - `params` → 100% derived (conservative first-iteration); 2941 (19%) tagged с disagreement в `_diff` для Slice 4.2.1 review
+    - geo (region/district/locality/lat/lon/fiasId/dealerLocation) → 100% derived (slovo address-resolution pipeline)
+    - PII (customerName/customerPhone) → НЕ включены (152-ФЗ + Variant A)
+- **Output:** `experiments/.../data/canonical/canonical_full.jsonl` (25.2 MB, immutable, gitignored)
+- **БД не тронута.** Existing `water_analysis` / `water_analysis_raw` работают без перерывов. Downstream API без изменений.
+- **Tagged disagreements (для Slice 4.2.1):**
+  - depthMeters disagree: 169 (1.1%)
+  - sampleDate Vision-bug: 47 (0.3%)
+  - objectAddress different: 11841 (76.4%) — в основном FIAS canonical vs raw form, требует smart compare
+  - params disagreement: 2941 (19.0%) — главный кандидат для re-embed после Slice 4.2.1 analysis
+
 ### 2026-05-12 (поздний вечер) — Slice 1.5 ✅ закрыт
 
 - **Tuning `deriveIntakeType` на 15504 Vision-labels** (analysis read-only через `WaterAnalysisRaw.visionPayload` + `WaterAnalysis.intake_type`):
