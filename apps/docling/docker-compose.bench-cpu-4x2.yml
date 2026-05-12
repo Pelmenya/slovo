@@ -1,0 +1,91 @@
+# CPU 4-контейнерный setup, OMP=2 на каждый. Sweet spot из sweep'a 2026-05-12.
+# 8 OMP-потоков total на i9-11900K (8C/16T) — точно по физ.ядрам, без HT-переподписки.
+# Throughput: ~0.286 PDF/s steady-state, CPU 50-80% (комфортно для использования машины).
+#
+# Запуск:
+#   docker compose -f docker-compose.bench-cpu-4x2.yml up -d
+#
+# Альтернативы:
+#   - docker-compose.yml (1 контейнер) — dev / single-PDF use cases
+#   - docker-compose.bench-gpu-6c.yml (6 контейнеров GPU) — full validation pass
+
+services:
+  docling-1:
+    image: slovo/docling-service:0.1.0
+    container_name: slovo-docling-1
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-2:
+    image: slovo/docling-service:0.1.0
+    container_name: slovo-docling-2
+    ports: ["127.0.0.1:8001:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-3:
+    image: slovo/docling-service:0.1.0
+    container_name: slovo-docling-3
+    ports: ["127.0.0.1:8002:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-4:
+    image: slovo/docling-service:0.1.0
+    container_name: slovo-docling-4
+    ports: ["127.0.0.1:8003:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

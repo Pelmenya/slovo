@@ -1,0 +1,142 @@
+# GPU 6-контейнерный setup, OMP=2 на каждый.
+# 12 OMP-потоков total на i9-11900K (8C/16T) — без переподписки.
+# Все 6 шарят одну GPU (RTX 4070 Ti Super 16GB) через NVIDIA Container Toolkit.
+# VRAM: ~2GB на контейнер × 6 = ~12GB, помещается в 16GB.
+#
+# Запуск:
+#   docker compose -f docker-compose.bench-gpu-6c.yml up -d
+#
+# Прогноз throughput: 2.5-3 PDF/s (vs 1.9/s на 4c × OMP=4).
+
+services:
+  docling-gpu-1:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-1
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-gpu-2:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-2
+    ports: ["127.0.0.1:8001:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-gpu-3:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-3
+    ports: ["127.0.0.1:8002:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-gpu-4:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-4
+    ports: ["127.0.0.1:8003:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-gpu-5:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-5
+    ports: ["127.0.0.1:8004:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  docling-gpu-6:
+    image: slovo/docling-service:0.1.0-gpu
+    container_name: slovo-docling-gpu-6
+    ports: ["127.0.0.1:8005:8000"]
+    environment:
+      - OMP_NUM_THREADS=2
+      - TOKENIZERS_PARALLELISM=false
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+        limits:
+          memory: 4G
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

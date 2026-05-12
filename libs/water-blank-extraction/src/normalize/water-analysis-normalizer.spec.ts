@@ -44,6 +44,63 @@ describe('normalizeWaterParams', () => {
             ]);
             expect(result.params).toEqual({ magnesium: 50 });
         });
+
+        describe('Docling text-layer формы (после preCleanName)', () => {
+            // Docling возвращает разнесённые подстрочники + ASCII химформулы.
+            // После `preCleanName` имя приходит сюда в lookup-форме —
+            // эти тесты гарантируют что новые synonyms (`mg2+`/`mn2+`/`ca2+`/...)
+            // не отвалятся при PR'ах на нормализатор.
+
+            it('магний (mg2+) → magnesium [ASCII pair после preClean]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'магний (mg2+)', valueRaw: '50', unitRaw: 'мг/л' },
+                ]);
+                expect(result.params).toEqual({ magnesium: 50 });
+            });
+
+            it('кальций (ca2+) → calcium [ASCII pair после preClean]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'кальций (ca2+)', valueRaw: '120', unitRaw: 'мг/л' },
+                ]);
+                expect(result.params).toEqual({ calcium: 120 });
+            });
+
+            it('реакция среды ph → ph [15×5 шаблон лаборатории]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'реакция среды ph', valueRaw: '7,2', unitRaw: 'ед.' },
+                ]);
+                expect(result.params).toEqual({ ph: 7.2 });
+            });
+
+            it('цветность, град → color [15×5 шаблон]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'цветность, град', valueRaw: '15', unitRaw: 'градусы' },
+                ]);
+                expect(result.params).toEqual({ color: 15 });
+            });
+
+            it('фториды (f) → fluorides [после strip "по"]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'фториды (f)', valueRaw: '0,7', unitRaw: 'мг/л' },
+                ]);
+                expect(result.params).toEqual({ fluorides: 0.7 });
+            });
+
+            it('электропроводность воды → electrical_conductivity [после dehyphenate]', () => {
+                const result = normalizeWaterParams([
+                    { name: 'электропроводность воды', valueRaw: '604', unitRaw: 'мкСм/см' },
+                ]);
+                expect(result.params).toEqual({ electrical_conductivity: 604 });
+            });
+
+            it('Mn/Mg OCR-confusion в ASCII варианте (марганец (mg2+)) → magnesium', () => {
+                // Docling preClean даёт `марганец (mg2+)` — формула Mg однозначно магний.
+                const result = normalizeWaterParams([
+                    { name: 'марганец (mg2+)', valueRaw: '45', unitRaw: 'мг/л' },
+                ]);
+                expect(result.params).toEqual({ magnesium: 45 });
+            });
+        });
     });
 
     describe('флаги особых случаев', () => {

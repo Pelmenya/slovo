@@ -1,0 +1,11 @@
+# Docling stack — версии актуальны на май 2026
+docling==2.74.0
+docling-core==2.74.1
+
+# FastAPI server
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+
+# Утилиты
+pydantic==2.10.4

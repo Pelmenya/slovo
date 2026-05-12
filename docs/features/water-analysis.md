@@ -3,7 +3,7 @@
 > **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (address resolution + AI-verify + dealer-median fallback) + 1.B (normalize) + **Phase 2 (embeddings + endpoint)** + **Phase 4 backend (7 endpoints + 4 USP-фичи)** **закрыты на 8 мая 2026**. 15 504 бланка нормализованы и embedded через OpenAI text-embedding-3-large (3072 dim) в Flowise Document Store `water-analysis-aquaphor`. Поверх — 7 endpoints для prostor-app карты: `/heatmap`, `/predict` (USP-1, interval-first + 4-level pdkStatus + byCategory), `/depth-map` (USP-4 base), `/depth-predict` (USP-4), `/points`, `/equipment-suggest` (USP-2 flagship cross-domain water→catalog), `/aquifer-stats` (USP-4 deep-dive). Throttle per-endpoint, Redis cache TTL по типу. **1101 unit-тест** в 64 test suites. **Следующий шаг:** Phase 4.5 frontend (prostor-app карта на real backend) — handoff promt v2 в `docs/management/water-map-design-prompt.md`.
 > **Связи:** [vision-catalog-search.md](vision-catalog-search.md), [knowledge-base.md](knowledge-base.md), [prostor-water-pivot.md](prostor-water-pivot.md), [flowise-naming.md](../guides/flowise-naming.md), [ADR-002 PostgreSQL+pgvector](../architecture/decisions/002-postgres-pgvector.md), [ADR-004 Claude primary](../architecture/decisions/004-claude-as-primary-llm.md), [ADR-005 Prisma+raw queries](../architecture/decisions/005-prisma-with-pgvector.md), [ADR-008 Flowise MCP](../architecture/decisions/008-flowise-mcp.md)
 > **Executive summary:** [`docs/management/water-analysis-executive-summary.md`](../management/water-analysis-executive-summary.md) (для руководителя — таблицы с проверенными цифрами).
-> **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5), `2026-05-06-stage-1b-eda.md` (Этап 1.B EDA).
+> **Lab journals:** `docs/experiments/water-analysis/2026-05-04-stage-1a-extract-costs.md` (Этап 1.A финал), `2026-05-05-bitrix-archive-merge.md` (5430 → 15 504), `2026-05-05-address-resolution.md` (Этап 1.A.5), `2026-05-12-docling-migration.md` + `2026-05-12-compare-full.md` (Docling vs Vision compare).
 > **Roadmap pin:** `roadmap #3 — water-analysis ✅` (CLAUDE.md → «Roadmap фич»).
 
 Фича: **семантический поиск и кластеризация по 15 504 бланкам анализов воды** —
@@ -1017,7 +1017,7 @@ experiments/water-analysis-dataset/             # gitignored целиком (п�
 - [x] **#38** `07-dealer-median-fallback.ts` — **3 185 записей покрыто** (112 dealer'ов с ≥3 ok-records, true median PERCENTILE_CONT). Финал: 97.6% records с координатами.
 - [ ] **#36** Manual address override для top-dealers без геоинфы (371 record).
 - [x] **#35** Этап 1.B — derive `WaterAnalysis` (param mapping, unit conversion, value parsing, sourceType inference, PDK flagging, address copy из `geo_*`, PII обезличивание). Закрыт 2026-05-06.
-- [x] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain — `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`.
+- [x] **EDA** на map-quality по dealer'ам, distribution wrong/uncertain — выполнен 2026-05-06, репорт удалён в коммите Docling-миграции (метрики перенесены в `2026-05-12-compare-full.md`).
 
 ### Backlog после 1.B
 

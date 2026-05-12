@@ -258,7 +258,7 @@ Knowledge-base дошла до **Phase 1 text-only MVP** (PR1-PR4), дальне
 
 **Bridge между фичами:** алгоритм подбора оборудования (Phase 2 water-analysis) будет связывать `water_analysis.params` с vision-catalog товарами через семантический поиск — это первая точка пересечения двух standalone-фич.
 
-См. `docs/features/water-analysis.md` (статус закрытия), `docs/management/water-analysis-executive-summary.md` (executive summary), `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md` (EDA).
+См. `docs/features/water-analysis.md` (статус закрытия), `docs/management/water-analysis-executive-summary.md` (executive summary), `docs/experiments/water-analysis/2026-05-12-compare-full.md` (Docling vs Vision compare).
 
 ---
 

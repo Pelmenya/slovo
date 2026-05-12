@@ -518,9 +518,11 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'водородный показатель': 'ph',
     'ph': 'ph',
     'рн': 'ph',
+    'реакция среды ph': 'ph',           // Docling 15×5 шаблон лаборатории (230 кейсов)
 
     // color
     'цветность': 'color',
+    'цветность, град': 'color',         // Docling 15×5 шаблон (230 кейсов)
 
     // turbidity
     'мутность': 'turbidity',
@@ -550,6 +552,7 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     // electrical_conductivity
     'электропроводность': 'electrical_conductivity',
     'удельная электропроводность': 'electrical_conductivity',
+    'электропроводность воды': 'electrical_conductivity',   // Docling «Электропровод- ность воды» после dehyphenate (53 кейса)
 
     // hardness_total — только общая жёсткость.
     // NB: «постоянная» (без бикарбонатов) и «временная» (бикарбонатная) — это
@@ -578,6 +581,7 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'марганец': 'manganese',
     'марганец (mn, суммарно)': 'manganese',
     'марганец (mn²⁺)': 'manganese',
+    'марганец (mn2+)': 'manganese',                  // Docling text-layer ASCII pair
     'марганец (mn)': 'manganese',
     'марганец (суммарно)': 'manganese',
     'марганец (mn, валентно)': 'manganese',
@@ -598,14 +602,17 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'магний (mg²⁺)': 'magnesium',
     'магний (mg, суммарно)': 'magnesium',
     'магний (mg)': 'magnesium',
+    'магний (mg2+)': 'magnesium',       // Docling text-layer ASCII pair (1867 кейсов после preClean+autoclose)
     // OCR-ошибка имени «Магний» → «Марганец», но формула Mg²⁺ корректна → магний.
     // 658 записей в dataset (изначально неверно смаппил в manganese, fix 2026-05-06).
     'марганец (mg²⁺)': 'magnesium',
+    'марганец (mg2+)': 'magnesium',     // Docling ASCII вариант той же OCR-confusion
     'магнец (mg²⁺)': 'magnesium', // OCR
 
     // calcium
     'кальций': 'calcium',
     'кальций (ca²⁺)': 'calcium',
+    'кальций (ca2+)': 'calcium',        // Docling text-layer ASCII pair
 
     // nitrates
     'нитраты': 'nitrates',
@@ -636,6 +643,7 @@ export const PARAM_SYNONYMS: Record<string, string> = {
     'фториды': 'fluorides',
     'фториды (f⁻)': 'fluorides',
     'фториды (f-)': 'fluorides',
+    'фториды (f)': 'fluorides',         // Docling «Фториды (по F)» после strip "по" (52 кейса)
 
     // hydrogen_sulfide
     'сероводород': 'hydrogen_sulfide',

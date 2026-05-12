@@ -39,7 +39,7 @@
    - `POST /equipment-suggest` (USP-2 flagship) — cross-domain вода→каталог. Per-problem catalog search (PROBLEM_TO_QUERY mapping → targeted RO/обезжелезиватели/умягчители вместо generic). Recommendation содержит `matchedProblem` + `reason` для UI.
    - `GET /aquifer-stats` (USP-4 deep-dive) — стратифицированная chemistry per layer («бури глубже = чище вода»).
 
-   **PII strategy** (memory `feedback_water_heatmap_pii_strategy`): минимальный grid 0.02° для aggregates, roundCoord 0.005° для individual точек, k-anonymity через grid вместо K_MIN. **Interval-first философия** (memory `feedback_interval_first_predictions`): 4-level severity для всех predict-endpoints. Полный план: `docs/features/prostor-water-pivot.md`. План water-pipeline: `docs/features/water-analysis.md`. Executive summary: `docs/management/water-analysis-executive-summary.md`. EDA: `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`. Frontend production (Phase 4.5) — следующий шаг, пилится на real backend.
+   **PII strategy** (memory `feedback_water_heatmap_pii_strategy`): минимальный grid 0.02° для aggregates, roundCoord 0.005° для individual точек, k-anonymity через grid вместо K_MIN. **Interval-first философия** (memory `feedback_interval_first_predictions`): 4-level severity для всех predict-endpoints. Полный план: `docs/features/prostor-water-pivot.md`. План water-pipeline: `docs/features/water-analysis.md`. Executive summary: `docs/management/water-analysis-executive-summary.md`. Docling vs Vision compare: `docs/experiments/water-analysis/2026-05-12-compare-full.md`. Frontend production (Phase 4.5) — следующий шаг, пилится на real backend.
 4. ⏳ **notes-rag**: Q&A endpoint поверх knowledge-base — реактивация когда появится потребитель Phase 2 video/PDF-источников.
 5. ⏳ **multi-tenant**: пользователи, JWT, биллинг (шаг к SaaS). Параллельно с domain-фичами, для каждой закладываем `userId` в модели с нуля (`KnowledgeSource` уже имеет `userId String? @db.Uuid`).
 
@@ -373,6 +373,40 @@ claude mcp list
 - pgAdmin **9.14.0** + Redis Commander (dev UI)
 
 **Всегда проверяй актуальные версии перед установкой** — не полагайся на память, посмотри `npm view <pkg> version` и Docker Hub.
+
+---
+
+## Активная миграция — water-analysis Docling extraction (2026-05-12)
+
+🎯 **Заменяем Vision-Haiku extraction на бесплатный детерминированный Docling** в water-analysis ETL.
+
+**Контекст для новой сессии — читать обязательно:**
+- `docs/experiments/water-analysis/2026-05-12-docling-migration-HANDOFF.md` — current state, next steps, discoveries
+- `docs/experiments/water-analysis/2026-05-12-docling-migration.md` — полный план миграции (slices + progress log)
+- `apps/docling/CLAUDE.md` — операционный контекст для самого docling-service
+
+**Status snapshot:**
+- ✅ Docling service deployed (CPU + GPU), full 15504 PDF extracted (`data/docling-raw/`)
+- ✅ Compare reports готовы (extraction-level, end-to-end, params consistency, SanPiN matrix)
+- ✅ **Slice 1 закрыт (2026-05-12)** — lib-only фундамент в `libs/water-blank-extraction/`:
+  `WaterBlankExtractionV1` Zod-схема перенесена из experiments, `preCleanName`,
+  `docling-table-parser`, `deriveIntakeType` + расширенные `PARAM_SYNONYMS`
+  (mg2+/mn2+/ca2+ ASCII, реакция среды ph, цветность град, фториды (f),
+  электропроводность воды). **219/219 tests, 0 lint errors.** БД не тронута.
+- ⏳ **NEXT**: Slice 1.5 (tuning `deriveIntakeType` на 15504 Vision-labels, accuracy ≥95%)
+  → Slice 3 (Prisma migration `extraction_engine` + `03b-extract-docling.ts`).
+  Slice 3 — параллельно с улучшением адресов.
+
+**Discoveries (важно):**
+- **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.
+- Docling text-layer **не видит checkbox state** — для **новых** бланков `intakeType`
+  деривируется алгоритмически из `depthMeters` + text-hints (`deriveIntakeType`).
+  Для existing 15504 берём `visionPayload.intakeType` напрямую (sunk cost $220).
+- `depthMeters` отсутствует в ~41% датасета — норма; `deriveIntakeType` падает
+  в hint-match или в default `municipal` (опц. Vision-fallback на ~10% edge cases).
+- Slovo `normalizeWaterParams` уже фиксит Vision Mg/Mn swap (70%) / sulfide-by-value (12%) / hardness-by-unit — compare делать на **derived**.
+- Slovo `PARAM_SYNONYMS` имел gap: катионы только в unicode (`(Mg²⁺)`), нет ASCII pair → закрыто в Slice 1.
+- Vision quality в существующих 15504 (per compare reports): ~20% customerName OCR-errors, ~30% address phone-склейка, 0.8% params disagree (Vision hallucination candidates) — **Docling даёт second-opinion для cleanup**.
 
 ---
 

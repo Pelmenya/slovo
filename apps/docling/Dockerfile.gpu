@@ -1,0 +1,82 @@
+# syntax=docker/dockerfile:1.7
+#
+# GPU-вариант docling-service. Tag: slovo/docling-service:0.1.0-gpu
+#
+# Архитектурный поинт: торч CUDA wheels (cu121) ШИПЯТ С СОБСТВЕННЫМИ
+# CUDA runtime libs (libcudart, libcublas, libcudnn) — нам НЕ нужна
+# nvidia/cuda base image. Достаточно python:3.12-slim. Единственное что
+# нужно от хоста — это libcuda.so.1 (CUDA driver), который NVIDIA Container
+# Toolkit hook'ает в контейнер автоматически при `docker run --gpus all`.
+#
+# Использование:
+#   docker compose -f docker-compose.bench-gpu.yml up -d
+#
+# ОЖИДАЕМАЯ ПРОИЗВОДИТЕЛЬНОСТЬ: ~1.5-3 PDF/s vs 0.28 PDF/s на CPU.
+
+# ============================================================
+# Stage 1: builder — ставим зависимости и предзагружаем модели
+# ============================================================
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/opt/models
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY requirements.txt .
+
+# Ставим CUDA-версию torch. cu121 совместим с NVIDIA driver 525+ (у нас 581).
+# Это ~2.5GB на диск (vs ~750MB CPU torch). Слой большой — выносим отдельно
+# для лучшего кеширования.
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    torch==2.5.1 torchvision==0.20.1
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Предзагрузка моделей Docling.
+RUN python -c "from docling.utils.model_downloader import download_models; download_models()"
+
+# ============================================================
+# Stage 2: runtime — тонкий имадж без build-essential
+# ============================================================
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/opt/models \
+    OMP_NUM_THREADS=4
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r app && useradd -r -g app -d /home/app -m app
+
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /opt/models /opt/models
+
+WORKDIR /app
+COPY app/ /app/
+
+RUN chown -R app:app /app /opt/models
+USER app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

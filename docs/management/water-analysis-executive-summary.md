@@ -1,6 +1,6 @@
 # Анализ воды Аквафор: 15 504 бланка превращены в структурированный датасет
 
-> Executive summary для руководителя. Технические детали — `docs/features/water-analysis.md`, разведочный анализ — `docs/experiments/water-analysis/2026-05-06-stage-1b-eda.md`.
+> Executive summary для руководителя. Технические детали — `docs/features/water-analysis.md`, Docling vs Vision compare — `docs/experiments/water-analysis/2026-05-12-compare-full.md`.
 > **Статус:** ✅ Этапы 1.A (extract) + 1.A.5 (geocode + AI-verify) + 1.B (normalize) + **Phase 2 (embeddings + endpoint поиска похожих)** + **Phase 4 backend (карта + 4 USP-фичи, 7 endpoints, 8 мая 2026)** закрыты. Endpoint `POST /water-analysis/similar` за ~600 мс возвращает топ-K похожих бланков. Поверх — карта-API: `/heatmap` (тепловая карта 22 параметров), `/predict` (прогноз химии для нового адреса БЕЗ собственного анализа — USP-1), `/depth-map` + `/depth-predict` (карта глубин и прогноз бурения для бурильщиков — USP-4), `/equipment-suggest` (рекомендация фильтра по координатам через cross-domain water→catalog — USP-2 flagship), `/aquifer-stats` (стратифицированная chemistry per водоносный горизонт). Frontend на real backend (Phase 4.5) сейчас в работе у дизайн-агента, далее — интеграция с `prostor-app`.
 
 ---
