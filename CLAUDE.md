@@ -149,6 +149,34 @@ prisma/schema/
 
 Полные правила — в `docs/architecture/decisions/005-prisma-with-pgvector.md` → «Миграции — только forward».
 
+### Backup БД — два слоя (локально + Yandex.Disk)
+
+Перед любой destructive операцией (migrate reset, массовый ETL, re-extract, re-normalize) или routine snapshot:
+
+```bash
+# из корня slovo/
+TS=$(date +%Y%m%d_%H%M%S)
+docker exec slovo-postgres pg_dump -U slovo -d slovo --format=plain --no-owner --no-acl \
+  | gzip > "experiments/water-analysis-dataset/data/backups/slovo_full_${TS}.sql.gz"
+
+# integrity check
+gunzip -t "experiments/water-analysis-dataset/data/backups/slovo_full_${TS}.sql.gz"
+
+# ОБЯЗАТЕЛЬНО дублировать в Yandex.Disk (off-machine sync)
+cp "experiments/water-analysis-dataset/data/backups/slovo_full_${TS}.sql.gz" \
+   "C:/Users/Diamond/YandexDisk/Water_backup/"
+```
+
+Два места:
+- **Локально** — `experiments/water-analysis-dataset/data/backups/` (gitignored, SSD, быстрый restore)
+- **Yandex.Disk** — `C:/Users/Diamond/YandexDisk/Water_backup/` (off-machine, защита от disk failure)
+
+Naming convention: `slovo_full_<YYYYMMDD_HHMMSS>.sql.gz` (полный) / `water_analysis_<TS>.sql.gz` (только водные таблицы, быстрее) / `water_analysis_schema_<TS>.sql` (schema-only для diff).
+
+БД на 12 мая 2026 — **368 MB / 12 tables** (water_analysis, water_analysis_raw, Flowise-managed chunks/record_manager, health_check). Gzipped backup ~224 MB.
+
+Restore-инструкции + история backup'ов: `experiments/water-analysis-dataset/data/backups/README.md`. **Перед restore — обязательно явное согласие пользователя** (затирает всю БД).
+
 ---
 
 ## Архитектурные решения (ADR)
@@ -393,9 +421,23 @@ claude mcp list
   `docling-table-parser`, `deriveIntakeType` + расширенные `PARAM_SYNONYMS`
   (mg2+/mn2+/ca2+ ASCII, реакция среды ph, цветность град, фториды (f),
   электропроводность воды). **219/219 tests, 0 lint errors.** БД не тронута.
-- ⏳ **NEXT**: Slice 1.5 (tuning `deriveIntakeType` на 15504 Vision-labels, accuracy ≥95%)
-  → Slice 3 (Prisma migration `extraction_engine` + `03b-extract-docling.ts`).
-  Slice 3 — параллельно с улучшением адресов.
+- ✅ **Slice 1.5 закрыт (2026-05-12)** — tuning `deriveIntakeType` на 15504 Vision-labels:
+  - **Threshold 25м → 15м** (tuned on label distribution P10=17, P50=47).
+  - `parseDepthMeters` bug fix: range support («50-60м» → 55), modifier strip (`>`/`~`).
+  - **`deriveIntakeTypeWithSource()`** добавлен параллельно (original API unchanged) —
+    возвращает `{ type, source }` для observability (`hint_*` / `depth_*` / `default_municipal`).
+  - **Best accuracy: 73.34% (slovo-truth) / 73.60% (domain-truth)** на Strategy C
+    (hint + threshold=15). Strategy D (+ dealer-majority) даёт 74.5% но ломает
+    municipal-recall (0.96→0.26 — wrong-equipment risk).
+  - Target ≥95% **недостижим** без extraction `samplingPoint` из Docling row 3
+    handwritten ИЛИ Vision-fallback на ~10% no-depth+no-hint бланков.
+  - **240/240 tests** в libs. 14 immutable run-*.json snapshots в `experiments/water-analysis-dataset/data/intake-tuning/`.
+- ⏳ **NEXT**: Slice 4.2 (canonical best-of-both merge Vision+Docling на 15504,
+  **только новая таблица / JSON-artifact** — existing `water_analysis` не трогаем,
+  downstream API работает без перерывов) → Slice 4.3 (re-geocode ~4600 changed
+  adresses, ~600₽ Ahunter) → Slice 4.2.5 (re-embed merged params, ~$0.30 OpenAI) →
+  Slice 3 (Prisma additive migration: новая `WaterAnalysisCanonical` table +
+  `extraction_engine` + `intake_source` columns + `03b-extract-docling.ts`).
 
 **Discoveries (важно):**
 - **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.

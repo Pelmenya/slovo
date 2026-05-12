@@ -177,15 +177,42 @@ function parseDepthMeters(grid: TGrid, row: number | null, numCols: number): num
     if (row === null) return null;
     // Ищем "Глубина <N> м" в любой ячейке этой строки (обычно col 7, но
     // на разных шаблонах может сдвинуться).
+    //
+    // Поддерживаемые формы (выявлены на 15504 Vision-labels, см.
+    // experiments/.../scripts/99a-investigate-depth-loss.ts):
+    //   - "Глубина 60 м"          → 60
+    //   - "Глубина 7,5 м"         → 7.5
+    //   - "Глубина 7-9 м"         → 8 (medium of range)
+    //   - "Глубина 50-60 м"       → 55
+    //   - "Глубина >50 м"         → 50 (strip modifier)
+    //   - "Глубина ~50 м"         → 50
+    //   - "Глубина 30 - 40 м"     → 35 (с пробелами вокруг dash)
+    //   - "Глубина м" (no value)  → null
+    //   - "Глубина 0 м"           → null (zero treated as missing)
+    //
+    // Regex шаги:
+    //   1. Capture первое число + опц. модификатор `>`/`<`/`~` перед ним
+    //   2. Опц. capture второе число для range (с любым dash-вариантом)
+    //   3. Если range — возвращаем avg
+    //
+    // NB: range parser обязателен — 4.4% бланков (676/15504) имеют range-формы
+    // в шапке («Глубина 50-60 м»), без range support они теряются как null.
     for (let c = 0; c < numCols; c++) {
         const text = getCell(grid, row, c);
         if (!text) continue;
-        const m = text.match(/глубина\s+(\d+(?:[,.]\d+)?)\s*м/i);
+        const m = text.match(
+            /глубина\s*[~<>]?\s*(\d+(?:[,.]\d+)?)(?:\s*[-–—]\s*(\d+(?:[,.]\d+)?))?\s*м/i,
+        );
         if (m) {
-            const value = parseFloat(m[1].replace(',', '.'));
-            if (Number.isFinite(value) && value > 0) {
-                return value;
+            const low = parseFloat(m[1].replace(',', '.'));
+            if (!Number.isFinite(low) || low <= 0) continue;
+            if (m[2]) {
+                const high = parseFloat(m[2].replace(',', '.'));
+                if (Number.isFinite(high) && high >= low) {
+                    return (low + high) / 2;
+                }
             }
+            return low;
         }
     }
     return null;

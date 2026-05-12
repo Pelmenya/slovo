@@ -206,6 +206,48 @@ describe('parseDoclingTables', () => {
             );
             expect(result.depthMeters).toBeNull();
         });
+
+        it('"Глубина 7-9 м" (range) → medium = 8', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина 7-9 м' }])]),
+            );
+            expect(result.depthMeters).toBe(8);
+        });
+
+        it('"Глубина 50-60 м" (range, обычная глубина) → 55', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина 50-60 м' }])]),
+            );
+            expect(result.depthMeters).toBe(55);
+        });
+
+        it('"Глубина >50 м" (modifier) → 50 (strip modifier, берём число)', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина >50 м' }])]),
+            );
+            expect(result.depthMeters).toBe(50);
+        });
+
+        it('"Глубина ~50 м" (approximation) → 50', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина ~50 м' }])]),
+            );
+            expect(result.depthMeters).toBe(50);
+        });
+
+        it('"Глубина 30 - 40 м" (spaces around dash) → 35', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина 30 - 40 м' }])]),
+            );
+            expect(result.depthMeters).toBe(35);
+        });
+
+        it('"Глубина 15-18 м" (range типичной мелкой well) → 16.5', () => {
+            const result = parseDoclingTables(
+                makeTable([minimalHeader([{ row: 2, col: 7, text: 'Глубина 15-18 м' }])]),
+            );
+            expect(result.depthMeters).toBe(16.5);
+        });
     });
 
     describe('header parsing — sampleDate/testDate', () => {

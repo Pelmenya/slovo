@@ -8,7 +8,7 @@
 1. **Где docling-service:** `apps/docling/` (CPU + GPU Dockerfile, compose-файлы, FastAPI). Сервис **deployed and validated**.
 2. **Где raw данные:** `experiments/water-analysis-dataset/data/docling-raw/` (gitignored, ~280MB). Содержит **15504 Docling-output'ов** + Vision-payload dump + parsed structured fields.
 3. **Где отчёты:** `docs/experiments/water-analysis/2026-05-12-*.md` (migration plan, compare, params, sanpin-matrix).
-4. **Текущий Slice:** **Slice 1 ✅ ЗАКРЫТ** — `preCleanName`, `parseDoclingTables`, `deriveIntakeType` в `libs/water-blank-extraction/src/parsers/` (227 tests). PARAM_SYNONYMS расширен +6 entries. WaterBlankExtractionV1 Zod-схема перенесена в lib. **NEXT: Slice 1.5** (tune `deriveIntakeType` на 15504 Vision-labels, target ≥95%) → **Slice 4.2** (canonical best-of-both merge) → **Slice 4.3** (re-geocode changed addresses) → **Slice 3** (Prisma migration `extraction_engine` + `03b-extract-docling.ts`).
+4. **Текущий Slice:** **Slice 1.5 ✅ ЗАКРЫТ** (после Slice 1). Tuning `deriveIntakeType` на 15504 Vision-labels: threshold 25→15, `parseDepthMeters` range fix, `deriveIntakeTypeWithSource()` для observability. **Best accuracy 73.34% / 73.60% (slovo/domain-truth)** на Strategy C (hint + threshold=15). 240 tests in lib. **NEXT: Slice 4.2** (canonical best-of-both merge Vision+Docling) → **Slice 4.3** (re-geocode ~4600 changed addresses) → **Slice 4.2.5** (re-embed merged params, ~$0.30) → **Slice 3** (Prisma migration `extraction_engine` + `03b-extract-docling.ts`).
 
 ## Что сделано (timeline сжато)
 
@@ -22,14 +22,14 @@
 | 0.10 | CPU↔GPU determinism — 98.9% identical (1.1% cell-boundary jitter, semantics не страдают) | ✅ |
 | 4.1 | Params consistency: 92.3% agree, 0.8% disagree (Vision hallucinations кандидаты) | ✅ |
 | 1.1 | preCleanName + spec в slovo lib (29 tests) | ✅ |
-| 1.2 | docling-table-parser.ts + spec в slovo lib (22 tests, 2 fixtures) | ✅ |
+| 1.2 | docling-table-parser.ts + spec в slovo lib (32 tests, 2 fixtures) | ✅ |
 | 1.3 | deriveIntakeType + spec в slovo lib (22 tests) | ✅ |
 | 1.4 | PARAM_SYNONYMS расширение (+6 entries) + normalizer tests | ✅ |
-| 1.5 | Tune deriveIntakeType на 15504 Vision-labels | ⏳ NEXT |
-| 4.2 | Build canonical "best-of-both" dataset | ⏳ |
+| 1.5 | Tune deriveIntakeType на 15504 Vision-labels → **73.34% acc (Strategy C, threshold=15м)** | ✅ |
+| 4.2 | Build canonical "best-of-both" dataset | ⏳ NEXT |
 | 4.3 | Re-geocode changed addresses (~4600 бланков, ~600₽ Ahunter) | ⏳ |
 | 4.2.5 | Re-embed merged params (~$0.30 OpenAI, 3 мин) | ⏳ |
-| 3 | Schema migration extraction_engine + 03b-extract-docling.ts | ⏳ |
+| 3 | Schema migration extraction_engine + intake_source + 03b-extract-docling.ts | ⏳ |
 
 ## Discoveries (важно для новой сессии)
 
@@ -108,13 +108,59 @@ npx tsx experiments/water-analysis-dataset/scripts/91-docling-bench-bulk.ts \
   --count 15504
 ```
 
+## Slice 1.5 итоги (закрыт 2026-05-12)
+
+**Метрики на 15504 Vision-labeled бланков:**
+
+| Strategy | Accuracy | well_R | well_dug_R | municipal_R | spring_R |
+|---|---|---|---|---|---|
+| A baseline (threshold=15) | 72.88% | 0.68 | 0.61 | 0.96 | 0.00 |
+| **C: hint + threshold=15m** ⭐ | **73.34%** | 0.68 | 0.65 | **0.95** | 0.41 |
+| D: + dealer-majority | 74.53% | 0.92 | 0.67 | **0.26 ⚠️** | 0.41 |
+| C (domain-truth re-mapped) | 73.60% | 0.68 | 0.65 | 0.95 | 0.41 |
+
+Strategy D кажется лучше по acc, но ломает municipal-recall — wrong-equipment risk недопустим.
+
+**Key findings:**
+- Threshold 25→**15м** — peak в sweep, +5pp.
+- `parseDepthMeters` range support (50-60м → 55, ~50м → 50, >50м → 50) — закрывает 676/15504 (4.4%) lost depths.
+- `filename.customerNameFromFilename` имеет coverage **99.3%** (текст в скобках filename) — основной hint source.
+- `filename.sourceTypeHint` всего 1.6%.
+- Slovo normalize vs domain-truth расходятся всего в 0.3% (46 ордеров) — slovo нормализация honest.
+
+**Target ≥95% недостижим без:**
+- Extraction `samplingPoint` из Docling row 3 handwritten (Slice 3 extension parser potential)
+- ИЛИ Vision-fallback на ~10% no-depth+no-hint edge cases (~$0.5 на 1500 бланков)
+
+**Финальные изменения в lib:**
+- `derive-intake-type.ts:WELL_DEPTH_THRESHOLD_METERS = 15` + comment про tuning
+- **`deriveIntakeTypeWithSource()`** — параллельный API, возвращает `{ type, source: TIntakeSource }` для аудита в downstream.
+- `parseDepthMeters` — расширенный regex для range/modifier.
+
+**Slice 3 design pattern для ETL:**
+```ts
+const filenameHint = [
+    filenameMeta.sourceTypeHint,
+    filenameMeta.customerNameFromFilename,
+    doclingExtraction.samplingPoint,  // если будет в Slice 3 extension
+].filter(Boolean).join(' ');
+
+const { type: intakeType, source: intakeSource } = visionPayload?.intakeType
+    ? { type: mapVisionString(visionPayload.intakeType), source: 'vision' as const }
+    : deriveIntakeTypeWithSource(doclingExtraction.depthMeters, filenameHint, null);
+// → WaterAnalysis: intake_type, intake_source, extraction_engine
+```
+
 ## Next steps (приоритет)
 
-1. **Slice 1.5 — Tune `deriveIntakeType`:** прогон по 15504 с Vision-labels из БД как ground truth → confusion matrix → tune thresholds + regex → target ≥95% accuracy. Analysis-скрипт в `experiments/water-analysis-dataset/scripts/9*-tune-intake.ts`. БД не трогаем (read-only из `WaterAnalysisRaw.visionPayload`).
-2. **Slice 4.2 — Canonical "best-of-both" merge:** для каждого бланка решить какое поле взять из Vision и какое из Docling (params: Docling-value если abs diff > threshold + Vision-gall pattern, иначе Vision; objectAddress/customerName: Docling; intakeType: Vision; sampleDate: Docling если Vision-duplicate-bug). Результат в JSON-артефакт или новую таблицу. БД не трогаем.
-3. **Slice 4.3 — Re-geocode changed addresses:** ~4600 бланков где Docling дал чистый адрес (без Vision-склейки phone) → прогон через 04-geocode + 05-ahunter-cleanse. ~600₽ Ahunter, 1-2 мин.
-4. **Slice 4.2.5 — Re-embed merged params:** бланки где params изменились (~50-70% из 15504) → новый embedding text через `generateEmbeddingText` → re-upload в Flowise Document Store. ~$0.30 OpenAI, 3 мин.
-5. **Slice 3 — Schema + ETL:** `water_analysis_raw.extraction_engine` column (Prisma migration), `03b-extract-docling.ts` script с pattern `result.intakeType = visionPayload?.intakeType ?? deriveIntakeType(...)`, test pass на 50 новых бланках.
+1. **Slice 4.2 — Canonical "best-of-both" merge (ISOLATED):** для каждого бланка решить какое поле взять из Vision и какое из Docling (params: Docling-value если abs diff > threshold + Vision-gall pattern, иначе Vision; objectAddress/customerName: Docling; intakeType: Vision; sampleDate: Docling если Vision-duplicate-bug).
+   - **ОГРАНИЧЕНИЕ:** существующие `water_analysis` / `water_analysis_raw` **НЕ ТРОГАЕМ**. Никаких UPDATE, никаких BREAKING изменений в схеме. Downstream API (heatmap, predict, equipment-suggest, similar) продолжает работать на текущей таблице.
+   - **Куда писать:** новый **JSON-artifact** `experiments/water-analysis-dataset/data/canonical/canonical_full.jsonl` (immutable, gitignored). Опционально в Slice 3 + добавим Prisma model `WaterAnalysisCanonical` как **отдельную таблицу** (additive migration), но в Slice 4.2 — JSON достаточно для analysis.
+   - Pattern: read-only на existing, write-only в isolated artifact.
+2. **Slice 4.2.1 — Diff report existing vs canonical:** для каждого ордера сравнить existing `WaterAnalysis` со свежим canonical JSON-artifact'ом. Поля: params, paramFlags, intakeType, objectAddress, sampleDate. Метрики: сколько ордеров где values поменялись, как поменялся exceedsPdk, distribution diff. Output: `data/canonical/diff-report.md`. Read-only. **Это даёт honest эффект миграции до commit'а.**
+3. **Slice 4.3 — Re-geocode changed addresses:** ~4600 бланков где Docling дал чистый адрес (без Vision-склейки phone) → прогон через 04-geocode + 05-ahunter-cleanse. ~600₽ Ahunter, 1-2 мин. **Результаты в новые колонки (canonical_lat/canonical_lon)** или в JSON-artifact, existing geo-поля не перетираем.
+3. **Slice 4.2.5 — Re-embed merged params:** бланки где params изменились (~50-70% из 15504) → новый embedding text через `generateEmbeddingText` → re-upload в Flowise Document Store. ~$0.30 OpenAI, 3 мин.
+4. **Slice 3 — Schema + ETL:** `water_analysis_raw.extraction_engine` + `WaterAnalysis.intake_source` columns (Prisma migration), `03b-extract-docling.ts` script с pattern выше, test pass на 50 новых бланках.
 
 ## Не забывать
 

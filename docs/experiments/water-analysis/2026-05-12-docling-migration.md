@@ -330,6 +330,34 @@ flowchart TD
 - **22:10** — **Корректировка Vision baseline:** исходный апрельский Vision-парс не 85 часов как я предполагал — там был API rate limit (Anthropic Tier 2 = 90 calls/min), значит реальное время ~2.9 часа на 15504. **Главный win Docling-миграции — НЕ скорость (~1.9× vs Vision), а COST + determinism** ($220 → $0, плюс Docling детерминирован, не галлюцинирует).
 - [next] — `analyze_unique_names.mjs` на final 15504 → обновить coverage метрики. Параллельно: исследовать 10 zero-table PDF — что это (сканы / битый text-layer / другой шаблон).
 
+### 2026-05-12 (поздний вечер) — Slice 1.5 ✅ закрыт
+
+- **Tuning `deriveIntakeType` на 15504 Vision-labels** (analysis read-only через `WaterAnalysisRaw.visionPayload` + `WaterAnalysis.intake_type`):
+  - Threshold sweep 15/20/25/30/35 → **peak на 15м**, +5pp над дефолтом 25м.
+  - `parseDepthMeters` range support fix («50-60м» → 55, ~/>/< modifier strip) — закрывает 676/15504 (4.4%) lost depths.
+  - `filename.customerNameFromFilename` coverage **99.3%** — основной hint source.
+  - `filename.sourceTypeHint` всего 1.6% — слабый одиночный источник.
+  - Slovo normalize vs domain-aware truth расходятся в 0.3% (46 ордеров) — slovo нормализация honest.
+- **Strategy comparison (на enhanced tuning_full.jsonl с filename+docling layers):**
+
+| Strategy | Slovo truth | Domain truth | well_R | well_dug_R | municipal_R | spring_R |
+|---|---|---|---|---|---|---|
+| A baseline (threshold=15) | 72.88% | 73.16% | 0.68 | 0.61 | 0.96 | 0.00 |
+| **C: hint + threshold=15m** ⭐ | **73.34%** | **73.60%** | 0.68 | 0.65 | **0.95** | 0.41 |
+| D: + dealer-majority | 74.53% | 74.69% | 0.92 | 0.67 | 0.26 ⚠️ | 0.41 |
+
+- Strategy C — balanced, no breaking API change. Финал для production.
+- Strategy D обманчиво лучше по acc, но ломает municipal-recall — wrong-equipment risk.
+- Target ≥95% **недостижим** на текущих источниках без extraction `samplingPoint` из Docling row 3 handwritten (Slice 3 extension potential) ИЛИ Vision-fallback на ~10% edge cases.
+- **Изменения в lib (immutable, additive):**
+  - `WELL_DEPTH_THRESHOLD_METERS = 15` (was 25) + comment про tuning context.
+  - `parseDepthMeters` — range support, 6 новых tests (32/32 в parser-spec).
+  - `deriveIntakeTypeWithSource()` — параллельный API, returns `{ type, source: TIntakeSource }`. Original `deriveIntakeType` не тронут (backward compat).
+  - `TIntakeSource` enum: `hint_*` / `depth_*` / `default_municipal` для observability.
+- **Tests: 240/240, 0 lint.** 14 immutable run-*.json snapshots в `data/intake-tuning/`. `vision_full.jsonl` / `tuning_full_v1.jsonl` / `baseline.json` сохранены без изменений.
+- **Backup DB:** перед tuning сделан полный backup (`slovo_full_20260512_191622.sql.gz`, 224 MB) в двух местах: локально + Yandex.Disk.
+- **Slice 4.2 constraint:** canonical best-of-both merge **только в новую таблицу / JSON-artifact**, existing `water_analysis` не трогаем — downstream API работает без перерывов. Diff report (Slice 4.2.1) сравнит existing vs canonical до миграции.
+
 ### 2026-05-12 (вечер) — Slice 1 ✅ закрыт
 
 - **Lib-only фундамент в `libs/water-blank-extraction/`:**

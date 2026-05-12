@@ -26,20 +26,46 @@
 //
 // Алгоритм:
 //   1. Hint-based: ищем характерные слова в `samplingPoint` + `customerNotes`
-//      (рукописные приписки в Row 3 cell5/cell6 + клиентские заметки).
+//      (рукописные приписки в Row 3 cell5/cell6 + клиентские заметки +
+//      опц. filename-hint через тот же slot — function regex-матчит keywords
+//      независимо от источника).
 //      Срабатывает первое совпадение (приоритет: родник > река > скважина > колодец > водопровод).
 //   2. Depth-based fallback: если hint'а нет, но известна `depthMeters` —
-//      threshold 25 м (глубже = скважина, иначе колодец).
+//      threshold **15 м** (глубже = скважина, иначе колодец).
 //   3. Default: `municipal` (центральный/местный водопровод).
 //
-// Ожидаемая accuracy ~85-90% на bench-validation против Vision-labels (см.
-// docs Slice 1.5 — отдельный tuning-скрипт в experiments/). После tune
-// thresholds + regex patterns подкручиваются здесь с пометкой `// Tuned on
-// N blanks, YYYY-MM-DD, X% accuracy`.
+// **Tuned on 15504 Vision-labels (Slice 1.5, 2026-05-12)** — Strategy C
+// accuracy 73.34%:
+//   - Threshold=15м оптимален в sweep 15/20/25/30 (best balance).
+//   - Strategy C (hint + depth=15) — лучший balanced профиль:
+//     well_R=0.68, well_dug_R=0.65, municipal_R=0.95, spring_R=0.41.
+//   - Target ≥95% недостижим без extraction рукописных samplingPoint из
+//     Docling (Slice 3 потенциал) или Vision-fallback на ~10% no-depth+no-hint.
+// Полные runs см. `experiments/.../data/intake-tuning/run-*.json`.
 
 export type TWaterSourceType = 'well' | 'well_dug' | 'municipal' | 'spring' | 'river' | 'other';
 
-const WELL_DEPTH_THRESHOLD_METERS = 25;
+/**
+ * Источник определения intakeType — для observability в downstream
+ * («откуда мы знаем что этот бланк — well_dug?»). В Slice 3 ETL будет
+ * писаться в колонку `WaterAnalysis.intake_source` рядом с
+ * `extraction_engine`. Используется через `deriveIntakeTypeWithSource()`.
+ */
+export type TIntakeSource =
+    | 'hint_spring'        // matched hint regex → spring
+    | 'hint_river'         // matched hint regex → river
+    | 'hint_well'          // matched hint regex → well (скважина / арт.скв)
+    | 'hint_well_dug'      // matched hint regex → well_dug (колодец)
+    | 'hint_municipal'    // matched hint regex → municipal (водопровод)
+    | 'depth_well'         // depth > threshold → well
+    | 'depth_well_dug'     // depth ≤ threshold → well_dug
+    | 'default_municipal'; // no depth + no hint → default
+
+// Tuned on 15504 Vision-labels, 2026-05-12 (Slice 1.5):
+// 15 — peak accuracy в sweep [15, 20, 25, 30, 35], lift +5pp над 25м.
+// Reason: well-distribution P10=17, P50=47 — много скважин 15-25м,
+// threshold=25 их режет в well_dug.
+const WELL_DEPTH_THRESHOLD_METERS = 15;
 
 // Hint-patterns в порядке приоритета. Срабатывает первый match.
 // Точный порядок: spring → river → well → well_dug → municipal.
@@ -60,12 +86,27 @@ const HINT_PATTERNS: Array<{ regex: RegExp; type: TWaterSourceType }> = [
     { regex: /водопровод|центр\.?\s*вод|из\s+крана|кран\s+на\s+кух/i, type: 'municipal' },
 ];
 
+// Маппинг type → source для hint-matched results.
+const TYPE_TO_HINT_SOURCE: Record<TWaterSourceType, TIntakeSource> = {
+    spring: 'hint_spring',
+    river: 'hint_river',
+    well: 'hint_well',
+    well_dug: 'hint_well_dug',
+    municipal: 'hint_municipal',
+    other: 'default_municipal', // never produced by hint regex
+};
+
 /**
  * Деривирует тип источника воды из текстовых полей бланка.
  *
+ * `samplingPoint` slot предназначен для **любых hint-источников** —
+ * рукописная приписка из бланка, filename-hint (sourceTypeHint /
+ * customerNameFromFilename), пользовательская заметка. Function regex-матчит
+ * keywords независимо от происхождения.
+ *
  * @param depthMeters — глубина скважины/колодца в метрах (или null)
- * @param samplingPoint — рукописная приписка точки отбора (или null)
- * @param customerNotes — заметки клиента (или null)
+ * @param samplingPoint — hint-text (рукописная приписка / filename-hint / etc.)
+ * @param customerNotes — заметки клиента (или null) — конкатенируется с samplingPoint
  * @returns enum-значение `TWaterSourceType` (никогда не null — default `municipal`).
  */
 export function deriveIntakeType(
@@ -73,17 +114,42 @@ export function deriveIntakeType(
     samplingPoint: string | null | undefined,
     customerNotes: string | null | undefined,
 ): TWaterSourceType {
+    return deriveIntakeTypeWithSource(depthMeters, samplingPoint, customerNotes).type;
+}
+
+/**
+ * Variant с дополнительным tracking источника решения. Используется когда
+ * downstream должен записать `intake_source` для аудита («почему этот бланк
+ * классифицирован как well_dug?»).
+ *
+ * Slice 3 ETL: `result.intakeSource = visionPayload?.intakeType
+ *               ? 'vision'                          // checkbox-truth
+ *               : deriveIntakeTypeWithSource(...).source`
+ *
+ * @returns `{ type, source }` — type как у `deriveIntakeType`,
+ *   source указывает на сработавшую ветку алгоритма.
+ */
+export function deriveIntakeTypeWithSource(
+    depthMeters: number | null | undefined,
+    samplingPoint: string | null | undefined,
+    customerNotes: string | null | undefined,
+): { type: TWaterSourceType; source: TIntakeSource } {
     const hint = `${samplingPoint ?? ''} ${customerNotes ?? ''}`.trim();
 
     if (hint !== '') {
         for (const { regex, type } of HINT_PATTERNS) {
-            if (regex.test(hint)) return type;
+            if (regex.test(hint)) {
+                return { type, source: TYPE_TO_HINT_SOURCE[type] };
+            }
         }
     }
 
     if (depthMeters !== null && depthMeters !== undefined && depthMeters > 0) {
-        return depthMeters > WELL_DEPTH_THRESHOLD_METERS ? 'well' : 'well_dug';
+        if (depthMeters > WELL_DEPTH_THRESHOLD_METERS) {
+            return { type: 'well', source: 'depth_well' };
+        }
+        return { type: 'well_dug', source: 'depth_well_dug' };
     }
 
-    return 'municipal';
+    return { type: 'municipal', source: 'default_municipal' };
 }
