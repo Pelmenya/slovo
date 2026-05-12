@@ -361,7 +361,7 @@ claude mcp list
 
 - @anthropic-ai/sdk **0.90.0** (primary)
 - Модели по умолчанию: `claude-sonnet-4-6` (основная), `claude-haiku-4-5` (fast)
-- Embeddings: OpenAI `text-embedding-3-small` (опционально Cohere multilingual)
+- Embeddings: OpenAI `text-embedding-3-small` 1536 dim (дефолт), `text-embedding-3-large` 3072 dim для water-analysis (выше recall на химических профилях, $0.13/M tokens). Опционально Cohere multilingual.
 
 **Infrastructure:**
 
@@ -386,7 +386,7 @@ claude mcp list
 4. **llm-integration-reviewer** — Anthropic SDK, prompts, caching (**опускать если libs/llm не затронут**)
 5. **security-auditor** — секреты, PII, injection, IAM
 6. **testing-specialist** — для пишущих задач: написать недостающие spec'и, добить покрытие модуля. На review — флагает критичные пробелы покрытия. Запускать когда есть новый код без тестов или явный запрос «напиши тесты на X».
-7. **docs-reviewer** — согласованность документации с фактическим состоянием. Проверяет: ADR-статусы vs реализация, версии в `CLAUDE.md`/`overview.md` vs `docker-compose.infra.yml`/`package.json`, цифры между management/ файлами, roadmap дрейф, ссылки на несуществующие пути, ASCII-art и эмодзи в бизнес-доках. **Особо контролирует `CLAUDE.md`** — его читают все сессии и агенты, дрейф = отравленный контекст для всех. **Запускать обязательно** при изменениях в `docs/**/*.md` / ADR / README / `CLAUDE.md` / `package.json` / `docker-compose.infra.yml`, перед демо/handoff руководству, при закрытии фазы фичи. **Опускать** только если diff чисто кодовый и не затрагивает фазы/статусы фич (даже если сам doc не правлен).
+7. **docs-reviewer** — согласованность документации с фактическим состоянием. Проверяет: ADR-статусы vs реализация, версии в `CLAUDE.md`/`overview.md` vs `docker-compose.infra.yml`/`package.json`, цифры между management/ файлами, roadmap дрейф, ссылки на несуществующие пути, ASCII-art и эмодзи в бизнес-доках. **Особо контролирует `CLAUDE.md`** — его читают все сессии и агенты, дрейф = отравленный контекст для всех. **Запускать обязательно** при изменениях в `docs/**/*.md` / ADR / README / `CLAUDE.md` / `package.json` / `docker-compose.infra.yml` / **`experiments/*/README.md`** (onboarding-доки lab-пайплайнов — orphan'ятся первыми при смене масштаба или модели), перед демо/handoff руководству, при закрытии фазы фичи. **Опускать** только если diff чисто кодовый и не затрагивает фазы/статусы фич (даже если сам doc не правлен).
 
 По мере завершения агенты отдают находки — Claude сводит в сводный отчёт (🔴 / 🟡 / 🟢 / ✅ / следующие шаги) и предлагает порядок исправлений.
 

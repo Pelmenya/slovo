@@ -52,7 +52,13 @@ prisma/migrations/dev.db*
 # Артефакты экспериментов — sample data, base64-картинки, готовые JSON-payload'ы
 # для curl, дампы ответов API. Reproducible recipe лежит в docs/experiments/<name>/
 # lab journal'е, сами артефакты локальные и в git не идут.
-/experiments/
+# Исключение: README.md из experiments/*/ — onboarding-доки для ETL-скриптов,
+# должны быть в git чтобы docs-reviewer ловил drift (cost/масштаб/модели).
+# Pattern: исключаем contents не саму папку, чтобы можно было re-include через `!`.
+/experiments/*
+!/experiments/*/
+/experiments/*/*
+!/experiments/*/README.md
 
 # Playwright MCP временные snapshot'ы / screenshot'ы.
 .playwright-mcp/

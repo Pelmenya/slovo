@@ -60,8 +60,8 @@
 
 Pipeline в `experiments/water-analysis-dataset/`. Vision-only унификация
 ETL'а: один code-path для `.docx`/`.dotx`/`.pdf` независимо от наличия
-text-layer. Платим лишние ~$10 на 6000 бланков за то, чтобы не писать три
-ветки парсинга и format-detection.
+text-layer. Архитектурный размен: одна ветка кода вместо трёх (text-layer
+для docx, native PDF text, Vision для сканов) — за счёт unified Vision-prompt'а.
 
 ### Pipeline
 
@@ -742,7 +742,7 @@ enum WaterGeoLevel {
 - **Не используем Document Stores Flowise для бланков.** DS — RAG-инструмент (chunking + embed). Наша задача — ETL (file → structured JSON → DB). DS не помогает.
 - **Не тащим логику CRM в slovo.** Парсинг PDF/scan и сборка structured JSON — да; знание про MoySklad/customer-attributes — нет.
 - **Не храним PII в БД на этапе эксперимента.** ФИО+телефон → `pii.jsonl` локально. Когда фича пойдёт в slovo runtime + auth + РФ-инстанс — добавим обратно.
-- **Не делаем гибридный extraction (text-layer для docx + Vision для сканов).** Vision-only унификация выбрана сознательно: одна ветка кода, $10 лишних на 6000 — приемлемо за устранение format-detection логики.
+- **Не делаем гибридный extraction (text-layer для docx + Vision для сканов).** Vision-only унификация выбрана сознательно: одна ветка кода вместо трёх (text-layer для docx, native PDF, Vision для сканов) — приемлемо за устранение format-detection логики. **Исключение пост-фактум:** Mg-rescue через `pdftotext` для 1 084 text-based PDF 2024-2026 — точечный fallback, не general hybrid (см. memory `feedback_check_pdf_text_first`).
 
 ---
 

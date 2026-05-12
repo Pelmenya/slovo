@@ -623,7 +623,9 @@ autocache **физически работает** (HTTP-цепочка ОК, в 
 - Sonnet/Opus (минимум 1024 tokens вместо 2048) — для коротких prompts на русском может сработать
 - В наших сценариях: future Q&A chat с большим контекстом, RAG с длинным retrieval
 
-**Решение**: для water-analysis Full 6000 — без autocache, $49 как ожидалось. Если в Phase 3 webhook ingest появится длинный system prompt или tools — снова попробовать (минимальное усилие — раскомментировать service в docker-compose). Pre-test: измерить input_tokens первого ответа Anthropic — если ≥2500 для Haiku, cache имеет шанс.
+**Решение**: для water-analysis Full (фактически 15 504 бланка, $217.82 Anthropic) extraction прошёл без autocache. Если в Phase 3 webhook ingest появится длинный system prompt или tools — снова попробовать (минимальное усилие — раскомментировать service в docker-compose). Pre-test: измерить input_tokens первого ответа Anthropic — если ≥2500 для Haiku, cache имеет шанс.
+
+**Триггер реактивации для water-analysis:** если понадобится повторный extraction (новая лаборатория, retry на доп. шаблонах) — bump system prompt до 2500+ tokens (добавить examples-block из 3-5 успешно распознанных бланков). При cache hit rate ≥80% input cost падает с $1/M до $0.10/M → потенциальная экономия ~$30 на следующих 50K бланков. Cost-justified только при объёме ≥10K новых бланков.
 
 **Эмпирическая находка зафиксирована в memory `feedback_autocache_haiku_russian_threshold`.**
 
