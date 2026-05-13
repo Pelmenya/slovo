@@ -330,6 +330,22 @@ flowchart TD
 - **22:10** — **Корректировка Vision baseline:** исходный апрельский Vision-парс не 85 часов как я предполагал — там был API rate limit (Anthropic Tier 2 = 90 calls/min), значит реальное время ~2.9 часа на 15504. **Главный win Docling-миграции — НЕ скорость (~1.9× vs Vision), а COST + determinism** ($220 → $0, плюс Docling детерминирован, не галлюцинирует).
 - [next] — `analyze_unique_names.mjs` на final 15504 → обновить coverage метрики. Параллельно: исследовать 10 zero-table PDF — что это (сканы / битый text-layer / другой шаблон).
 
+### 2026-05-13 (утро) — Slice 4.2.1 ✅ закрыт
+
+- **Smart diff report** на `canonical_full.jsonl` через `101-diff-report.ts`:
+  - **Address smart-compare**: из 11841 «different addresses» выявил `format_diff` (10487, 67.6%) vs `real_diff` (1354) vs `docling_only` (1599). Smart compare через extraction toponyms + intersection — **без него запустили бы 11841 Ahunter запросов впустую, теперь shortlist 2953 (-75% экономия)**.
+  - **Params disagreement breakdown**: 3366 instances total, 846 Vision-gall patterns (ratio 1.2-1.5 — Vision OCR пропустил последнюю цифру).
+  - **exceedsPdk distribution shift** (критично для equipment-suggest):
+    - vision_normal_docling_exceed: **987** ⚠️ wrong-equipment risk (фильтр не порекомендован когда должен)
+    - vision_exceed_docling_normal: 46 (false-alarm Vision, over-recommend)
+    - agree_normal/exceed: 782/68 — minor disagreements
+    - unknown: 1483 (paramCodes без ПДК — sulfides, electrical_conductivity)
+- **Shortlists готовы (immutable JSONL):**
+  - `shortlist-regeocode.jsonl` — **2953 ордеров** (real_diff + docling_only). Cost Slice 4.3: ~384₽ Ahunter.
+  - `shortlist-reembed.jsonl` — **2335 ордеров** со significant param changes (exceedsPdk shift, Vision-gall, gained data, abs diff > 50% reference). Cost Slice 4.2.5: ~$0.05 OpenAI.
+- **Output:** `data/canonical/diff-report.md` (human-readable summary) + 2 JSONL shortlists.
+- **БД не тронута**, scripts gitignored через experiments/* pattern.
+
 ### 2026-05-12 (ночь) — Slice 4.2 ✅ закрыт
 
 - **Canonical best-of-three merge** на 15504 ордеров через `100-build-canonical.ts`:

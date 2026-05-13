@@ -5,6 +5,41 @@
 
 ---
 
+## Co-agents coordination (Layer 1)
+
+Ты — агент **slovo-backend**. Параллельно в смежных репах могут идти другие Claude Code сессии.
+
+**Shared board:** `C:\Users\Diamond\.claude\AGENT-STATUS.md` — единая точка координации для всех агентов (отдельно от внутрислововской «Активная миграция»-секции ниже).
+**Setup doc:** `C:\Users\Diamond\Desktop\multi-agent-setup\multi-agent-setup.md`.
+
+### Sibling agents
+
+| Агент | Репо | Точки касания с slovo-backend |
+|---|---|---|
+| **prostor-frontend** | `prostor-app/` | потребитель water-analysis API: `/heatmap`, `/predict`, `/depth-map`, `/equipment-suggest`, `/points`, `/aquifer-stats` |
+| **slovo-llm-runtime** | `slovo-llm/` | Ollama локальный inference (laguna-xs.2 q4_K_M @ 32K); абстракция Claude/OpenAI/Ollama в `libs/llm` |
+| **crm-back** | `crm-aqua-kinetics-back/` | референс на legacy water-analysis (источник 15504 бланков); domain knowledge водоочистки |
+
+### Protocol
+
+**Перед задачей:**
+1. Прочитать `~/.claude/AGENT-STATUS.md`
+2. Если prostor-frontend прямо сейчас потребляет endpoint, который ты собираешься менять (shape, поля, версию) → **спросить у пользователя**, не запускаться
+3. Добавить строку про себя в `## Active` (Agent / Repo / Started / Intent / Touching / ETA / Notes)
+
+**Во время работы:** обновлять intent при milestone'ах.
+
+**После задачи:**
+- Перенести строку из `## Active` в `## Completed`
+- Если менял API contract (DTO, новый endpoint, Prisma schema, response shape, threshold/коэффициент в predict) → handoff `slovo-backend → prostor-frontend` в `## Recent handoffs` с curl/OpenAPI snippet
+- Если менял prompt / модель / параметры Ollama / cost-cap → handoff `slovo-backend → slovo-llm-runtime`
+
+**User (Дмитрий) = mediator on conflicts. Auto-merge cross-repo запрещён.**
+
+> Примечание: секция **«Активная миграция»** ниже — это внутрисловская координация (sliced работа в одном репо). Cross-repo координация — через board выше.
+
+---
+
 ## Про разработчика
 
 **Технический бэкграунд:**
@@ -439,12 +474,17 @@ claude mcp list
   +1599 addresses where derived null. 2941 (19%) бланков с param-disagreement —
   кандидаты для re-embed. intakeType 100% derived (Vision checkbox), appearance
   98% docling (richer multi-checkbox). Decision matrix в migration.md.
-- ⏳ **NEXT**: Slice 4.2.1 (smart diff report — FIAS vs raw address compare,
-  params disagreement breakdown, exceedsPdk shift, shortlists для re-geocode +
-  re-embed) → Slice 4.3 (re-geocode shortlist через Ahunter) → Slice 4.2.5
-  (re-embed merged params, ~$0.30 OpenAI) → Slice 3 (Prisma additive migration:
-  новая `WaterAnalysisCanonical` table + `extraction_engine` + `intake_source`
-  columns + `03b-extract-docling.ts`).
+- ✅ **Slice 4.2.1 закрыт (2026-05-13)** — smart diff report на canonical:
+  address compare выявил **format_diff 10487 (67.6%)** (FIAS vs raw form, та же
+  locality) vs **real_diff 1354 + docling_only 1599 = 2953 кандидата** на
+  re-geocode (-75% от raw 11841 different). 3366 param disagree-instances,
+  **987 vision_normal_docling_exceed критично** для equipment-suggest, 846
+  Vision-gall patterns. Shortlists: `shortlist-regeocode.jsonl` (2953) +
+  `shortlist-reembed.jsonl` (2335). Artifact: `data/canonical/diff-report.md`.
+- ⏳ **NEXT**: Slice 4.3 (re-geocode 2953 через Ahunter, ~384₽, 1-2 мин) →
+  Slice 4.2.5 (re-embed 2335 через OpenAI text-embedding-3-large, ~$0.05) →
+  Slice 3 (Prisma additive migration: новая `WaterAnalysisCanonical` table +
+  `extraction_engine` + `intake_source` columns + `03b-extract-docling.ts`).
 
 **Discoveries (важно):**
 - **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.
@@ -470,6 +510,25 @@ claude mcp list
 5. **security-auditor** — секреты, PII, injection, IAM
 6. **testing-specialist** — для пишущих задач: написать недостающие spec'и, добить покрытие модуля. На review — флагает критичные пробелы покрытия. Запускать когда есть новый код без тестов или явный запрос «напиши тесты на X».
 7. **docs-reviewer** — согласованность документации с фактическим состоянием. Проверяет: ADR-статусы vs реализация, версии в `CLAUDE.md`/`overview.md` vs `docker-compose.infra.yml`/`package.json`, цифры между management/ файлами, roadmap дрейф, ссылки на несуществующие пути, ASCII-art и эмодзи в бизнес-доках. **Особо контролирует `CLAUDE.md`** — его читают все сессии и агенты, дрейф = отравленный контекст для всех. **Запускать обязательно** при изменениях в `docs/**/*.md` / ADR / README / `CLAUDE.md` / `package.json` / `docker-compose.infra.yml` / **`experiments/*/README.md`** (onboarding-доки lab-пайплайнов — orphan'ятся первыми при смене масштаба или модели), перед демо/handoff руководству, при закрытии фазы фичи. **Опускать** только если diff чисто кодовый и не затрагивает фазы/статусы фич (даже если сам doc не правлен).
+
+> ⚠️ Reviewers 1-7 выше — кастомные, написаны вручную, местами слабее. Для большинства задач **предпочитай свежие wshobson-агенты ниже**, кастомные оставляй для slovo-специфики которой нет в generic (Prisma + pgvector нюансы, ADR-структура, slovo CLAUDE.md дрейф).
+
+### wshobson generics (новая линия, рекомендованная для большинства задач)
+
+Дополнительно в `.claude/agents/` лежат 8 свежих агентов из [wshobson/agents](https://github.com/wshobson/agents):
+
+| Агент | Когда использовать | Заменяет / дополняет кастомного |
+|---|---|---|
+| **backend-architect** | Архитектура NestJS модулей, границы доменов, паттерны интеграции | дополняет `architect-reviewer` |
+| **code-reviewer** | Универсальный ревью кода | заменяет `nestjs-code-reviewer` для не-slovo-специфики |
+| **architect-review** | Архитектурные решения, паттерны, technical debt | альтернатива `architect-reviewer` |
+| **test-automator** | Генерация unit/e2e тестов, покрытие | заменяет `testing-specialist` для generic-задач |
+| **database-optimizer** | Slow queries, индексы, TypeORM/Prisma queries | дополняет `prisma-pgvector-reviewer` (он остаётся для pgvector-нюансов) |
+| **performance-engineer** | Backend perf — N+1, caching, async | новая роль |
+| **ai-engineer** | LLM-application архитектура: RAG pipelines, embedding strategies, prompt orchestration | дополняет `llm-integration-reviewer` |
+| **prompt-engineer** | Дизайн и tuning prompts, few-shot, chain-of-thought, structured output | новая роль для Flowise / Vision-Catalog / Water-Analysis промптов |
+
+`security-auditor` — оставлен кастомный (по конфликту имён wshobson'овский не скачивали; см. `C:\Users\Diamond\Desktop\multi-agent-setup\multi-agent-setup.md`).
 
 По мере завершения агенты отдают находки — Claude сводит в сводный отчёт (🔴 / 🟡 / 🟢 / ✅ / следующие шаги) и предлагает порядок исправлений.
 
