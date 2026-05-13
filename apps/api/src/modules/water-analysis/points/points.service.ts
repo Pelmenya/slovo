@@ -6,6 +6,7 @@ import {
     POINTS_COORD_ROUND_GRID,
     POINTS_DEFAULT_LIMIT,
     POINTS_REDIS_TOKEN,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import { stringifyError, validateBbox } from '../_shared';
 import type { PointsQueryDto } from './dto/points.request.dto';
@@ -147,7 +148,7 @@ function buildCacheKey(
     limit: number,
 ): string {
     const r = (n: number): string => n.toFixed(4);
-    return `points:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${limit}`;
+    return `points:${WATER_ANALYSIS_CACHE_VERSION}:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${limit}`;
 }
 
 /**

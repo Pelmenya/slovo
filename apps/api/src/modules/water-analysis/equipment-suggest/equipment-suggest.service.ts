@@ -16,6 +16,7 @@ import {
     EQUIPMENT_SUGGEST_PER_PROBLEM_K,
     EQUIPMENT_SUGGEST_REDIS_TOKEN,
     FLOWISE_CLIENT_TOKEN,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import { stringifyError } from '../_shared';
 import { PredictService } from '../predict/predict.service';
@@ -413,5 +414,5 @@ function numberOr(value: unknown, fallback: number): number {
 
 function buildCacheKey(lat: number, lon: number, topK: number): string {
     const r = (n: number): string => n.toFixed(3);
-    return `equipment-suggest:${r(lat)}:${r(lon)}:${topK}`;
+    return `equipment-suggest:${WATER_ANALYSIS_CACHE_VERSION}:${r(lat)}:${r(lon)}:${topK}`;
 }

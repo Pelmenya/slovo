@@ -7,6 +7,7 @@ import {
     CELL_DETAIL_MAX_ROWS,
     CELL_DETAIL_REDIS_TOKEN,
     CELL_DETAIL_TOP_PROBLEMS_N,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import { percentile, roundTo, stringifyError } from '../_shared';
 import type { CellDetailRequestDto } from './dto/cell-detail.request.dto';
@@ -251,5 +252,5 @@ function buildCacheKey(lat: number, lon: number, grid: number): string {
     // Округляем до 4 знаков (~11м) — соседние тапы по той же cell попадают в
     // один key, но при смене grid (zoom) — новый key.
     const r = (n: number): string => n.toFixed(4);
-    return `cell-detail:${r(lat)}:${r(lon)}:${r(grid)}`;
+    return `cell-detail:${WATER_ANALYSIS_CACHE_VERSION}:${r(lat)}:${r(lon)}:${r(grid)}`;
 }

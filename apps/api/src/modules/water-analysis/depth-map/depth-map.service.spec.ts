@@ -478,7 +478,7 @@ describe('DepthMapService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'depth-map:well:36.5000:54.8000:39.0000:56.5000:0.0500',
+                'depth-map:v2:well:36.5000:54.8000:39.0000:56.5000:0.0500',
             );
         });
 
@@ -497,9 +497,9 @@ describe('DepthMapService', () => {
             await service.query(buildDto({ intakeType: 'well_dug' }));
             const keys = redis.get.mock.calls.map((call) => call[0] as string);
             expect(new Set(keys).size).toBe(3);
-            expect(keys[0]).toMatch(/depth-map:all:/);
-            expect(keys[1]).toMatch(/depth-map:well:/);
-            expect(keys[2]).toMatch(/depth-map:well_dug:/);
+            expect(keys[0]).toMatch(/depth-map:v\d+:all:/);
+            expect(keys[1]).toMatch(/depth-map:v\d+:well:/);
+            expect(keys[2]).toMatch(/depth-map:v\d+:well_dug:/);
         });
 
         it('разные bbox → разные cache-keys', async () => {
@@ -560,7 +560,7 @@ describe('DepthMapService', () => {
                 string,
                 number,
             ];
-            expect(key).toMatch(/^depth-map:well:/);
+            expect(key).toMatch(/^depth-map:v\d+:well:/);
             expect(typeof value).toBe('string');
             expect(mode).toBe('EX');
             expect(ttl).toBe(DEPTH_MAP_CACHE_TTL_SECONDS);

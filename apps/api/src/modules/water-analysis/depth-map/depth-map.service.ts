@@ -7,6 +7,7 @@ import {
     DEPTH_MAP_CACHE_TTL_SECONDS,
     DEPTH_MAP_REDIS_TOKEN,
     GRID_DEFAULT_DEG,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import { roundTo, stringifyError, type TIntakeTypeFilter, validateBbox } from '../_shared';
 import type { DepthMapQueryDto } from './dto/depth-map.request.dto';
@@ -201,7 +202,7 @@ function buildCacheKey(
     grid: number,
 ): string {
     const r = (n: number): string => n.toFixed(4);
-    return `depth-map:${intakeType}:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${r(grid)}`;
+    return `depth-map:${WATER_ANALYSIS_CACHE_VERSION}:${intakeType}:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${r(grid)}`;
 }
 
 function mapRowsToFeatures(rows: TRawRow[]): DepthMapFeatureDto[] {

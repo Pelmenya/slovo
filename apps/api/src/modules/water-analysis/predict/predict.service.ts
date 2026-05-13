@@ -9,6 +9,7 @@ import {
     PREDICT_IDW_SCALE_KM,
     PREDICT_RECENCY_HALF_LIFE_YEARS,
     PREDICT_REDIS_TOKEN,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import {
     ageInYears,
@@ -368,5 +369,5 @@ function extractAquiferDepths(rows: readonly TNeighborRow[]): number[] {
 // 7-значную координату), а с округлением соседние точки попадают в один key.
 function buildCacheKey(lat: number, lon: number, k: number, radiusKm: number): string {
     const r = (n: number): string => n.toFixed(3);
-    return `predict:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
+    return `predict:${WATER_ANALYSIS_CACHE_VERSION}:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
 }

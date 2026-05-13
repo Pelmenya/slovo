@@ -7,6 +7,7 @@ import {
     AQUIFER_STATS_CACHE_TTL_SECONDS,
     AQUIFER_STATS_REDIS_TOKEN,
     AQUIFER_STATS_SAMPLE_LIMIT,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import { percentile, roundTo, stringifyError, type TIntakeTypeFilter, validateBbox } from '../_shared';
 import type { AquiferStatsQueryDto } from './dto/aquifer-stats.request.dto';
@@ -211,5 +212,5 @@ function buildCacheKey(
     north: number,
 ): string {
     const r = (n: number): string => n.toFixed(4);
-    return `aquifer-stats:${intakeType}:${r(west)}:${r(south)}:${r(east)}:${r(north)}`;
+    return `aquifer-stats:${WATER_ANALYSIS_CACHE_VERSION}:${intakeType}:${r(west)}:${r(south)}:${r(east)}:${r(north)}`;
 }

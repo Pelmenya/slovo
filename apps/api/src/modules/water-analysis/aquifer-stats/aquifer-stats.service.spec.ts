@@ -529,7 +529,7 @@ describe('AquiferStatsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'aquifer-stats:well:36.5000:54.8000:39.0000:56.5000',
+                'aquifer-stats:v2:well:36.5000:54.8000:39.0000:56.5000',
             );
         });
 
@@ -549,9 +549,9 @@ describe('AquiferStatsService', () => {
             }
             const keys = redis.get.mock.calls.map((call) => call[0] as string);
             expect(new Set(keys).size).toBe(3);
-            expect(keys[0]).toMatch(/aquifer-stats:all:/);
-            expect(keys[1]).toMatch(/aquifer-stats:well:/);
-            expect(keys[2]).toMatch(/aquifer-stats:well_dug:/);
+            expect(keys[0]).toMatch(/aquifer-stats:v\d+:all:/);
+            expect(keys[1]).toMatch(/aquifer-stats:v\d+:well:/);
+            expect(keys[2]).toMatch(/aquifer-stats:v\d+:well_dug:/);
         });
 
         it('разные bbox → разные cache-keys', async () => {
@@ -573,7 +573,7 @@ describe('AquiferStatsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'aquifer-stats:all:36.1235:54.9877:39.1111:56.2222',
+                'aquifer-stats:v2:all:36.1235:54.9877:39.1111:56.2222',
             );
         });
     });
@@ -620,7 +620,7 @@ describe('AquiferStatsService', () => {
                 string,
                 number,
             ];
-            expect(key).toMatch(/^aquifer-stats:well:/);
+            expect(key).toMatch(/^aquifer-stats:v\d+:well:/);
             expect(typeof value).toBe('string');
             expect(mode).toBe('EX');
             expect(ttl).toBe(AQUIFER_STATS_CACHE_TTL_SECONDS);

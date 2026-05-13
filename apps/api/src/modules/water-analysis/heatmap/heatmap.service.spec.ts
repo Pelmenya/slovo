@@ -493,7 +493,7 @@ describe('HeatmapService', () => {
                 grid: 0.05,
             }));
             expect(redis.get).toHaveBeenCalledWith(
-                'heatmap:iron_total:36.5000:54.8000:39.0000:56.5000:0.0500',
+                'heatmap:v2:iron_total:36.5000:54.8000:39.0000:56.5000:0.0500',
             );
         });
 
@@ -559,7 +559,7 @@ describe('HeatmapService', () => {
                 string,
                 number,
             ];
-            expect(key).toMatch(/^heatmap:iron_total:/);
+            expect(key).toMatch(/^heatmap:v\d+:iron_total:/);
             expect(typeof value).toBe('string');
             expect(mode).toBe('EX');
             expect(ttl).toBe(HEATMAP_CACHE_TTL_SECONDS);

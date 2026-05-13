@@ -10,6 +10,7 @@ import {
     DEPTH_PREDICT_IDW_SCALE_KM,
     DEPTH_PREDICT_RECENCY_HALF_LIFE_YEARS,
     DEPTH_PREDICT_REDIS_TOKEN,
+    WATER_ANALYSIS_CACHE_VERSION,
 } from '../water-analysis.constants';
 import {
     ageInYears,
@@ -232,5 +233,5 @@ function buildCacheKey(
     intakeType: TIntakeTypeFilter,
 ): string {
     const r = (n: number): string => n.toFixed(3);
-    return `depth-predict:${intakeType}:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
+    return `depth-predict:${WATER_ANALYSIS_CACHE_VERSION}:${intakeType}:${r(lat)}:${r(lon)}:${k}:${r(radiusKm)}`;
 }

@@ -9,6 +9,7 @@ import {
     GRID_DEFAULT_DEG,
     HEATMAP_CACHE_TTL_SECONDS,
     HEATMAP_REDIS_TOKEN,
+    WATER_ANALYSIS_CACHE_VERSION,
     type THeatmapParam,
 } from '../water-analysis.constants';
 import { roundTo, stringifyError, validateBbox } from '../_shared';
@@ -459,7 +460,7 @@ function buildCacheKey(
     // floating-point дребезг при панораме карты. Grid округляем до 4 знаков
     // тоже (минимум 0.005 — 3 знака достаточно).
     const r = (n: number): string => n.toFixed(4);
-    return `heatmap:${param}:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${r(grid)}`;
+    return `heatmap:${WATER_ANALYSIS_CACHE_VERSION}:${param}:${r(west)}:${r(south)}:${r(east)}:${r(north)}:${r(grid)}`;
 }
 
 /**

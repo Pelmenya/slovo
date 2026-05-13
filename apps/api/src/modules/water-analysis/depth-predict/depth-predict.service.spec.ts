@@ -434,7 +434,7 @@ describe('DepthPredictService', () => {
                     radiusKm: 50,
                 }),
             );
-            expect(redis.get).toHaveBeenCalledWith('depth-predict:well:55.756:37.617:20:50.000');
+            expect(redis.get).toHaveBeenCalledWith('depth-predict:v2:well:55.756:37.617:20:50.000');
         });
 
         it('координаты различающиеся менее чем на 0.001° → одинаковый cache-key', async () => {
@@ -452,9 +452,9 @@ describe('DepthPredictService', () => {
             await service.predict(buildDto({ intakeType: 'well_dug' }));
             const keys = redis.get.mock.calls.map((c) => c[0] as string);
             expect(new Set(keys).size).toBe(3);
-            expect(keys[0]).toMatch(/^depth-predict:all:/);
-            expect(keys[1]).toMatch(/^depth-predict:well:/);
-            expect(keys[2]).toMatch(/^depth-predict:well_dug:/);
+            expect(keys[0]).toMatch(/^depth-predict:v\d+:all:/);
+            expect(keys[1]).toMatch(/^depth-predict:v\d+:well:/);
+            expect(keys[2]).toMatch(/^depth-predict:v\d+:well_dug:/);
         });
     });
 

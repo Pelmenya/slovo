@@ -14,6 +14,22 @@ export { WATER_ANALYSIS_AQUAPHOR_STORE_NAME } from '@slovo/common';
 export const FLOWISE_CLIENT_TOKEN = Symbol('WATER_ANALYSIS_FLOWISE_CLIENT');
 
 // =============================================================================
+// Cache key version prefix для всех water-analysis Redis cache keys.
+//
+// Bump при breaking changes в response shape ИЛИ при значимом изменении data
+// source (например, canonical merge 2026-05-13 — может изменить exceedsPct на
+// 987 critical cells, stale pre-canonical cached responses в Redis сосуществуют
+// с новыми до TTL expire 24h).
+//
+// Bump history:
+//   v1 — initial Phase 4 backend (2026-05-08)
+//   v2 — after canonical merge в commit 57b0879 (2026-05-13). Force invalidation
+//        cached responses для prod-deploy — иначе клиенты получают pre-canonical
+//        severity-status для тех 987 critical cells до 24h.
+// =============================================================================
+export const WATER_ANALYSIS_CACHE_VERSION = 'v2';
+
+// =============================================================================
 // Top-K границы. Default=10 — баланс coverage vs latency. Max=50 — защита от
 // unbounded query (cosine distance в pgvector linear по k; для 15 504 chunks
 // LIMIT 50 быстро, выше 50 retrieval начинает тормозить заметно).
