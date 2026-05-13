@@ -128,6 +128,9 @@ canonicalAddressNew?: string;
 regeocodedAt?: Date;
 @IsOptional()
 paramsCanonical?: Prisma.InputJsonValue;
+@IsOptional()
+@IsString()
+embeddingTextCanonical?: string;
 @ApiProperty({
   type: `string`,
   format: `date-time`,

@@ -201,6 +201,11 @@ model WaterAnalysis {
     // NULL для остальных (значит canonical = existing params, изменений не требовалось).
     // Existing `params` column НЕ перетирается — это backup для rollback и audit.
     paramsCanonical Json?     @map("params_canonical")
+    // embeddingTextCanonical — natural-language description через generateEmbeddingText
+    // на merged params_canonical. NULL для ордеров без changes. Loader предпочитает
+    // эту колонку (если non-null), иначе fallback на embedding_text (Vision-based).
+    // Reproducibility: при reset Flowise vectorstore можно regenerate из этой колонки.
+    embeddingTextCanonical String? @map("embedding_text_canonical") @db.Text
     reembeddedAt    DateTime? @map("reembedded_at")
 
     normalizationVersion String @map("normalization_version") @db.VarChar(16)

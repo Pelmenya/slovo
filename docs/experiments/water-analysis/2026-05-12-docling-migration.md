@@ -330,6 +330,56 @@ flowchart TD
 - **22:10** — **Корректировка Vision baseline:** исходный апрельский Vision-парс не 85 часов как я предполагал — там был API rate limit (Anthropic Tier 2 = 90 calls/min), значит реальное время ~2.9 часа на 15504. **Главный win Docling-миграции — НЕ скорость (~1.9× vs Vision), а COST + determinism** ($220 → $0, плюс Docling детерминирован, не галлюцинирует).
 - [next] — `analyze_unique_names.mjs` на final 15504 → обновить coverage метрики. Параллельно: исследовать 10 zero-table PDF — что это (сканы / битый text-layer / другой шаблон).
 
+### 2026-05-13 (вечер) — Slice 4.2.5a + 4.2.5b ✅ закрыты
+
+**Slice 4.2.5a (БД-only merge):**
+- `experiments/.../scripts/105-apply-canonical-params.ts` для 2335 ордеров из
+  `shortlist-reembed.jsonl`:
+  - 1205 Vision→Docling overrides (Vision-gall pattern + exceedsPdk shift)
+  - 1423 gained_data (Vision=null, Docling=value — recovered missed params)
+  - 0 vision_only_kept / both_null — все changes valid
+- 2628 individual param changes в `water_analysis.params_canonical` JSONB column
+- Existing `params` НЕ тронут (immutable parallel slot)
+- Cost $0 (БД-only operation), ~5 сек
+
+**Slice 4.2.5b (re-embed + Flowise push):**
+- Additive Prisma migration `20260513094558_add_embedding_text_canonical`:
+  - +`water_analysis.embedding_text_canonical TEXT` (existing `embedding_text` НЕ тронут)
+- `experiments/.../scripts/106-apply-embedding-canonical.ts`:
+  - 2335 ордеров: regenerate через `generateEmbeddingText` из `params_canonical`
+  - Sample diff (order 16631): canonical добавил «Превышения ПДК: **запах 4 балл (превышение)**»
+    к existing Vision-based превышениям (cas критичный для equipment-suggest)
+- Flowise vectorstore push через legitimate REST API:
+  - `loader/save` обновил `functionInputVariables` (15504 docs: canonical для 2335 + Vision для 13169)
+  - `vectorstore/insert` re-embed + upsert через recordManager incremental dedup
+  - В процессе experimentation накопилось +570 orphan chunks от старых per-order loaders
+  - **Cleanup**: 469 orphans удалены через `DELETE /vectorstore/{storeId}?docId={orphanLoaderId}`
+    × 469 (76 сек, no OpenAI calls, legitimate Flowise REST workflow)
+- **Финальное состояние:**
+  - `water_analysis_chunks` = **15504** (clean, current loader only)
+  - `water_analysis_record_manager` = **15504**
+  - Custom Document Loader UI показывает 15504 с canonical content
+  - similar.service.ts (единственный endpoint использующий vectorstore) видит
+    canonical content автоматически через `/document-store/vectorstore/query`
+- Spot-check 3 слоя для order 16631 — все contain «запах 4 балл (превышение)»:
+  - Custom Document Loader staging chunks ✅
+  - Vectorstore postgres `water_analysis_chunks` ✅
+  - БД `embedding_text_canonical` ✅
+- **WaterAnalysisModule module.ts** получил полный header-prompt описывающий:
+  - 9 endpoints + что они читают из БД
+  - Existing колонки (Vision-derived, single source of truth для current API)
+  - Canonical parallel slots (Slice 3a/4.3/4.4/4.2.5a/b) — additive, не read by API
+  - 987 ордеров изменили exceedsPdk status — equipment-suggest пока не видит
+  - Flowise vectorstore state — similar уже видит canonical (vectorstore-managed)
+  - Что НЕ ломать + migration references для глубокого контекста
+- Cost ~$2 OpenAI (включая experimentation overhead — DELETE+re-insert detour)
+
+**Critical insight для Slice 3b/downstream migration:**
+- 987 ордеров где `params_canonical[code]` flip'нул `exceedsPdk` с false на true —
+  equipment-suggest на existing `params` пока не видит это превышение, не порекомендует
+  фильтр когда должен. Чтобы фрагмент это получил, нужен `COALESCE(params_canonical, params)`
+  в queries.ts или explicit миграция.
+
 ### 2026-05-13 (день) — Slice 4.3 ✅ закрыт
 
 - **Re-geocode 2953 ордеров** через Ahunter `/cleanse/address` на Docling-clean адресах:

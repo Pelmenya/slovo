@@ -8,7 +8,7 @@
 1. **Где docling-service:** `apps/docling/` (CPU + GPU Dockerfile, compose-файлы, FastAPI). Сервис **deployed and validated**.
 2. **Где raw данные:** `experiments/water-analysis-dataset/data/docling-raw/` (gitignored, ~280MB). Содержит **15504 Docling-output'ов** + Vision-payload dump + parsed structured fields.
 3. **Где отчёты:** `docs/experiments/water-analysis/2026-05-12-*.md` (migration plan, compare, params, sanpin-matrix).
-4. **Текущий Slice:** **Slice 4.2.5a ✅ ЗАКРЫТ** (после 1, 1.5, 4.2, 4.2.1, 3a, 4.3, 4.4). Merge Docling values в `water_analysis.params_canonical` JSONB column для 2335 ордеров. **2628 individual param changes**: 1205 Vision→Docling overrides (Vision-gall/exceedsPdk shift) + 1423 gained_data (Docling нашёл что Vision пропустил). Existing `params` НЕ тронут. **NEXT: Slice 4.2.5b** (re-embed через OpenAI + push в Flowise vectorstore — ~$0.05) → **Slice 3b** (`03b-extract-docling.ts` ETL для новых бланков).
+4. **Текущий Slice:** **Slice 4.2.5b ✅ ЗАКРЫТ** (после 1, 1.5, 4.2, 4.2.1, 3a, 4.3, 4.4, 4.2.5a). Re-embed merged params через OpenAI text-embedding-3-large + Flowise vectorstore push + cleanup orphan chunks. БД получила `embedding_text_canonical` (additive migration `20260513094558_add_embedding_text_canonical`). Flowise Custom Document Loader содержит canonical для 2335 + Vision для 13169 (15 504 chunks, clean state, 0 orphans). similar.service видит canonical через vectorstore queries автоматически. WaterAnalysisModule module.ts получил полный header-prompt про state БД (existing vs canonical parallel slots). **NEXT: Slice 3b** (`03b-extract-docling.ts` ETL для новых бланков с extraction_engine='docling-2.74').
 
 ## Что сделано (timeline сжато)
 
@@ -32,8 +32,8 @@
 | 4.3 | Re-geocode 2953 → **1899 ok (64.3%)** в `canonical_*`, ~516₽ Ahunter. Insight: existing pipeline уже cleansed 97.6% lat/lon, Slice 4.3 main gain = FIAS codes (1899) + 34 new lat/lon | ✅ |
 | 4.4 | Rescue 337 no-geo → **172 ok (51.3%)** через relaxed filter, ~100₽. Coverage 97.6%→98.9%. **0.58₽/coord** vs Slice 4.3 15₽/coord | ✅ |
 | 4.2.5a | Merge Docling params в `params_canonical` JSONB для 2335 ордеров: **1205 overrides + 1423 gained_data = 2628 individual param changes**, $0 cost | ✅ |
-| 4.2.5b | Re-embed через OpenAI text-embedding-3-large + push в Flowise vectorstore (~$0.05) | ⏳ NEXT |
-| 3b | `03b-extract-docling.ts` ETL для новых бланков (uses Slice 3a infrastructure) | ⏳ |
+| 4.2.5b | Re-embed через OpenAI + push в Flowise vectorstore + cleanup 469 orphans → 15504 clean chunks. WaterAnalysisModule header-prompt. ~$2 cost (re-embed all due to DELETE/re-insert detour) | ✅ |
+| 3b | `03b-extract-docling.ts` ETL для новых бланков (uses Slice 3a infrastructure) | ⏳ NEXT |
 
 ## Discoveries (важно для новой сессии)
 

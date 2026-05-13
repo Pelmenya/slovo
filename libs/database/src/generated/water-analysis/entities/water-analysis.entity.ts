@@ -75,6 +75,7 @@ canonicalAddressNew: string  | null;
 })
 regeocodedAt: Date  | null;
 paramsCanonical: Prisma.JsonValue  | null;
+embeddingTextCanonical: string  | null;
 @ApiProperty({
   type: `string`,
   format: `date-time`,

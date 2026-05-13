@@ -507,10 +507,19 @@ claude mcp list
   (Vision-gall pattern + exceedsPdk shift) + 1423 gained_data (Docling
   нашёл что Vision пропустил). Existing `params` column НЕ тронут.
   $0 cost, ~5 сек.
-- ⏳ **NEXT**: Slice 4.2.5b (regenerate `embedding_text` из `params_canonical`
-  через `generateEmbeddingText` + push embeddings в Flowise vectorstore
-  chunks — ~$0.05 OpenAI text-embedding-3-large) → Slice 3b
-  (`03b-extract-docling.ts` ETL для новых бланков, uses Slice 3a infrastructure).
+- ✅ **Slice 4.2.5b закрыт (2026-05-13)** — additive migration
+  `embedding_text_canonical` column + regenerate через `generateEmbeddingText`
+  для 2335 ордеров. Flowise Custom Document Loader contains canonical content
+  для 2335 (включая «превышение запах 4 балл» для critical exceedsPdk shifts) +
+  Vision для 13169. Vectorstore postgres clean: 15504 chunks (cleanup 469
+  orphan chunks от старых per-order loaders через `DELETE /vectorstore/{}?docId={}`).
+  similar.service видит canonical через vectorstore queries автоматически.
+  WaterAnalysisModule module.ts получил полный header-prompt про state БД
+  (existing vs canonical parallel slots, что не ломать, migration refs).
+  ~$2 cost (включая experimentation overhead с DELETE+re-insert detour).
+- ⏳ **NEXT**: Slice 3b (`03b-extract-docling.ts` ETL для новых бланков с
+  extraction_engine='docling-2.74', uses Slice 3a infrastructure +
+  deriveIntakeTypeWithSource fallback pattern).
 
 **Discoveries (важно):**
 - **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.
