@@ -424,5 +424,16 @@ export const HEATMAP_PARAMS = [
     // UX «все проблемы видно сразу», когда юзер хочет overview без выбора
     // конкретного param. Реализовано в heatmap.service `runAllProblemsQuery`.
     'all_problems',
+    // Density — игнорирует ПДК, просто COUNT анализов в cell. UX «где у нас
+    // вообще данные, а где нет». Шкала: 0/sparse(1-5)/medium(6-15)/dense(16+).
+    // Wow для демо «мы покрыли весь МО». Реализовано в `runCoverageQuery`.
+    'coverage',
 ] as const;
 export type THeatmapParam = (typeof HEATMAP_PARAMS)[number];
+
+// Coverage thresholds для grey-scale density на фронте.
+// На реальных данных МО (886 cells, grid 0.05°): median count ~10-15, max ~80.
+// 1-5 — sparse (отдалённые районы), 6-15 — medium (типичный пригородный
+// район), 16+ — dense (Москва-центр, Раменское, Видное).
+export const COVERAGE_MID_COUNT = 5;
+export const COVERAGE_DENSE_COUNT = 15;

@@ -4,6 +4,8 @@ import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import { Prisma } from '@prisma/client';
 import type Redis from 'ioredis';
 import {
+    COVERAGE_DENSE_COUNT,
+    COVERAGE_MID_COUNT,
     GRID_DEFAULT_DEG,
     HEATMAP_CACHE_TTL_SECONDS,
     HEATMAP_REDIS_TOKEN,
@@ -108,6 +110,9 @@ export class HeatmapService {
         if (param === 'all_problems') {
             return this.runAllProblemsQuery(dto, grid);
         }
+        if (param === 'coverage') {
+            return this.runCoverageQuery(dto, grid);
+        }
         return this.runParamQuery(param, dto, grid, resolvedPdk);
     }
 
@@ -164,6 +169,48 @@ export class HeatmapService {
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY val)::float8 AS median,
                 PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY val)::float8 AS p75,
                 ${exceedsExpr}::int AS exceeds_count
+            FROM extracted
+            GROUP BY cell_lon, cell_lat
+            HAVING COUNT(*) >= 1
+        `;
+    }
+
+    private async runCoverageQuery(
+        dto: HeatmapQueryDto,
+        grid: number,
+    ): Promise<TRawRow[]> {
+        // Coverage = dataset density. Не фильтруем по params (нет ПДК для
+        // density), просто COUNT cells. На фронте — grey-scale heatmap «где
+        // данные есть, где нет». Wow для демо: «мы покрыли весь МО».
+        //
+        // mean/median/p75 для density семантически = count (для compatibility
+        // с frontend response shape). exceedsPct=0 (нет concept «exceedance»
+        // для coverage). Status — по count thresholds через statusFor.
+        return this.prisma.$queryRaw<TRawRow[]>`
+            WITH bounded AS (
+                SELECT geo_point::geometry AS geom
+                FROM water_analysis
+                WHERE
+                    geo_point IS NOT NULL
+                    AND geo_point && ST_MakeEnvelope(
+                        ${dto.west}::float8, ${dto.south}::float8,
+                        ${dto.east}::float8, ${dto.north}::float8, 4326
+                    )::geography
+            ),
+            extracted AS (
+                SELECT
+                    FLOOR(ST_X(geom) / ${grid}::float8) * ${grid}::float8 + ${grid}::float8 / 2 AS cell_lon,
+                    FLOOR(ST_Y(geom) / ${grid}::float8) * ${grid}::float8 + ${grid}::float8 / 2 AS cell_lat
+                FROM bounded
+            )
+            SELECT
+                cell_lon::float8 AS cell_lon,
+                cell_lat::float8 AS cell_lat,
+                COUNT(*)::int AS count,
+                COUNT(*)::float8 AS mean,
+                COUNT(*)::float8 AS median,
+                COUNT(*)::float8 AS p75,
+                0::int AS exceeds_count
             FROM extracted
             GROUP BY cell_lon, cell_lat
             HAVING COUNT(*) >= 1
@@ -358,7 +405,8 @@ type TResolvedPdk =
     | { kind: 'single'; pdk: number; displayValue: number }
     | { kind: 'range'; min: number; max: number; displayValue: number }
     | { kind: 'none'; displayValue: number }
-    | { kind: 'composite'; midPct: number; badPct: number; displayValue: number };
+    | { kind: 'composite'; midPct: number; badPct: number; displayValue: number }
+    | { kind: 'density'; midCount: number; denseCount: number; displayValue: number };
 
 function resolvePdk(param: THeatmapParam): TResolvedPdk {
     if (param === 'risk') {
@@ -370,6 +418,14 @@ function resolvePdk(param: THeatmapParam): TResolvedPdk {
             midPct: ALL_PROBLEMS_MID_PCT,
             badPct: ALL_PROBLEMS_BAD_PCT,
             displayValue: ALL_PROBLEMS_MID_PCT,
+        };
+    }
+    if (param === 'coverage') {
+        return {
+            kind: 'density',
+            midCount: COVERAGE_MID_COUNT,
+            denseCount: COVERAGE_DENSE_COUNT,
+            displayValue: COVERAGE_DENSE_COUNT,
         };
     }
 
@@ -524,6 +580,15 @@ function statusFor(
         // all_problems: status по % rows в cell с exceedance.
         if (exceedsPct < pdk.midPct) return 'good';
         if (exceedsPct < pdk.badPct) return 'mid';
+        return 'bad';
+    }
+    if (pdk.kind === 'density') {
+        // coverage: status по count анализов в cell. Sparse (1-5) = good
+        // (хоть какие-то данные есть), medium (6-15) = mid, dense (16+) = bad.
+        // На фронте «bad» в grey-scale значит «много данных» — не плохо, а
+        // intense — это design choice (frontend интерпретирует свой palette).
+        if (median < pdk.midCount) return 'good';
+        if (median < pdk.denseCount) return 'mid';
         return 'bad';
     }
     if (pdk.kind === 'none') {

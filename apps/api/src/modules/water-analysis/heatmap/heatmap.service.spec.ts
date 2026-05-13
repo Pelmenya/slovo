@@ -315,6 +315,83 @@ describe('HeatmapService', () => {
     });
 
     // -----------------------------------------------------------------------
+    // resolvePdk + statusFor (coverage density)
+    //
+    // density — synthetic param: dataset coverage без ПДК-фильтра. mean/median/p75
+    // = count. statusFor берёт median (=count) с count thresholds:
+    //   < 5 → good (sparse)
+    //   < 15 → mid (medium)
+    //   ≥ 15 → bad (dense)
+    // На фронте «bad» в grey-scale = «много данных», семантически OK.
+    // -----------------------------------------------------------------------
+
+    describe('resolvePdk + statusFor (coverage density)', () => {
+        it('displayValue=15 (dense threshold для UI legend)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.pdk).toBe(15);
+        });
+
+        it('status=good при count < 5 (sparse, 3 анализа в cell)', async () => {
+            // Для coverage mean/median/p75 = count (binary aggregation в SQL).
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 3, mean: 3, median: 3, p75: 3, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.status).toBe('good');
+        });
+
+        it('status=mid при 5 ≤ count < 15 (medium, 10 анализов)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 10, mean: 10, median: 10, p75: 10, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.status).toBe('mid');
+        });
+
+        it('status=bad при count ≥ 15 (dense, 20 анализов)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 20, mean: 20, median: 20, p75: 20, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.status).toBe('bad');
+        });
+
+        it('boundary: count=5 → mid (не good)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 5, mean: 5, median: 5, p75: 5, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.status).toBe('mid');
+        });
+
+        it('boundary: count=15 → bad (не mid)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 15, mean: 15, median: 15, p75: 15, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.status).toBe('bad');
+        });
+
+        it('exceedsPct=0 для coverage (нет concept «exceedance»)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ count: 50, mean: 50, median: 50, p75: 50, exceeds_count: 0 }),
+            ]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.features[0].properties.exceedsPct).toBe(0);
+            expect(res.features[0].properties.count).toBe(50);
+        });
+
+        it('пустой rows → empty FeatureCollection', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([]);
+            const res = await service.query(buildDto({ param: 'coverage' }));
+            expect(res.type).toBe('FeatureCollection');
+            expect(res.features).toEqual([]);
+            expect(res.param).toBe('coverage');
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // mapRowsToFeatures — GeoJSON shape, exceedsPct, rounding
     // -----------------------------------------------------------------------
 
