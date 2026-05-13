@@ -8,7 +8,7 @@
 1. **Где docling-service:** `apps/docling/` (CPU + GPU Dockerfile, compose-файлы, FastAPI). Сервис **deployed and validated**.
 2. **Где raw данные:** `experiments/water-analysis-dataset/data/docling-raw/` (gitignored, ~280MB). Содержит **15504 Docling-output'ов** + Vision-payload dump + parsed structured fields.
 3. **Где отчёты:** `docs/experiments/water-analysis/2026-05-12-*.md` (migration plan, compare, params, sanpin-matrix).
-4. **Текущий Slice:** **Slice 4.2.1 ✅ ЗАКРЫТ** (после Slice 1 + 1.5 + 4.2). Smart diff report на canonical_full.jsonl: address compare (FIAS vs raw form) выявил **format_diff 10487 (67.6%)** vs **real_diff 1354 + docling_only 1599 = 2953 кандидата на re-geocode** (-75% от raw 11841). Params: 3366 disagree-instances, **987 vision_normal_docling_exceed критично для equipment-suggest**, 846 Vision-gall patterns. Shortlists готовы. **NEXT: Slice 4.3** (re-geocode 2953 через Ahunter, ~384₽) → **Slice 4.2.5** (re-embed 2335 через OpenAI, ~$0.05) → **Slice 3** (Prisma additive: new WaterAnalysisCanonical table + extraction_engine + intake_source columns + `03b-extract-docling.ts`).
+4. **Текущий Slice:** **Slice 4.4 ✅ ЗАКРЫТ** (после Slice 1 + 1.5 + 4.2 + 4.2.1 + 3a + 4.3). Rescue 337 no-geo ордеров (lat IS NULL) через Ahunter с **relaxed filter** (precision≥0.3, recall≥0.1 vs Slice 4.3 0.5/0.3): **172 ok (51.3%)** + 163 no_match + 2 empty. Cost ~100₽. **Geo coverage: 97.6% → 98.9%** (15339/15504). 165 remaining = real edge cases (corporate dealers без личного адреса, mangled OCR). **172 new координат записаны в canonical_lat/lon, существующий lat/lon=NULL не promote'нут** (downstream API не видит до явного COALESCE; пользователь сохранил immutable separation). **NEXT: Slice 4.2.5** (re-embed 2335 через OpenAI, ~$0.05 — UPDATE `params_canonical` + push Flowise chunks) → **Slice 3b** (`03b-extract-docling.ts` ETL для новых бланков).
 
 ## Что сделано (timeline сжато)
 
@@ -28,9 +28,11 @@
 | 1.5 | Tune deriveIntakeType на 15504 Vision-labels → **73.34% acc (Strategy C, threshold=15м)** | ✅ |
 | 4.2 | Canonical best-of-three merge → `canonical_full.jsonl` (25.2 MB, 15504 records, isolated) | ✅ |
 | 4.2.1 | Smart diff report → 2953 re-geocode + 2335 re-embed shortlists (smart compare экономия 75%) | ✅ |
-| 4.3 | Re-geocode 2953 ордеров через Ahunter (~384₽) | ⏳ NEXT |
-| 4.2.5 | Re-embed 2335 ордеров через OpenAI (~$0.05 — text-embedding-3-large) | ⏳ |
-| 3 | Schema migration extraction_engine + intake_source + 03b-extract-docling.ts | ⏳ |
+| 3a | Prisma additive migration + apply canonical base (intake_source, extraction_engine) | ✅ |
+| 4.3 | Re-geocode 2953 → **1899 ok (64.3%)** в `canonical_*`, ~516₽ Ahunter. Insight: existing pipeline уже cleansed 97.6% lat/lon, Slice 4.3 main gain = FIAS codes (1899) + 34 new lat/lon | ✅ |
+| 4.4 | Rescue 337 no-geo → **172 ok (51.3%)** через relaxed filter, ~100₽. Coverage 97.6%→98.9%. **0.58₽/coord** vs Slice 4.3 15₽/coord | ✅ |
+| 4.2.5 | Re-embed 2335 ордеров через OpenAI (~$0.05 — text-embedding-3-large) | ⏳ NEXT |
+| 3b | `03b-extract-docling.ts` ETL для новых бланков (uses Slice 3a infrastructure) | ⏳ |
 
 ## Discoveries (важно для новой сессии)
 

@@ -330,6 +330,66 @@ flowchart TD
 - **22:10** — **Корректировка Vision baseline:** исходный апрельский Vision-парс не 85 часов как я предполагал — там был API rate limit (Anthropic Tier 2 = 90 calls/min), значит реальное время ~2.9 часа на 15504. **Главный win Docling-миграции — НЕ скорость (~1.9× vs Vision), а COST + determinism** ($220 → $0, плюс Docling детерминирован, не галлюцинирует).
 - [next] — `analyze_unique_names.mjs` на final 15504 → обновить coverage метрики. Параллельно: исследовать 10 zero-table PDF — что это (сканы / битый text-layer / другой шаблон).
 
+### 2026-05-13 (день) — Slice 4.3 ✅ закрыт
+
+- **Re-geocode 2953 ордеров** через Ahunter `/cleanse/address` на Docling-clean адресах:
+  - **1899 ok (64.3%)** в `canonical_lat/lon/fias_id/address_new/regeocoded_at` (новые колонки от Slice 3a)
+  - 1054 no_match (35.7%) — primary причины:
+    - OCR ошибки в названиях (`Купавенский р-н` вместо `Купавнинский`)
+    - Sampling-point pollution не убран полностью (`№1`, `№2` как whole queries)
+    - Адреса вне whitelist (8 регионов: МО + соседние)
+    - Org names вместо адресов (`ГБУЗ МО ...` + телефон)
+- **Tiers:** 1781 strict (10коп) + 118 smart fallback (20коп) + 1054 no_match (30коп). Total ~516₽.
+- **Time:** 43 секунды на 2931 records (concurrency=5).
+- Existing `lat/lon/canonical_address` колонки **нетронуты** — frontend читает original. После validation качества можно переключить на canonical_* через feature flag.
+- Audit log: `regeocode-results.jsonl` (per-order: status, tier, query, results) для manual review no_match кейсов.
+- Idempotent: `WHERE regeocoded_at IS NULL` — повторный запуск skip'ает уже сделанные.
+
+### 2026-05-13 (полдень) — Slice 4.4 ✅ закрыт
+
+- **Rescue 337 no-geo ордеров** (lat IS NULL after Slice 4.3 — те что НЕ были в Slice 4.3 shortlist):
+  - Pull rows через JOIN `water_analysis_raw.address_pre_cleaned` + `dealer_location` fallback
+  - Build query с **обновлённым** `stripNoise` (включая `Образец`/`Проба`/`Точка отбора`)
+  - **Relaxed filter** для Ahunter response: precision ≥ 0.3 (vs Slice 4.3 0.5), recall ≥ 0.1 (vs 0.3)
+- **Result:** 172 ok (146 strict + 26 smart) + 163 no_match + 2 empty queries из 337
+- **Geo coverage:** 97.6% → **98.9%** (15339/15504). 165 remaining — real edge cases:
+  - Corporate dealers без `address_pre_cleaned` (`Опт. отдел`, `Колл-центр`, `Домодедово Лента`)
+  - Mangled OCR (`Бужсор`, `Образец №3 Ирина`)
+- **Cost:** ~100₽ (335 × max 30коп). **ROI: 0.58₽/coord** ←  excellent
+- 172 new координат записаны в `canonical_lat/lon` (не promote'нуты в existing `lat/lon` — пользователь сохранил parallel slot)
+
+### 2026-05-13 (утро) — Slice 4.3 audit через Ahunter `/stat` API
+
+- **Discovery:** существующий 05-ahunter-cleanse pipeline (April-May 2026) уже cleansed **97.6%** адресов в БД (15133/15504 с lat/lon)
+- **Slice 4.3 real gain:** 34 new lat/lon (для лат=null) + 1899 FIAS codes (existing pipeline не сохранял fias_id)
+- **Cost-benefit Slice 4.3:** 516₽ ÷ 34 new coords = 15₽/coord — high cost for marginal lat/lon improvement, OK для FIAS coverage
+- **Lesson learned:** initial shortlist в Slice 4.2 (real_diff + docling_only по объекту address) был не right fraction — нужно было target **`lat IS NULL`** rows (337), что сделал Slice 4.4
+
+### 2026-05-13 (утро) — Slice 4.3 ✅ закрыт
+
+(см. предыдущая запись для audit и lessons)
+
+### 2026-05-13 (утро) — Slice 3a ✅ закрыт
+
+- **Prisma additive migration** `20260513085458_add_docling_canonical_columns`:
+  - `water_analysis_raw`: `extraction_engine` VARCHAR(32) + `extraction_engine_version` VARCHAR(32)
+  - `water_analysis`: `intake_source` VARCHAR(32) + 4 canonical-geo columns + `regeocoded_at` + `params_canonical` JSONB + `reembedded_at`
+  - 4 индекса на новых колонках для downstream query patterns
+- **Apply через docker exec psql** (workaround для PostGIS GENERATED drift — Prisma 7 не понимает synxax):
+  - Clean additive SQL без DROP'ов (`migrate diff` сгенерил false drift на geo_point GENERATED)
+  - `migrate resolve --applied` для регистрации в `_prisma_migrations`
+  - `prisma generate` обновил DTOs/entities
+- **Apply canonical base** через `102-apply-canonical-base.ts`:
+  - 15504 rows `extraction_engine = 'vision-haiku-4.5'` (existing 100% Vision)
+  - 15491 rows `intake_source = 'vision'` (Vision видел checkbox = gold)
+  - 13 rows recomputed через `deriveIntakeTypeWithSource` для raw.intakeType=null:
+    - 11 → `default_municipal`
+    - 1 → `depth_well_dug`
+    - 1 → `hint_river`
+- **БД source of truth теперь:** downstream API сразу видит `intake_source` для observability — без правок endpoint'ов.
+- Existing `intake_type`, `params`, `lat/lon`, `canonical_address` **нетронуты** (constraint от пользователя).
+- Backup перед migration: `slovo_full_20260513_084925.sql.gz` (224 MB) в local + Yandex.Disk.
+
 ### 2026-05-13 (утро) — Slice 4.2.1 ✅ закрыт
 
 - **Smart diff report** на `canonical_full.jsonl` через `101-diff-report.ts`:

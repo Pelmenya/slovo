@@ -481,10 +481,29 @@ claude mcp list
   **987 vision_normal_docling_exceed критично** для equipment-suggest, 846
   Vision-gall patterns. Shortlists: `shortlist-regeocode.jsonl` (2953) +
   `shortlist-reembed.jsonl` (2335). Artifact: `data/canonical/diff-report.md`.
-- ⏳ **NEXT**: Slice 4.3 (re-geocode 2953 через Ahunter, ~384₽, 1-2 мин) →
-  Slice 4.2.5 (re-embed 2335 через OpenAI text-embedding-3-large, ~$0.05) →
-  Slice 3 (Prisma additive migration: новая `WaterAnalysisCanonical` table +
-  `extraction_engine` + `intake_source` columns + `03b-extract-docling.ts`).
+- ✅ **Slice 3a закрыт (2026-05-13)** — Prisma additive migration
+  (`20260513085458_add_docling_canonical_columns`): 10 новых nullable колонок
+  (extraction_engine + intake_source + canonical_lat/lon/fias_id/address_new +
+  regeocoded_at + params_canonical + reembedded_at). Apply canonical base:
+  15504 rows получили `extraction_engine='vision-haiku-4.5'` + `intake_source`
+  (vision 15491, default_municipal 11, depth_well_dug 1, hint_river 1).
+  Existing колонки нетронуты, downstream API без изменений.
+- ✅ **Slice 4.3 закрыт (2026-05-13)** — re-geocode 2953 shortlist-ордеров
+  через Ahunter `/cleanse/address`: **1899 ok (64.3%)** заполнили
+  `canonical_lat/lon/fias_id/address_new/regeocoded_at`. 1054 no_match.
+  43 сек, ~516₽. **Insight via Ahunter `/stat` API audit**: existing
+  05-ahunter-cleanse pipeline **уже cleansed 97.6% lat/lon** (15133/15504).
+  Slice 4.3 main gain — FIAS codes (1899, существующий pipeline не сохранял
+  fias_id) + 34 new lat/lon. ROI 15₽/coord — marginal.
+- ✅ **Slice 4.4 закрыт (2026-05-13)** — rescue 337 no-geo ордеров через
+  relaxed filter (precision≥0.3 vs 0.5): **172 ok (51.3%)** + 163 no_match.
+  ~100₽. **Geo coverage 97.6% → 98.9%** (15339/15504). 165 remaining =
+  corporate dealers без личного адреса / mangled OCR. ROI 0.58₽/coord.
+  Existing `lat/lon=NULL` не promote'нут — canonical_lat/lon хранятся как
+  parallel slot (immutable separation от пользователя).
+- ⏳ **NEXT**: Slice 4.2.5 (re-embed 2335 через OpenAI text-embedding-3-large,
+  ~$0.05 — UPDATE `params_canonical` + push Flowise chunks) → Slice 3b
+  (`03b-extract-docling.ts` ETL для новых бланков, uses Slice 3a infrastructure).
 
 **Discoveries (важно):**
 - **Vision-Haiku видит checkbox state** — `intakeType` точно извлечён в существующих 15504.
