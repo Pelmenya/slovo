@@ -345,6 +345,23 @@ flowchart TD
 - Audit log: `regeocode-results.jsonl` (per-order: status, tier, query, results) для manual review no_match кейсов.
 - Idempotent: `WHERE regeocoded_at IS NULL` — повторный запуск skip'ает уже сделанные.
 
+### 2026-05-13 (день) — Slice 4.2.5a ✅ закрыт
+
+- **Merge Docling values в `params_canonical`** через `105-apply-canonical-params.ts`:
+  - Source: `shortlist-reembed.jsonl` (2335 ордеров с significant param changes)
+  - Per-order: load existing `params` (Vision) + apply Docling values для каждого entry в `changedParams`
+  - Save merged → `water_analysis.params_canonical` JSONB
+  - Update `reembedded_at` для observability
+- **Result:**
+  - 2335 ordered updated, 0 skipped
+  - **1205 Vision→Docling overrides** (где Vision имел значение, Docling точнее — Vision-gall pattern или exceedsPdk shift)
+  - **1423 gained_data** (Vision был null, Docling нашёл — recovery lost params)
+  - 0 vision_only_kept (значит **все** Docling values в shortlist валидны)
+- **БД counts:** 2335 ордеров теперь имеют `params_canonical IS NOT NULL`
+- **Cost:** $0 (БД-only, без API calls)
+- **Time:** ~5 секунд
+- **Constraint от пользователя соблюдён:** existing `params` column НЕ тронут — Vision values сохранены. `params_canonical` parallel slot. Downstream API не видит изменения до явного COALESCE/migration.
+
 ### 2026-05-13 (полдень) — Slice 4.4 ✅ закрыт
 
 - **Rescue 337 no-geo ордеров** (lat IS NULL after Slice 4.3 — те что НЕ были в Slice 4.3 shortlist):

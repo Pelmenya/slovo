@@ -8,7 +8,7 @@
 1. **Где docling-service:** `apps/docling/` (CPU + GPU Dockerfile, compose-файлы, FastAPI). Сервис **deployed and validated**.
 2. **Где raw данные:** `experiments/water-analysis-dataset/data/docling-raw/` (gitignored, ~280MB). Содержит **15504 Docling-output'ов** + Vision-payload dump + parsed structured fields.
 3. **Где отчёты:** `docs/experiments/water-analysis/2026-05-12-*.md` (migration plan, compare, params, sanpin-matrix).
-4. **Текущий Slice:** **Slice 4.4 ✅ ЗАКРЫТ** (после Slice 1 + 1.5 + 4.2 + 4.2.1 + 3a + 4.3). Rescue 337 no-geo ордеров (lat IS NULL) через Ahunter с **relaxed filter** (precision≥0.3, recall≥0.1 vs Slice 4.3 0.5/0.3): **172 ok (51.3%)** + 163 no_match + 2 empty. Cost ~100₽. **Geo coverage: 97.6% → 98.9%** (15339/15504). 165 remaining = real edge cases (corporate dealers без личного адреса, mangled OCR). **172 new координат записаны в canonical_lat/lon, существующий lat/lon=NULL не promote'нут** (downstream API не видит до явного COALESCE; пользователь сохранил immutable separation). **NEXT: Slice 4.2.5** (re-embed 2335 через OpenAI, ~$0.05 — UPDATE `params_canonical` + push Flowise chunks) → **Slice 3b** (`03b-extract-docling.ts` ETL для новых бланков).
+4. **Текущий Slice:** **Slice 4.2.5a ✅ ЗАКРЫТ** (после 1, 1.5, 4.2, 4.2.1, 3a, 4.3, 4.4). Merge Docling values в `water_analysis.params_canonical` JSONB column для 2335 ордеров. **2628 individual param changes**: 1205 Vision→Docling overrides (Vision-gall/exceedsPdk shift) + 1423 gained_data (Docling нашёл что Vision пропустил). Existing `params` НЕ тронут. **NEXT: Slice 4.2.5b** (re-embed через OpenAI + push в Flowise vectorstore — ~$0.05) → **Slice 3b** (`03b-extract-docling.ts` ETL для новых бланков).
 
 ## Что сделано (timeline сжато)
 
@@ -31,7 +31,8 @@
 | 3a | Prisma additive migration + apply canonical base (intake_source, extraction_engine) | ✅ |
 | 4.3 | Re-geocode 2953 → **1899 ok (64.3%)** в `canonical_*`, ~516₽ Ahunter. Insight: existing pipeline уже cleansed 97.6% lat/lon, Slice 4.3 main gain = FIAS codes (1899) + 34 new lat/lon | ✅ |
 | 4.4 | Rescue 337 no-geo → **172 ok (51.3%)** через relaxed filter, ~100₽. Coverage 97.6%→98.9%. **0.58₽/coord** vs Slice 4.3 15₽/coord | ✅ |
-| 4.2.5 | Re-embed 2335 ордеров через OpenAI (~$0.05 — text-embedding-3-large) | ⏳ NEXT |
+| 4.2.5a | Merge Docling params в `params_canonical` JSONB для 2335 ордеров: **1205 overrides + 1423 gained_data = 2628 individual param changes**, $0 cost | ✅ |
+| 4.2.5b | Re-embed через OpenAI text-embedding-3-large + push в Flowise vectorstore (~$0.05) | ⏳ NEXT |
 | 3b | `03b-extract-docling.ts` ETL для новых бланков (uses Slice 3a infrastructure) | ⏳ |
 
 ## Discoveries (важно для новой сессии)

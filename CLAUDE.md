@@ -501,8 +501,15 @@ claude mcp list
   corporate dealers без личного адреса / mangled OCR. ROI 0.58₽/coord.
   Existing `lat/lon=NULL` не promote'нут — canonical_lat/lon хранятся как
   parallel slot (immutable separation от пользователя).
-- ⏳ **NEXT**: Slice 4.2.5 (re-embed 2335 через OpenAI text-embedding-3-large,
-  ~$0.05 — UPDATE `params_canonical` + push Flowise chunks) → Slice 3b
+- ✅ **Slice 4.2.5a закрыт (2026-05-13)** — merge Docling values в
+  `water_analysis.params_canonical` JSONB column для 2335 ордеров.
+  **2628 individual param changes**: 1205 Vision→Docling overrides
+  (Vision-gall pattern + exceedsPdk shift) + 1423 gained_data (Docling
+  нашёл что Vision пропустил). Existing `params` column НЕ тронут.
+  $0 cost, ~5 сек.
+- ⏳ **NEXT**: Slice 4.2.5b (regenerate `embedding_text` из `params_canonical`
+  через `generateEmbeddingText` + push embeddings в Flowise vectorstore
+  chunks — ~$0.05 OpenAI text-embedding-3-large) → Slice 3b
   (`03b-extract-docling.ts` ETL для новых бланков, uses Slice 3a infrastructure).
 
 **Discoveries (важно):**
