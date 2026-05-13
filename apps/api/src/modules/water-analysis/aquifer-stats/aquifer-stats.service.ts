@@ -57,16 +57,22 @@ export class AquiferStatsService {
         }
 
         const rows = await this.fetchRows(intakeType, dto);
+        // `total_count` приходит через window function `COUNT(*) OVER()` в SQL —
+        // одинаковое значение в каждой row, real count **до** LIMIT. Это решает
+        // проблему когда bbox-COUNT > SAMPLE_LIMIT: totalWells показывает реальный
+        // размер выборки, samplesUsed — сколько использовали. Frontend рендерит
+        // «X анализов · Y в подвыборке» (если оба совпадают — не truncated).
+        const totalWells = rows[0]?.total_count ?? rows.length;
+        const samplesUsed = rows.length;
         const layers = aggregateLayers(rows);
         const dominantLayerId = computeDominantLayerId(layers);
-        const totalWells = rows.length;
         const timeTakenMs = Date.now() - t0;
 
         const response: AquiferStatsResponseDto = {
             layers,
             intakeType,
             totalWells,
-            samplesUsed: totalWells,
+            samplesUsed,
             dominantLayerId,
             timeTakenMs,
             cached: false,
@@ -86,11 +92,16 @@ export class AquiferStatsService {
 
         // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
         // medianChemistry per layer считается на canonical-corrected values.
+        // `COUNT(*) OVER()` — window function: считает все rows что подходят
+        // под WHERE, ДО LIMIT. Одно value повторяется в каждой row (мы читаем
+        // только rows[0].total_count в caller). Это даёт honest `totalWells`
+        // без дополнительной round-trip — single SQL, mocks не ломаются.
         return this.prisma.$queryRaw<TRawRow[]>`
             SELECT
                 depth_meters::float8 AS depth,
                 intake_type::text AS intake_type,
-                COALESCE(params_canonical, params) AS params
+                COALESCE(params_canonical, params) AS params,
+                COUNT(*) OVER ()::int AS total_count
             FROM water_analysis
             WHERE
                 geo_point IS NOT NULL
@@ -139,6 +150,8 @@ type TRawRow = {
     depth: number;
     intake_type: string;
     params: Record<string, unknown>;
+    /** COUNT(*) OVER() — real count в bbox до LIMIT (одинаков для всех rows). */
+    total_count?: number;
 };
 
 function aggregateLayers(rows: TRawRow[]): AquiferLayerStatsDto[] {

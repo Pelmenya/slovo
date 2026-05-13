@@ -26,8 +26,11 @@ export const FLOWISE_CLIENT_TOKEN = Symbol('WATER_ANALYSIS_FLOWISE_CLIENT');
 //   v2 — after canonical merge в commit 57b0879 (2026-05-13). Force invalidation
 //        cached responses для prod-deploy — иначе клиенты получают pre-canonical
 //        severity-status для тех 987 critical cells до 24h.
+//   v3 — aquifer-stats response shape fix (2026-05-13): `totalWells` теперь real
+//        bbox count через `COUNT(*) OVER()` window function (раньше = samplesUsed
+//        после LIMIT, misleading). Bump чтобы prod-deploy получил honest counts.
 // =============================================================================
-export const WATER_ANALYSIS_CACHE_VERSION = 'v2';
+export const WATER_ANALYSIS_CACHE_VERSION = 'v3';
 
 // =============================================================================
 // Top-K границы. Default=10 — баланс coverage vs latency. Max=50 — защита от

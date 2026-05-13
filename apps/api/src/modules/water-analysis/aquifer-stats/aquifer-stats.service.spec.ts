@@ -529,7 +529,7 @@ describe('AquiferStatsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'aquifer-stats:v2:well:36.5000:54.8000:39.0000:56.5000',
+                'aquifer-stats:v3:well:36.5000:54.8000:39.0000:56.5000',
             );
         });
 
@@ -573,7 +573,7 @@ describe('AquiferStatsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'aquifer-stats:v2:all:36.1235:54.9877:39.1111:56.2222',
+                'aquifer-stats:v3:all:36.1235:54.9877:39.1111:56.2222',
             );
         });
     });

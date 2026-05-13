@@ -585,7 +585,7 @@ describe('PointsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'points:v2:36.5000:54.8000:39.0000:56.5000:100',
+                'points:v3:36.5000:54.8000:39.0000:56.5000:100',
             );
         });
 
@@ -636,7 +636,7 @@ describe('PointsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'points:v2:36.1235:54.9877:39.1111:56.2222:100',
+                'points:v3:36.1235:54.9877:39.1111:56.2222:100',
             );
         });
     });

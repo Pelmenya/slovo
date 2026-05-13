@@ -478,7 +478,7 @@ describe('DepthMapService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'depth-map:v2:well:36.5000:54.8000:39.0000:56.5000:0.0500',
+                'depth-map:v3:well:36.5000:54.8000:39.0000:56.5000:0.0500',
             );
         });
 

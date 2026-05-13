@@ -1491,7 +1491,7 @@ describe('EquipmentSuggestService', () => {
 
             await service.suggest(buildDto({ lat: 55.7558, lon: 37.6173, topK: 5 }));
 
-            expect(redis.get).toHaveBeenCalledWith('equipment-suggest:v2:55.756:37.617:5');
+            expect(redis.get).toHaveBeenCalledWith('equipment-suggest:v3:55.756:37.617:5');
         });
     });
 
