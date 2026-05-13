@@ -69,6 +69,8 @@ aiVerified: WaterAddressVerification  | null;
 })
 aiVerifiedAt: Date  | null;
 aiVerifiedNotes: string  | null;
+extractionEngine: string  | null;
+extractionEngineVersion: string  | null;
 @ApiProperty({
   type: `string`,
   format: `date-time`,

@@ -98,5 +98,44 @@ labName?: string;
 embeddingText?: string;
 @IsOptional()
 @IsString()
+intakeSource?: string;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+@IsOptional()
+@IsNumber()
+canonicalLat?: number;
+@ApiProperty({
+  type: `number`,
+  format: `float`,
+})
+@IsOptional()
+@IsNumber()
+canonicalLon?: number;
+@IsOptional()
+@IsString()
+canonicalFiasId?: string;
+@IsOptional()
+@IsString()
+canonicalAddressNew?: string;
+@ApiProperty({
+  type: `string`,
+  format: `date-time`,
+})
+@IsOptional()
+@IsRFC3339()
+regeocodedAt?: Date;
+@IsOptional()
+paramsCanonical?: Prisma.InputJsonValue;
+@ApiProperty({
+  type: `string`,
+  format: `date-time`,
+})
+@IsOptional()
+@IsRFC3339()
+reembeddedAt?: Date;
+@IsOptional()
+@IsString()
 normalizationVersion?: string;
 }

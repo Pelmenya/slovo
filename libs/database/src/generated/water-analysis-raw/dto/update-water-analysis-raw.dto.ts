@@ -121,4 +121,10 @@ aiVerifiedAt?: Date;
 @IsOptional()
 @IsString()
 aiVerifiedNotes?: string;
+@IsOptional()
+@IsString()
+extractionEngine?: string;
+@IsOptional()
+@IsString()
+extractionEngineVersion?: string;
 }

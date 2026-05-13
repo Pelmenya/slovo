@@ -85,6 +85,14 @@ model WaterAnalysisRaw {
     aiVerifiedAt            DateTime? @map("ai_verified_at")
     aiVerifiedNotes         String?   @map("ai_verified_notes") @db.VarChar(512)
 
+    // === Slice 3a (docling-migration 2026-05-13) — additive provenance ===
+    // Какой engine выполнил extraction для этой записи.
+    //   'vision-haiku-4.5'   — Vision-Haiku через Flowise (legacy, existing 15504)
+    //   'docling-2.74'        — Docling deterministic (Slice 3b ETL для новых бланков)
+    //   'vision+docling-merged' — canonical best-of-three merge применён
+    extractionEngine        String?   @map("extraction_engine") @db.VarChar(32)
+    extractionEngineVersion String?   @map("extraction_engine_version") @db.VarChar(32)
+
     extractedAt     DateTime @default(now()) @map("extracted_at")
 
     normalized      WaterAnalysis?
@@ -95,6 +103,7 @@ model WaterAnalysisRaw {
     @@index([aiVerified])
     @@index([geoLat, geoLon])
     @@index([geoSource])
+    @@index([extractionEngine])
     @@map("water_analysis_raw")
 }
 
@@ -168,6 +177,32 @@ model WaterAnalysis {
     //   ORDER BY ch.embedding <=> $q LIMIT 10;
     embeddingText   String?  @map("embedding_text") @db.Text
 
+    // === Slice 3a (docling-migration 2026-05-13) — additive provenance + canonical-overrides ===
+    //
+    // intakeSource — откуда пришёл intakeType (см. TIntakeSource в @slovo/water-blank-extraction):
+    //   'vision'              — Vision-Haiku видел checkbox (existing 15504, 100% после Slice 3a apply)
+    //   'derive_function'     — deriveIntakeType вызван (новые бланки без Vision)
+    //   'depth_well'/'depth_well_dug' — алгоритмически через threshold=15м
+    //   'hint_spring'/'hint_river'/'hint_well'/'hint_well_dug'/'hint_municipal' — regex-match
+    //   'default_municipal'   — нет depth + нет hint
+    intakeSource    String?  @map("intake_source") @db.VarChar(32)
+
+    // === Slice 4.3 results — re-geocode на Docling-clean addresses ===
+    // Заполняется ТОЛЬКО для ордеров из shortlist-regeocode (~2953). NULL для остальных
+    // (значит canonical_lat/lon = lat/lon из original geocode).
+    canonicalLat    Float?    @map("canonical_lat")
+    canonicalLon    Float?    @map("canonical_lon")
+    canonicalFiasId String?   @map("canonical_fias_id") @db.VarChar(64)
+    canonicalAddressNew String? @map("canonical_address_new") @db.VarChar(512)
+    regeocodedAt    DateTime? @map("regeocoded_at")
+
+    // === Slice 4.2.5 results — re-embed на merged params ===
+    // paramsCanonical — merged best-of-three values для ордеров из shortlist-reembed (~2335).
+    // NULL для остальных (значит canonical = existing params, изменений не требовалось).
+    // Existing `params` column НЕ перетирается — это backup для rollback и audit.
+    paramsCanonical Json?     @map("params_canonical")
+    reembeddedAt    DateTime? @map("reembedded_at")
+
     normalizationVersion String @map("normalization_version") @db.VarChar(16)
     normalizedAt    DateTime @default(now()) @map("normalized_at")
 
@@ -176,6 +211,9 @@ model WaterAnalysis {
     @@index([intakeType])
     @@index([normalizationVersion])
     @@index([geoSource])
+    @@index([intakeSource])
+    @@index([regeocodedAt])
+    @@index([reembeddedAt])
     @@map("water_analysis")
 }
 
