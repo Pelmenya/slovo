@@ -78,6 +78,10 @@ export class PointsService {
     private async fetchPoints(dto: PointsQueryDto, fetchLimit: number): Promise<TPointRow[]> {
         // order_number из БД НЕ селектим — это PII join-key к Bitrix24/CRM-aqua.
         // См. PointPropertiesDto комментарий и security-auditor 2026-05-08.
+        //
+        // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
+        // На high-zoom popup юзер должен видеть точные Docling-corrected
+        // значения вместо Vision-hallucinated.
         return this.prisma.$queryRaw<TPointRow[]>`
             SELECT
                 intake_type::text AS intake_type,
@@ -85,7 +89,7 @@ export class PointsService {
                 sample_date,
                 region,
                 locality,
-                params,
+                COALESCE(params_canonical, params) AS params,
                 ST_X(geo_point::geometry)::float8 AS lon,
                 ST_Y(geo_point::geometry)::float8 AS lat
             FROM water_analysis

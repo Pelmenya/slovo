@@ -84,9 +84,13 @@ export class CellDetailService {
         const south = dto.lat - half;
         const north = dto.lat + half;
 
+        // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
+        // Popup breakdown показывает точные Docling-corrected значения для 2335
+        // ордеров (1205 Vision overrides), включая критичные 987 cells где
+        // exceedsPdk-статус сменился (Vision «норма» → Docling «превышение»).
         return this.prisma.$queryRaw<TCellRow[]>`
             SELECT
-                params,
+                COALESCE(params_canonical, params) AS params,
                 sample_date
             FROM water_analysis
             WHERE

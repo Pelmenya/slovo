@@ -83,11 +83,13 @@ export class AquiferStatsService {
     ): Promise<TRawRow[]> {
         const intakeFilter = this.buildIntakeFilter(intakeType);
 
+        // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
+        // medianChemistry per layer считается на canonical-corrected values.
         return this.prisma.$queryRaw<TRawRow[]>`
             SELECT
                 depth_meters::float8 AS depth,
                 intake_type::text AS intake_type,
-                params
+                COALESCE(params_canonical, params) AS params
             FROM water_analysis
             WHERE
                 geo_point IS NOT NULL

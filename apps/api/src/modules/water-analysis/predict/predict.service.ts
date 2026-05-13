@@ -114,9 +114,13 @@ export class PredictService {
         // индекс на geo_point. ORDER BY дистанции + LIMIT k для kNN. Извлекаем
         // params целиком (jsonb до 22 параметров на анализ — небольшой payload),
         // depth_meters, intake_type, sample_date — для downstream агрегаций.
+        // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
+        // 2335 ордеров имеют merged Docling params; если canonical присутствует —
+        // читаем его (1205 Vision→Docling overrides, точнее значения), иначе
+        // fallback на existing Vision. Downstream `row.params` shape прежняя.
         return this.prisma.$queryRaw<TNeighborRow[]>`
             SELECT
-                params,
+                COALESCE(params_canonical, params) AS params,
                 depth_meters,
                 intake_type::text AS intake_type,
                 sample_date,

@@ -130,11 +130,16 @@ export class HeatmapService {
         // (jsonb existence operator) для performance.
         // ::float8 cast обязателен на каждом числовом параметре — Prisma pg-driver
         // передаёт JS number как integer без явного cast'а.
+        // COALESCE(params_canonical, params) — Slice 4.2.5a canonical override.
+        // 2335 ордеров имеют merged Docling params (1205 Vision→Docling overrides,
+        // 987 из них изменили exceedsPdk-статус). Существующий jsonb existence
+        // operator `?` работает с COALESCE — если canonical присутствует, читаем
+        // его; иначе fallback на existing Vision params.
         return this.prisma.$queryRaw<TRawRow[]>`
             WITH bounded AS (
                 SELECT
                     geo_point::geometry AS geom,
-                    params
+                    COALESCE(params_canonical, params) AS params
                 FROM water_analysis
                 WHERE
                     geo_point IS NOT NULL
@@ -142,7 +147,7 @@ export class HeatmapService {
                         ${dto.west}::float8, ${dto.south}::float8,
                         ${dto.east}::float8, ${dto.north}::float8, 4326
                     )::geography
-                    AND params ? ${param}
+                    AND COALESCE(params_canonical, params) ? ${param}
             ),
             extracted AS (
                 SELECT
@@ -185,11 +190,12 @@ export class HeatmapService {
         // problematic.
         const anyExceedanceExpr = buildAnyExceedanceExpr();
 
+        // COALESCE canonical override — см. runParamQuery rationale.
         return this.prisma.$queryRaw<TRawRow[]>`
             WITH bounded AS (
                 SELECT
                     geo_point::geometry AS geom,
-                    params
+                    COALESCE(params_canonical, params) AS params
                 FROM water_analysis
                 WHERE
                     geo_point IS NOT NULL
@@ -235,11 +241,12 @@ export class HeatmapService {
         // COALESCE → 0 если параметр отсутствует в записи. Это занижает risk
         // у records с неполным набором (что справедливо — risk без iron_total
         // должен быть < risk с измеренным iron_total).
+        // COALESCE canonical override — см. runParamQuery rationale.
         return this.prisma.$queryRaw<TRawRow[]>`
             WITH bounded AS (
                 SELECT
                     geo_point::geometry AS geom,
-                    params
+                    COALESCE(params_canonical, params) AS params
                 FROM water_analysis
                 WHERE
                     geo_point IS NOT NULL
