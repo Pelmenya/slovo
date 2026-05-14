@@ -1,4 +1,4 @@
-import { exceedsPdk, getParamUnit, WATER_PARAMS_BY_CODE } from './sanpin-1-2-3685-21-v1.0.0';
+import { exceedanceRatio, exceedsPdk, getParamUnit, WATER_PARAMS_BY_CODE } from './sanpin-1-2-3685-21-v1.0.0';
 
 describe('exceedsPdk', () => {
     it('iron_total > 0.3 → true', () => {
@@ -56,5 +56,41 @@ describe('getParamUnit', () => {
 
     it('unknown paramCode но override в paramUnits → возвращает override', () => {
         expect(getParamUnit('unknown_param', { unknown_param: 'мг/л' })).toBe('мг/л');
+    });
+});
+
+describe('exceedanceRatio', () => {
+    it('Mn 0.83 при ПДК 0.1 → 8.3x (canonical UI example)', () => {
+        const result = exceedanceRatio('manganese', 0.83);
+        expect(result).toBeCloseTo(8.3, 1);
+    });
+
+    it('Fe 3.12 при ПДК 0.3 → 10.4x (canonical UI example)', () => {
+        const result = exceedanceRatio('iron_total', 3.12);
+        expect(result).toBeCloseTo(10.4, 1);
+    });
+
+    it('iron_total в пределах нормы (0.1 < 0.3) → null (multiplier не показываем для safe)', () => {
+        expect(exceedanceRatio('iron_total', 0.1)).toBeNull();
+    });
+
+    it('iron_total = 0.3 (на границе) → null (>, не ≥ — совпадает с exceedsPdk)', () => {
+        expect(exceedanceRatio('iron_total', 0.3)).toBeNull();
+    });
+
+    it('pH (range-type ПДК) даже при 9.5 → null (unitless «×» не имеет смысла)', () => {
+        expect(exceedanceRatio('ph', 9.5)).toBeNull();
+    });
+
+    it('pH (range-type ПДК) при 5.5 → null', () => {
+        expect(exceedanceRatio('ph', 5.5)).toBeNull();
+    });
+
+    it('non-regulated параметр (temperature) → null', () => {
+        expect(exceedanceRatio('temperature', 25)).toBeNull();
+    });
+
+    it('unknown paramCode → null', () => {
+        expect(exceedanceRatio('unknown_param', 100)).toBeNull();
     });
 });

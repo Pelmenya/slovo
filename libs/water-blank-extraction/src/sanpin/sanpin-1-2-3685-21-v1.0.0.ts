@@ -714,3 +714,29 @@ export function exceedsPdk(paramCode: string, value: number): boolean | null {
     // Range-type ПДК (например, pH): вне диапазона — превышение.
     return value < param.pdk.min || value > param.pdk.max;
 }
+
+/**
+ * Кратность превышения ПДК (`value / pdk`) для exceeded числовых параметров.
+ *
+ * Используется фронтом для отображения «×8.3 ПДК» под каждым unsafe param в
+ * PointPopup / CellPopup — даёт юзеру magnitude превышения без mental math.
+ *
+ * Возвращает `null` когда multiplier бессмысленен:
+ *   - параметр не нормируется (temperature / electrical_conductivity)
+ *   - значение в пределах нормы (UI показывает ratio только для unsafe)
+ *   - range-type ПДК (pH 6-9): unitless «×» не имеет канонического смысла —
+ *     показываем pH как «вне диапазона», без multiplier
+ *
+ * @param paramCode — канонический код параметра
+ * @param value — измеренное значение в канонических единицах
+ * @returns ratio (например 8.3 для Mn 0.83 при ПДК 0.1) или null
+ */
+export function exceedanceRatio(paramCode: string, value: number): number | null {
+    const param = WATER_PARAMS_BY_CODE[paramCode];
+    if (!param || !param.regulated || param.pdk === null) return null;
+
+    if (typeof param.pdk === 'number') {
+        return value > param.pdk ? value / param.pdk : null;
+    }
+    return null;
+}

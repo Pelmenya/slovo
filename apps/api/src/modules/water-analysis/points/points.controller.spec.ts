@@ -57,6 +57,7 @@ describe('PointsController', () => {
                         locality: 'Раменское',
                         params: { iron_total: 0.42, hardness_total: 7.8 },
                         risk: 67,
+                        pdkExceedanceRatio: { iron_total: 1.4, hardness_total: 1.1 },
                     },
                 },
             ],

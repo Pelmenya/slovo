@@ -486,6 +486,82 @@ describe('PointsService', () => {
     });
 
     // -----------------------------------------------------------------------
+    // computePdkExceedanceRatio
+    // -----------------------------------------------------------------------
+
+    describe('computePdkExceedanceRatio', () => {
+        it('Mn 0.83 (ПДК 0.1) → 8.3 — canonical UI example', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { manganese: 0.83 } }),
+            ]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({ manganese: 8.3 });
+        });
+
+        it('Fe 3.12 (ПДК 0.3) → 10.4 — canonical UI example', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 3.12 } }),
+            ]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({ iron_total: 10.4 });
+        });
+
+        it('multi-param exceedance (Mn + Fe + hardness) — все ratios в одном объекте', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({
+                    params: { manganese: 0.83, iron_total: 3.12, hardness_total: 14.1 },
+                }),
+            ]);
+            const res = await service.query(buildDto());
+            // hardness 14.1 / 7 = 2.014... → 2.0 после round(×10)/10
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({
+                manganese: 8.3,
+                iron_total: 10.4,
+                hardness_total: 2,
+            });
+        });
+
+        it('safe params (Fe 0.1 < 0.3) — НЕ попадают в pdkExceedanceRatio', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { iron_total: 0.1, hardness_total: 5 } }),
+            ]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({});
+        });
+
+        it('range-type pdk (pH 9.5 — вне диапазона) — отсутствует (multiplier не имеет смысла)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { ph: 9.5, iron_total: 0.5 } }),
+            ]);
+            const res = await service.query(buildDto());
+            // pH отсутствует, iron_total 0.5/0.3 = 1.6667 → 1.7
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({ iron_total: 1.7 });
+        });
+
+        it('non-regulated (temperature, electrical_conductivity) — отсутствуют', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { temperature: 25, electrical_conductivity: 800 } }),
+            ]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({});
+        });
+
+        it('пустой params → пустой pdkExceedanceRatio', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([buildRow({ params: {} })]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({});
+        });
+
+        it('round до 1 знака (turbidity 6.3 / 2.6 = 2.4230... → 2.4)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ params: { turbidity: 6.3 } }),
+            ]);
+            const res = await service.query(buildDto());
+            expect(res.features[0].properties.pdkExceedanceRatio).toEqual({ turbidity: 2.4 });
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // mapRowToFeature — shape
     // -----------------------------------------------------------------------
 
@@ -503,6 +579,7 @@ describe('PointsService', () => {
             expect(f.properties.region).toBe('Московская область');
             expect(f.properties.locality).toBe('Раменское');
             expect(typeof f.properties.params).toBe('object');
+            expect(typeof f.properties.pdkExceedanceRatio).toBe('object');
             // Проверяем что orderNumber НЕ выходит наружу — это PII join-key
             // к Bitrix24/CRM-aqua, удалён в security-fix 2026-05-08.
             expect((f.properties as unknown as Record<string, unknown>).orderNumber).toBeUndefined();
@@ -585,7 +662,7 @@ describe('PointsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'points:v3:36.5000:54.8000:39.0000:56.5000:100',
+                'points:v4:36.5000:54.8000:39.0000:56.5000:100',
             );
         });
 
@@ -636,7 +713,7 @@ describe('PointsService', () => {
                 }),
             );
             expect(redis.get).toHaveBeenCalledWith(
-                'points:v3:36.1235:54.9877:39.1111:56.2222:100',
+                'points:v4:36.1235:54.9877:39.1111:56.2222:100',
             );
         });
     });

@@ -54,6 +54,16 @@ export class PointPropertiesDto {
         nullable: true,
     })
     risk!: number | null;
+
+    @ApiProperty({
+        description:
+            'Кратность превышения ПДК (`value / pdk`) для exceeded числовых параметров. ' +
+            'Используется фронтом для «×8.3 ПДК» под каждым unsafe param в PointPopup. ' +
+            'Содержит только exceeded params (value > pdk) — safe / на границе / range-type (pH) отсутствуют. ' +
+            'Пустой объект если нет превышений или нечего считать. См. `exceedanceRatio` в `@slovo/water-blank-extraction`.',
+        example: { manganese: 8.3, iron_total: 10.4, hardness_total: 2.01 },
+    })
+    pdkExceedanceRatio!: Record<string, number>;
 }
 
 export class PointGeometryDto {

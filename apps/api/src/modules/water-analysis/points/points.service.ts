@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@slovo/database';
+import { exceedanceRatio } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
 import {
     POINTS_CACHE_TTL_SECONDS,
@@ -163,6 +164,7 @@ function roundCoord(value: number): number {
 function mapRowToFeature(row: TPointRow): PointFeatureDto {
     const params = sanitizeParams(row.params);
     const risk = computeRisk(params);
+    const pdkExceedanceRatio = computePdkExceedanceRatio(params);
 
     const properties: PointPropertiesDto = {
         intakeType: row.intake_type,
@@ -172,6 +174,7 @@ function mapRowToFeature(row: TPointRow): PointFeatureDto {
         locality: row.locality,
         params,
         risk,
+        pdkExceedanceRatio,
     };
 
     return {
@@ -182,6 +185,25 @@ function mapRowToFeature(row: TPointRow): PointFeatureDto {
         },
         properties,
     };
+}
+
+/**
+ * Кратность превышения ПДК (`value / pdk`) для каждого exceeded числового
+ * параметра. Source-of-truth для UI «×8.3 ПДК» в PointPopup.
+ *
+ * Возвращает только exceeded — non-exceeded / non-regulated / range-type (pH)
+ * отсутствуют в результате. См. `exceedanceRatio` контракт в
+ * `@slovo/water-blank-extraction`.
+ */
+function computePdkExceedanceRatio(params: Record<string, number>): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [code, value] of Object.entries(params)) {
+        const ratio = exceedanceRatio(code, value);
+        if (ratio !== null) {
+            out[code] = Math.round(ratio * 10) / 10;
+        }
+    }
+    return out;
 }
 
 /**

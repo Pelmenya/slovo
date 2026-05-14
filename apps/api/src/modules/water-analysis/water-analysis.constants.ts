@@ -29,8 +29,14 @@ export const FLOWISE_CLIENT_TOKEN = Symbol('WATER_ANALYSIS_FLOWISE_CLIENT');
 //   v3 — aquifer-stats response shape fix (2026-05-13): `totalWells` теперь real
 //        bbox count через `COUNT(*) OVER()` window function (раньше = samplesUsed
 //        после LIMIT, misleading). Bump чтобы prod-deploy получил honest counts.
+//   v4 — pdkExceedanceRatio + max/medianExceedanceRatio fields added (2026-05-14):
+//        /points response получил `pdkExceedanceRatio: Record<paramCode, number>`,
+//        /heatmap/cell `ParamBreakdownDto` получил `maxExceedanceRatio` + `medianExceedanceRatio`.
+//        Поддерживает фронт-фичу «×8.3 ПДК» в PointPopup / CellPopup (claude design
+//        review 2026-05-14, P0.2). Bump чтобы клиент не получил stale response без
+//        новых полей и не ломался на undefined.
 // =============================================================================
-export const WATER_ANALYSIS_CACHE_VERSION = 'v3';
+export const WATER_ANALYSIS_CACHE_VERSION = 'v4';
 
 // =============================================================================
 // Top-K границы. Default=10 — баланс coverage vs latency. Max=50 — защита от

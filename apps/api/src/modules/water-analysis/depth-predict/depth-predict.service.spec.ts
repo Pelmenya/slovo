@@ -434,7 +434,7 @@ describe('DepthPredictService', () => {
                     radiusKm: 50,
                 }),
             );
-            expect(redis.get).toHaveBeenCalledWith('depth-predict:v3:well:55.756:37.617:20:50.000');
+            expect(redis.get).toHaveBeenCalledWith('depth-predict:v4:well:55.756:37.617:20:50.000');
         });
 
         it('координаты различающиеся менее чем на 0.001° → одинаковый cache-key', async () => {

@@ -127,6 +127,91 @@ describe('CellDetailService', () => {
         });
     });
 
+    // -----------------------------------------------------------------------
+    // maxExceedanceRatio / medianExceedanceRatio
+    // -----------------------------------------------------------------------
+
+    describe('exceedance ratios', () => {
+        it('Fe в 3 rows (3.0 / 1.5 / 0.6, ПДК 0.3) → max=3.0 → maxRatio=10, median=1.5 → medianRatio=5', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ iron_total: 3.0 }),
+                buildRow({ iron_total: 1.5 }),
+                buildRow({ iron_total: 0.6 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            const iron = res.topProblems.find((p) => p.paramCode === 'iron_total');
+            expect(iron).toBeDefined();
+            expect(iron!.maxExceedanceRatio).toBe(10);
+            expect(iron!.medianExceedanceRatio).toBe(5);
+        });
+
+        it('Mn 0.83 / 0.4 / 0.05 → max=0.83/0.1=8.3, median=0.4/0.1=4, min=0.05 → not exceeded but median+max yes', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ manganese: 0.83 }),
+                buildRow({ manganese: 0.4 }),
+                buildRow({ manganese: 0.05 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            const mn = res.topProblems.find((p) => p.paramCode === 'manganese');
+            expect(mn!.maxExceedanceRatio).toBe(8.3);
+            expect(mn!.medianExceedanceRatio).toBe(4);
+        });
+
+        it('Mn 0.05 / 0.06 / 0.08 (все в норме) → НЕ попадает в topProblems', async () => {
+            // Sanity: безпроблемные params в inNormParams + ratios для них не считаем.
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ manganese: 0.05 }),
+                buildRow({ manganese: 0.06 }),
+                buildRow({ manganese: 0.08 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            expect(res.topProblems.find((p) => p.paramCode === 'manganese')).toBeUndefined();
+            expect(res.inNormParams).toContain('manganese');
+        });
+
+        it('median в норме но max превышает (Fe: 0.1 / 0.2 / 5.0) → maxRatio set, medianRatio null', async () => {
+            // sorted = [0.1, 0.2, 5.0], median = 0.2 (< 0.3) → не exceeded → null
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ iron_total: 0.1 }),
+                buildRow({ iron_total: 0.2 }),
+                buildRow({ iron_total: 5.0 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            const iron = res.topProblems.find((p) => p.paramCode === 'iron_total');
+            expect(iron).toBeDefined();
+            expect(iron!.maxExceedanceRatio).toBeCloseTo(16.7, 1);
+            expect(iron!.medianExceedanceRatio).toBeNull();
+        });
+
+        it('range pdk (pH out-of-range) → оба ratio null (unitless «×» не имеет смысла)', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ ph: 5 }),
+                buildRow({ ph: 9.5 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            const ph = res.topProblems.find((p) => p.paramCode === 'ph');
+            expect(ph).toBeDefined();
+            expect(ph!.maxExceedanceRatio).toBeNull();
+            expect(ph!.medianExceedanceRatio).toBeNull();
+        });
+
+        it('1 row только (Mn 0.83) → max=median=0.83 → оба ratio 8.3', async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([
+                buildRow({ manganese: 0.83 }),
+            ]);
+            const res = await service.detail(buildDto());
+
+            const mn = res.topProblems.find((p) => p.paramCode === 'manganese');
+            expect(mn!.maxExceedanceRatio).toBe(8.3);
+            expect(mn!.medianExceedanceRatio).toBe(8.3);
+        });
+    });
+
     describe(`top-N truncation (N=${CELL_DETAIL_TOP_PROBLEMS_N})`, () => {
         it(`>${CELL_DETAIL_TOP_PROBLEMS_N} проблемных → topProblems.length=${CELL_DETAIL_TOP_PROBLEMS_N}`, async () => {
             // 7 разных paramов с превышениями (все 100% exceedsPct, разные exceedsCount)

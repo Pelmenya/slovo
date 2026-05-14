@@ -51,6 +51,26 @@ export class ParamBreakdownDto {
         example: 0.42,
     })
     median!: number;
+
+    @ApiProperty({
+        description:
+            'Кратность превышения ПДК (`max / pdk`) для max-значения, если оно exceeded. ' +
+            'UI показывает «на пике ×5 ПДК» рядом с max. null если max в норме или range-type (pH). ' +
+            'См. `exceedanceRatio` в `@slovo/water-blank-extraction`.',
+        example: 5,
+        nullable: true,
+    })
+    maxExceedanceRatio!: number | null;
+
+    @ApiProperty({
+        description:
+            'Кратность превышения ПДК (`median / pdk`) для медианы, если она exceeded. ' +
+            'UI показывает «обычно ×1.4 ПДК» — даёт картину типичного превышения, не только пика. ' +
+            'null если median в норме или range-type (pH).',
+        example: 1.4,
+        nullable: true,
+    })
+    medianExceedanceRatio!: number | null;
 }
 
 /**

@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@slovo/database';
-import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
+import { exceedanceRatio, WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
 import {
     CELL_DETAIL_CACHE_TTL_SECONDS,
@@ -192,6 +192,11 @@ function aggregateRows(rows: readonly TCellRow[]): TAggregatedCell {
         const exceedsCount = exceedanceRowIndexes.length;
         const exceedsPct = Math.round((exceedsCount / values.length) * 100);
         const sorted = [...values].sort((a, b) => a - b);
+        const maxValue = sorted[sorted.length - 1];
+        const medianValue = percentile(sorted, 0.5);
+        // Round до 1 знака для UI «×8.3 ПДК». null для in-range / range-type pdk.
+        const maxRatioRaw = exceedanceRatio(meta.paramCode, maxValue);
+        const medianRatioRaw = exceedanceRatio(meta.paramCode, medianValue);
 
         breakdowns.push({
             paramCode: meta.paramCode,
@@ -201,8 +206,10 @@ function aggregateRows(rows: readonly TCellRow[]): TAggregatedCell {
             n: values.length,
             exceedsCount,
             exceedsPct,
-            max: roundTo(sorted[sorted.length - 1], 4),
-            median: roundTo(percentile(sorted, 0.5), 4),
+            max: roundTo(maxValue, 4),
+            median: roundTo(medianValue, 4),
+            maxExceedanceRatio: maxRatioRaw !== null ? roundTo(maxRatioRaw, 1) : null,
+            medianExceedanceRatio: medianRatioRaw !== null ? roundTo(medianRatioRaw, 1) : null,
         });
     }
 
