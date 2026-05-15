@@ -884,7 +884,7 @@ describe('PredictService', () => {
         it('формат ключа: predict:<lat>:<lon>:<k>:<radiusKm>', async () => {
             prisma.$queryRaw.mockResolvedValueOnce([]);
             await service.predict(buildDto({ lat: 55.7558, lon: 37.6173, k: 20, radiusKm: 50 }));
-            expect(redis.get).toHaveBeenCalledWith('predict:v4:55.756:37.617:20:50.000');
+            expect(redis.get).toHaveBeenCalledWith('predict:v5:55.756:37.617:20:50.000');
         });
     });
 

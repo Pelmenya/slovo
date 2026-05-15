@@ -7,8 +7,14 @@ import {
     type TFlowiseQueryDoc,
     type TFlowiseQueryResponse,
 } from '@slovo/flowise-client';
+import { StorageService } from '@slovo/storage';
 import { WATER_PARAMS_BY_CODE } from '@slovo/water-blank-extraction';
 import type Redis from 'ioredis';
+import {
+    CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
+    CATALOG_PRESIGNED_CACHE_TTL_SEC,
+    CATALOG_PRESIGNED_URL_TTL_SEC,
+} from '../../catalog/catalog.constants';
 import {
     EQUIPMENT_SUGGEST_CACHE_TTL_SECONDS,
     EQUIPMENT_SUGGEST_DEFAULT_TOP_K,
@@ -58,10 +64,19 @@ export class EquipmentSuggestService {
 
     private storeIdPromise: Promise<string> | null = null;
 
+    // Single-flight cache stampede protection для presigned URL resolution —
+    // паттерн скопирован из TextSearchService. 50 concurrent requests на тот же
+    // cold S3-key → один S3 sign call, остальные await ту же Promise.
+    private readonly inflightUrls = new Map<string, Promise<string>>();
+
     constructor(
         private readonly predictService: PredictService,
         @Inject(FLOWISE_CLIENT_TOKEN) private readonly flowise: FlowiseClient,
         @Inject(EQUIPMENT_SUGGEST_REDIS_TOKEN) private readonly redis: Redis,
+        // StorageService injected через `StorageModule.forFeature({ bucketEnvKey:
+        // 'S3_CATALOG_BUCKET' })` в WaterAnalysisModule — bound к catalog bucket,
+        // не knowledge. Используется для presign первой картинки товара.
+        private readonly storage: StorageService,
     ) {}
 
     async suggest(dto: EquipmentSuggestRequestDto): Promise<EquipmentSuggestResponseDto> {
@@ -189,20 +204,63 @@ export class EquipmentSuggestService {
             }
         }
 
-        // Dedup по составному ключу (name + orderNumber/sku), keep первое
-        // появление с его matched problem (severity-ordered preserves importance).
+        // Dedup по externalId (MoySklad UUID). Без externalId фронт не сможет
+        // открыть страницу товара / добавить в корзину — рекомендация **отбрасывается**.
+        // Severity-ordered preserves: для doc найденного через unsafe-iron, потом
+        // через borderline-manganese — оставляем iron (более серьёзная проблема).
         const seen = new Set<string>();
-        const uniqueRecommendations: EquipmentRecommendationDto[] = [];
+        const baseRecs: TBaseRecommendation[] = [];
         for (const { doc, problem } of allMatches) {
-            const rec = mapDocToRecommendation(doc, problem);
-            const key = `${rec.name}::${rec.sku}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            uniqueRecommendations.push(rec);
-            if (uniqueRecommendations.length >= topK) break;
+            const base = mapDocToBaseRecommendation(doc, problem);
+            if (base === null) continue;
+            if (seen.has(base.externalId)) continue;
+            seen.add(base.externalId);
+            baseRecs.push(base);
+            if (baseRecs.length >= topK) break;
         }
 
-        return uniqueRecommendations;
+        // Resolve presigned URL первой картинки параллельно для всех recommendations
+        // (single-flight protection в `resolvePresignedUrl`). Если у товара нет
+        // картинок — `imageUrl = null`.
+        const recommendations = await Promise.all(
+            baseRecs.map(async (base): Promise<EquipmentRecommendationDto> => {
+                const imageUrl = base.firstImageKey
+                    ? await this.resolvePresignedUrl(base.firstImageKey).catch((err: unknown) => {
+                          this.logger.warn(
+                              `presign failed for ${base.firstImageKey}: ${stringifyError(err)}`,
+                          );
+                          return null;
+                      })
+                    : null;
+                const { firstImageKey: _firstImageKey, ...rest } = base;
+                return { ...rest, imageUrl };
+            }),
+        );
+
+        return recommendations;
+    }
+
+    private resolvePresignedUrl(key: string): Promise<string> {
+        const existing = this.inflightUrls.get(key);
+        if (existing) return existing;
+        const promise = this.doResolvePresignedUrl(key).finally(() => {
+            this.inflightUrls.delete(key);
+        });
+        this.inflightUrls.set(key, promise);
+        return promise;
+    }
+
+    private async doResolvePresignedUrl(key: string): Promise<string> {
+        const cacheKey = `${CATALOG_PRESIGNED_CACHE_KEY_PREFIX}${key}`;
+        const cached = await this.redis.get(cacheKey).catch(() => null);
+        if (cached) return cached;
+        const url = await this.storage.getPresignedDownloadUrl(key, {
+            expiresInSeconds: CATALOG_PRESIGNED_URL_TTL_SEC,
+        });
+        await this.redis.set(cacheKey, url, 'EX', CATALOG_PRESIGNED_CACHE_TTL_SEC).catch(() => {
+            /* swallow Redis errors — fresh presign at least успешен */
+        });
+        return url;
     }
 
     private resolveCatalogStoreId(): Promise<string> {
@@ -358,29 +416,69 @@ function buildSearchQuery(problems: WaterProblemDto[]): string {
     return `Подобрать оборудование для воды с проблемами: ${parts.join('; ')}.`;
 }
 
-function mapDocToRecommendation(
+/**
+ * Intermediate тип — pre-presign mapping. Содержит S3-key первой картинки
+ * (если есть) который потом резолвится в presigned URL в async-pass.
+ */
+type TBaseRecommendation = Omit<EquipmentRecommendationDto, 'imageUrl'> & {
+    firstImageKey: string | null;
+};
+
+/**
+ * Map Flowise document → TBaseRecommendation. Возвращает `null` если в metadata
+ * отсутствует `externalId` (MoySklad UUID) — без него фронт не открывает товар
+ * и не добавляет в корзину. Битый chunk feeder'а отбрасывается тихо.
+ */
+function mapDocToBaseRecommendation(
     doc: TFlowiseQueryDoc,
     matchedProblem: WaterProblemDto,
-): EquipmentRecommendationDto {
+): TBaseRecommendation | null {
     const meta = doc.metadata;
-    const sku = stringOr(meta.orderNumber, stringOr(meta.sku, 'unknown'));
+    const externalId = stringOrUndefined(meta.externalId);
+    if (!externalId) return null;
+
     const name = stringOr(meta.name, stringOr(meta.title, 'Без названия'));
-    // Flowise vectorstoreQuery score обычно в metadata либо undefined.
-    // Fallback 1.0 если нет — UI всё равно показывает первую как наиболее релевантную.
     const relevance = numberOr(meta.score, 1.0);
     const description = doc.pageContent.slice(0, 280);
-    const imageUrl = stringOrUndefined(meta.imageUrl);
-
+    const salePriceKopecks = numberOrNull(meta.salePriceKopecks);
+    const firstImageKey = extractFirstImageKey(meta);
     const reason = buildReason(matchedProblem);
-    const base: EquipmentRecommendationDto = {
-        sku,
+
+    return {
+        externalId,
         name,
         relevance,
         description,
         matchedProblem: matchedProblem.paramCode,
         reason,
+        salePriceKopecks,
+        firstImageKey,
     };
-    return imageUrl ? { ...base, imageUrl } : base;
+}
+
+/**
+ * Извлечь S3-key первой картинки из `metadata.imageUrls[]`. Тот же contract
+ * что в catalog/search (`feeder` кладёт relative S3-keys). Возвращает null если
+ * массива нет / пустой / первый элемент не валидный S3-key.
+ *
+ * Whitelist validation совпадает с TextSearchService.isValidS3Key — защита от
+ * path-injection если feeder теоретически положит `../../etc` или absolute URL.
+ */
+function extractFirstImageKey(metadata: Record<string, unknown>): string | null {
+    const raw = metadata.imageUrls;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    const first: unknown = raw[0];
+    if (typeof first !== 'string' || !isValidS3Key(first)) return null;
+    return first;
+}
+
+const S3_KEY_ALLOWED_CHARS = /^[a-zA-Z0-9/_.-]+$/;
+
+function isValidS3Key(key: string): boolean {
+    if (key.length === 0 || key.length > 1024) return false;
+    if (key.startsWith('/') || key.startsWith('.')) return false;
+    if (key.split('/').some((segment) => segment === '..')) return false;
+    return S3_KEY_ALLOWED_CHARS.test(key);
 }
 
 /**
@@ -410,6 +508,10 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 function numberOr(value: unknown, fallback: number): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function numberOrNull(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function buildCacheKey(lat: number, lon: number, topK: number): string {

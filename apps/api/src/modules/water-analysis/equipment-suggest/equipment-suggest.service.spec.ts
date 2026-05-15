@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { CATALOG_AQUAPHOR_STORE_NAME } from '@slovo/common';
+import { StorageService } from '@slovo/storage';
 import {
     ENDPOINTS,
     type FlowiseClient,
@@ -78,6 +79,7 @@ describe('EquipmentSuggestService', () => {
     let predict: TPredictMock;
     let flowise: { request: jest.Mock };
     let redis: TRedisMock;
+    let storage: { getPresignedDownloadUrl: jest.Mock };
 
     /**
      * Универсальный setup — endpoint-aware FlowiseClient mock через
@@ -112,6 +114,14 @@ describe('EquipmentSuggestService', () => {
             get: jest.fn().mockResolvedValue(null),
             set: jest.fn().mockResolvedValue('OK'),
         };
+        // StorageService mock — equipment-suggest резолвит presigned URL первой
+        // картинки. Тесты не проверяют content URL'а (это TextSearchService responsibility),
+        // только что mapping срабатывает.
+        storage = {
+            getPresignedDownloadUrl: jest
+                .fn()
+                .mockImplementation((key: string) => Promise.resolve(`https://test.minio/${key}?sig=mock`)),
+        };
 
         const moduleRef: TestingModule = await Test.createTestingModule({
             providers: [
@@ -119,6 +129,7 @@ describe('EquipmentSuggestService', () => {
                 { provide: PredictService, useValue: predict },
                 { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise as unknown as FlowiseClient },
                 { provide: EQUIPMENT_SUGGEST_REDIS_TOKEN, useValue: redis },
+                { provide: StorageService, useValue: storage },
             ],
         }).compile();
         service = moduleRef.get(EquipmentSuggestService);
@@ -224,7 +235,7 @@ describe('EquipmentSuggestService', () => {
                                 id: 'doc-1',
                                 pageContent: 'Колонна для удаления железа.',
                                 metadata: {
-                                    orderNumber: 'OZ-15',
+                                    externalId: 'uuid-OZ-15',
                                     name: 'Аквафор ОС-15',
                                     imageUrl: 'https://cdn/oz15.jpg',
                                 },
@@ -277,11 +288,13 @@ describe('EquipmentSuggestService', () => {
             });
             expect(result.recommendations).toHaveLength(1);
             expect(result.recommendations[0]).toMatchObject({
-                sku: 'OZ-15',
+                externalId: 'uuid-OZ-15',
                 name: 'Аквафор ОС-15',
-                imageUrl: 'https://cdn/oz15.jpg',
                 matchedProblem: 'iron_total',
                 reason: expect.stringContaining('явное превышение'),
+                // imageUrl=null т.к. в test metadata нет `imageUrls[]` массива.
+                imageUrl: null,
+                salePriceKopecks: null,
             });
             expect(result.nNeighbors).toBe(18);
             expect(result.medianDistKm).toBe(4.2);
@@ -298,12 +311,12 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'd1',
                                 pageContent: 'Обезжелезиватель.',
-                                metadata: { orderNumber: 'OZ-15', name: 'OS-15' },
+                                metadata: { externalId: 'uuid-OZ-15', name: 'OS-15' },
                             },
                             {
                                 id: 'd2',
                                 pageContent: 'Картридж.',
-                                metadata: { orderNumber: 'CR-1', name: 'Картридж Fe' },
+                                metadata: { externalId: 'uuid-CR-1', name: 'Картридж Fe' },
                             },
                         ],
                         timeTaken: 100,
@@ -314,12 +327,12 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'd3',
                                 pageContent: 'MnO2 фильтр.',
-                                metadata: { orderNumber: 'MN-1', name: 'Mn-1' },
+                                metadata: { externalId: 'uuid-MN-1', name: 'Mn-1' },
                             },
                             {
                                 id: 'd4',
                                 pageContent: 'Картридж.',
-                                metadata: { orderNumber: 'CR-2', name: 'Картридж Mn' },
+                                metadata: { externalId: 'uuid-CR-2', name: 'Картридж Mn' },
                             },
                         ],
                         timeTaken: 100,
@@ -330,12 +343,12 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'd5',
                                 pageContent: 'Умягчитель.',
-                                metadata: { orderNumber: 'SF-1', name: 'Soft-1' },
+                                metadata: { externalId: 'uuid-SF-1', name: 'Soft-1' },
                             },
                             {
                                 id: 'd6',
                                 pageContent: 'Колонна.',
-                                metadata: { orderNumber: 'SF-2', name: 'Soft-2' },
+                                metadata: { externalId: 'uuid-SF-2', name: 'Soft-2' },
                             },
                         ],
                         timeTaken: 100,
@@ -366,13 +379,13 @@ describe('EquipmentSuggestService', () => {
             // 3 problems × 2 docs = 6 кандидатов, все уникальные → 6 рекомендаций
             // (topK=10 не cap'ает).
             expect(result.recommendations).toHaveLength(6);
-            expect(result.recommendations.map((r) => r.sku)).toEqual([
-                'OZ-15',
-                'CR-1',
-                'MN-1',
-                'CR-2',
-                'SF-1',
-                'SF-2',
+            expect(result.recommendations.map((r) => r.externalId)).toEqual([
+                'uuid-OZ-15',
+                'uuid-CR-1',
+                'uuid-MN-1',
+                'uuid-CR-2',
+                'uuid-SF-1',
+                'uuid-SF-2',
             ]);
         });
     });
@@ -802,7 +815,7 @@ describe('EquipmentSuggestService', () => {
             const sharedDoc: TFlowiseQueryDoc = {
                 id: 'shared-1',
                 pageContent: 'Универсальная колонна Fe+Mn.',
-                metadata: { orderNumber: 'UNI-1', name: 'Universal Fe+Mn' },
+                metadata: { externalId: 'uuid-UNI-1', name: 'Universal Fe+Mn' },
             };
             await setupService({
                 queryResults: [
@@ -823,14 +836,14 @@ describe('EquipmentSuggestService', () => {
 
             // Оба queries вернули один и тот же товар → дубликат удалён, остался один.
             expect(result.recommendations).toHaveLength(1);
-            expect(result.recommendations[0].sku).toBe('UNI-1');
+            expect(result.recommendations[0].externalId).toBe('uuid-UNI-1');
         });
 
         it('частичный overlap: 2 уникальных + 1 общий → 3 уникальных в итоге', async () => {
             const shared: TFlowiseQueryDoc = {
                 id: 'shared',
                 pageContent: 'Универсал.',
-                metadata: { orderNumber: 'UNI-1', name: 'Universal' },
+                metadata: { externalId: 'uuid-UNI-1', name: 'Universal' },
             };
             await setupService({
                 queryResults: [
@@ -840,7 +853,7 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'fe-only',
                                 pageContent: 'Только Fe.',
-                                metadata: { orderNumber: 'FE-1', name: 'Iron-only' },
+                                metadata: { externalId: 'uuid-FE-1', name: 'Iron-only' },
                             },
                         ],
                         timeTaken: 50,
@@ -851,7 +864,7 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'mn-only',
                                 pageContent: 'Только Mn.',
-                                metadata: { orderNumber: 'MN-1', name: 'Mn-only' },
+                                metadata: { externalId: 'uuid-MN-1', name: 'Mn-only' },
                             },
                         ],
                         timeTaken: 50,
@@ -871,10 +884,10 @@ describe('EquipmentSuggestService', () => {
 
             expect(result.recommendations).toHaveLength(3);
             // Severity-ordered preserves importance: shared (из iron) перед FE-1, MN-1 в конце.
-            expect(result.recommendations.map((r) => r.sku)).toEqual([
-                'UNI-1',
-                'FE-1',
-                'MN-1',
+            expect(result.recommendations.map((r) => r.externalId)).toEqual([
+                'uuid-UNI-1',
+                'uuid-FE-1',
+                'uuid-MN-1',
             ]);
         });
     });
@@ -891,13 +904,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '1',
-                                pageContent: 'A',
-                                metadata: { orderNumber: 'A', name: 'A' },
+                                pageContent: 'uuid-A',
+                                metadata: { externalId: 'uuid-A', name: 'A' },
                             },
                             {
                                 id: '2',
-                                pageContent: 'B',
-                                metadata: { orderNumber: 'B', name: 'B' },
+                                pageContent: 'uuid-B',
+                                metadata: { externalId: 'uuid-B', name: 'B' },
                             },
                         ],
                         timeTaken: 50,
@@ -906,13 +919,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '3',
-                                pageContent: 'C',
-                                metadata: { orderNumber: 'C', name: 'C' },
+                                pageContent: 'uuid-C',
+                                metadata: { externalId: 'uuid-C', name: 'C' },
                             },
                             {
                                 id: '4',
-                                pageContent: 'D',
-                                metadata: { orderNumber: 'D', name: 'D' },
+                                pageContent: 'uuid-D',
+                                metadata: { externalId: 'uuid-D', name: 'D' },
                             },
                         ],
                         timeTaken: 50,
@@ -921,13 +934,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '5',
-                                pageContent: 'E',
-                                metadata: { orderNumber: 'E', name: 'E' },
+                                pageContent: 'uuid-E',
+                                metadata: { externalId: 'uuid-E', name: 'E' },
                             },
                             {
                                 id: '6',
-                                pageContent: 'F',
-                                metadata: { orderNumber: 'F', name: 'F' },
+                                pageContent: 'uuid-F',
+                                metadata: { externalId: 'uuid-F', name: 'F' },
                             },
                         ],
                         timeTaken: 50,
@@ -948,7 +961,7 @@ describe('EquipmentSuggestService', () => {
 
             expect(result.recommendations).toHaveLength(4);
             // Severity-ordered preserves importance: первые 4 unique = A, B, C, D.
-            expect(result.recommendations.map((r) => r.sku)).toEqual(['A', 'B', 'C', 'D']);
+            expect(result.recommendations.map((r) => r.externalId)).toEqual(['uuid-A', 'uuid-B', 'uuid-C', 'uuid-D']);
         });
 
         it('topK undefined → DEFAULT_TOP_K=5 cap, при 6 кандидатах → 5 рекомендаций', async () => {
@@ -958,13 +971,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '1',
-                                pageContent: 'A',
-                                metadata: { orderNumber: 'A', name: 'A' },
+                                pageContent: 'uuid-A',
+                                metadata: { externalId: 'uuid-A', name: 'A' },
                             },
                             {
                                 id: '2',
-                                pageContent: 'B',
-                                metadata: { orderNumber: 'B', name: 'B' },
+                                pageContent: 'uuid-B',
+                                metadata: { externalId: 'uuid-B', name: 'B' },
                             },
                         ],
                         timeTaken: 50,
@@ -973,13 +986,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '3',
-                                pageContent: 'C',
-                                metadata: { orderNumber: 'C', name: 'C' },
+                                pageContent: 'uuid-C',
+                                metadata: { externalId: 'uuid-C', name: 'C' },
                             },
                             {
                                 id: '4',
-                                pageContent: 'D',
-                                metadata: { orderNumber: 'D', name: 'D' },
+                                pageContent: 'uuid-D',
+                                metadata: { externalId: 'uuid-D', name: 'D' },
                             },
                         ],
                         timeTaken: 50,
@@ -988,13 +1001,13 @@ describe('EquipmentSuggestService', () => {
                         docs: [
                             {
                                 id: '5',
-                                pageContent: 'E',
-                                metadata: { orderNumber: 'E', name: 'E' },
+                                pageContent: 'uuid-E',
+                                metadata: { externalId: 'uuid-E', name: 'E' },
                             },
                             {
                                 id: '6',
-                                pageContent: 'F',
-                                metadata: { orderNumber: 'F', name: 'F' },
+                                pageContent: 'uuid-F',
+                                metadata: { externalId: 'uuid-F', name: 'F' },
                             },
                         ],
                         timeTaken: 50,
@@ -1031,7 +1044,7 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'd1',
                                 pageContent: 'pc',
-                                metadata: { orderNumber: 'A', name: 'A' },
+                                metadata: { externalId: 'uuid-A', name: 'A' },
                             },
                         ],
                         timeTaken: 50,
@@ -1055,15 +1068,15 @@ describe('EquipmentSuggestService', () => {
             await setupService({
                 queryResults: [
                     {
-                        docs: [{ id: '1', pageContent: 'pc', metadata: { orderNumber: '1', name: 'A' } }],
+                        docs: [{ id: '1', pageContent: 'pc', metadata: { externalId: 'uuid-1', name: 'A' } }],
                         timeTaken: 50,
                     },
                     {
-                        docs: [{ id: '2', pageContent: 'pc', metadata: { orderNumber: '2', name: 'B' } }],
+                        docs: [{ id: '2', pageContent: 'pc', metadata: { externalId: 'uuid-2', name: 'B' } }],
                         timeTaken: 50,
                     },
                     {
-                        docs: [{ id: '3', pageContent: 'pc', metadata: { orderNumber: '3', name: 'C' } }],
+                        docs: [{ id: '3', pageContent: 'pc', metadata: { externalId: 'uuid-3', name: 'C' } }],
                         timeTaken: 50,
                     },
                 ],
@@ -1096,7 +1109,7 @@ describe('EquipmentSuggestService', () => {
             const sharedDoc: TFlowiseQueryDoc = {
                 id: 'shared',
                 pageContent: 'Универсал.',
-                metadata: { orderNumber: 'UNI-1', name: 'Universal' },
+                metadata: { externalId: 'uuid-UNI-1', name: 'Universal' },
             };
             await setupService({
                 queryResults: [
@@ -1122,10 +1135,10 @@ describe('EquipmentSuggestService', () => {
     });
 
     // ------------------------------------------------------------------------
-    // 12. mapDocToRecommendation — fallback chain
+    // 12. mapDocToBaseRecommendation — externalId requirement + fallback chain
     // ------------------------------------------------------------------------
 
-    describe('mapDocToRecommendation — metadata fallbacks', () => {
+    describe('mapDocToBaseRecommendation — metadata fallbacks', () => {
         async function suggestWithDocs(docs: TFlowiseQueryDoc[]) {
             // Один problem → один vectorstoreQuery → docs идут единственным batch'ем.
             await setupService({ queryResults: [{ docs, timeTaken: 100 }] });
@@ -1137,44 +1150,45 @@ describe('EquipmentSuggestService', () => {
             return service.suggest(buildDto());
         }
 
-        it('orderNumber → sku (primary)', async () => {
+        it('externalId → primary identifier (передаётся в response)', async () => {
             const result = await suggestWithDocs([
                 {
                     id: 'd1',
                     pageContent: 'Описание...',
-                    metadata: { orderNumber: 'OZ-15', sku: 'fallback-sku', name: 'X' },
+                    metadata: { externalId: 'd2b41420-cc04-11e5', name: 'X' },
                 },
             ]);
-            expect(result.recommendations[0].sku).toBe('OZ-15');
+            expect(result.recommendations).toHaveLength(1);
+            expect(result.recommendations[0].externalId).toBe('d2b41420-cc04-11e5');
         });
 
-        it('orderNumber отсутствует → fallback на sku', async () => {
+        it('externalId отсутствует → doc отбрасывается (нет deep-link для фронта)', async () => {
             const result = await suggestWithDocs([
                 {
                     id: 'd1',
                     pageContent: 'pc',
-                    metadata: { sku: 'SKU-X', name: 'X' },
+                    metadata: { sku: 'fallback-sku', name: 'Без UUID' },
                 },
             ]);
-            expect(result.recommendations[0].sku).toBe('SKU-X');
+            expect(result.recommendations).toHaveLength(0);
         });
 
-        it('ни orderNumber ни sku → "unknown"', async () => {
+        it('пустой externalId (empty string) → doc отбрасывается', async () => {
             const result = await suggestWithDocs([
                 {
                     id: 'd1',
                     pageContent: 'pc',
-                    metadata: { name: 'X' },
+                    metadata: { externalId: '', name: 'X' },
                 },
             ]);
-            expect(result.recommendations[0].sku).toBe('unknown');
+            expect(result.recommendations).toHaveLength(0);
         });
 
         it('name → primary, title → fallback, иначе "Без названия"', async () => {
             const result = await suggestWithDocs([
-                { id: 'd1', pageContent: 'pc', metadata: { orderNumber: '1', name: 'Имя' } },
-                { id: 'd2', pageContent: 'pc', metadata: { orderNumber: '2', title: 'Title' } },
-                { id: 'd3', pageContent: 'pc', metadata: { orderNumber: '3' } },
+                { id: 'd1', pageContent: 'pc', metadata: { externalId: 'uuid-1', name: 'Имя' } },
+                { id: 'd2', pageContent: 'pc', metadata: { externalId: 'uuid-2', title: 'Title' } },
+                { id: 'd3', pageContent: 'pc', metadata: { externalId: 'uuid-3' } },
             ]);
             expect(result.recommendations[0].name).toBe('Имя');
             expect(result.recommendations[1].name).toBe('Title');
@@ -1183,9 +1197,9 @@ describe('EquipmentSuggestService', () => {
 
         it('relevance: numeric metadata.score → пробрасывается; иначе fallback 1.0', async () => {
             const result = await suggestWithDocs([
-                { id: 'd1', pageContent: 'pc', metadata: { orderNumber: '1', score: 0.84 } },
-                { id: 'd2', pageContent: 'pc', metadata: { orderNumber: '2' } },
-                { id: 'd3', pageContent: 'pc', metadata: { orderNumber: '3', score: 'oops' } },
+                { id: 'd1', pageContent: 'pc', metadata: { externalId: 'uuid-1', score: 0.84 } },
+                { id: 'd2', pageContent: 'pc', metadata: { externalId: 'uuid-2' } },
+                { id: 'd3', pageContent: 'pc', metadata: { externalId: 'uuid-3', score: 'oops' } },
             ]);
             expect(result.recommendations[0].relevance).toBe(0.84);
             expect(result.recommendations[1].relevance).toBe(1.0);
@@ -1199,38 +1213,67 @@ describe('EquipmentSuggestService', () => {
                 {
                     id: 'd1',
                     pageContent: longContent,
-                    metadata: { orderNumber: '1' },
+                    metadata: { externalId: 'uuid-1' },
                 },
             ]);
             expect(result.recommendations[0].description).toHaveLength(280);
             expect(result.recommendations[0].description).toBe('А'.repeat(280));
         });
 
-        it('imageUrl: только если string, иначе undefined и поле опускается', async () => {
+        it('imageUrl: первый valid S3-key из metadata.imageUrls[] → presigned URL', async () => {
+            // metadata.imageUrls[0] — relative S3 path, mock storage.getPresignedDownloadUrl
+            // возвращает `https://test.minio/<key>?sig=mock` (см. setupService).
             const result = await suggestWithDocs([
                 {
                     id: 'd1',
                     pageContent: 'pc',
-                    metadata: { orderNumber: '1', imageUrl: 'https://cdn/img.jpg' },
+                    metadata: {
+                        externalId: 'uuid-1',
+                        imageUrls: ['catalogs/aquaphor/images/uuid-1/abc.png'],
+                    },
+                },
+            ]);
+            expect(result.recommendations[0].imageUrl).toBe(
+                'https://test.minio/catalogs/aquaphor/images/uuid-1/abc.png?sig=mock',
+            );
+        });
+
+        it('imageUrl=null если imageUrls пуст / отсутствует / invalid S3-key', async () => {
+            const result = await suggestWithDocs([
+                { id: 'd1', pageContent: 'pc', metadata: { externalId: 'uuid-1', imageUrls: [] } },
+                { id: 'd2', pageContent: 'pc', metadata: { externalId: 'uuid-2' } },
+                {
+                    id: 'd3',
+                    pageContent: 'pc',
+                    metadata: { externalId: 'uuid-3', imageUrls: ['../../etc/passwd'] }, // path-traversal blocked
+                },
+            ]);
+            expect(result.recommendations[0].imageUrl).toBeNull();
+            expect(result.recommendations[1].imageUrl).toBeNull();
+            expect(result.recommendations[2].imageUrl).toBeNull();
+        });
+
+        it('salePriceKopecks: number из metadata → response, otherwise null', async () => {
+            const result = await suggestWithDocs([
+                {
+                    id: 'd1',
+                    pageContent: 'pc',
+                    metadata: { externalId: 'uuid-1', salePriceKopecks: 1249000 },
                 },
                 {
                     id: 'd2',
                     pageContent: 'pc',
-                    metadata: { orderNumber: '2', imageUrl: 12345 },
+                    metadata: { externalId: 'uuid-2' },
                 },
                 {
                     id: 'd3',
                     pageContent: 'pc',
-                    metadata: { orderNumber: '3' },
+                    metadata: { externalId: 'uuid-3', salePriceKopecks: 'строка' },
                 },
             ]);
-            expect(result.recommendations[0].imageUrl).toBe('https://cdn/img.jpg');
-            // не-string и отсутствующий → поле просто отсутствует (см. mapDocToRecommendation
-            // спред-conditional).
-            expect(result.recommendations[1].imageUrl).toBeUndefined();
-            expect('imageUrl' in result.recommendations[1]).toBe(false);
-            expect(result.recommendations[2].imageUrl).toBeUndefined();
-            expect('imageUrl' in result.recommendations[2]).toBe(false);
+            expect(result.recommendations[0].salePriceKopecks).toBe(1249000);
+            expect(result.recommendations[1].salePriceKopecks).toBeNull();
+            expect(result.recommendations[2].salePriceKopecks).toBeNull();
         });
     });
 
@@ -1392,12 +1435,18 @@ describe('EquipmentSuggestService', () => {
                 get: jest.fn().mockResolvedValue(null),
                 set: jest.fn().mockResolvedValue('OK'),
             };
+            storage = {
+                getPresignedDownloadUrl: jest
+                    .fn()
+                    .mockImplementation((key: string) => Promise.resolve(`https://test.minio/${key}?sig=mock`)),
+            };
             const moduleRef: TestingModule = await Test.createTestingModule({
                 providers: [
                     EquipmentSuggestService,
                     { provide: PredictService, useValue: predict },
                     { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise },
                     { provide: EQUIPMENT_SUGGEST_REDIS_TOKEN, useValue: redis },
+                    { provide: StorageService, useValue: storage },
                 ],
             }).compile();
             service = moduleRef.get(EquipmentSuggestService);
@@ -1491,7 +1540,7 @@ describe('EquipmentSuggestService', () => {
 
             await service.suggest(buildDto({ lat: 55.7558, lon: 37.6173, topK: 5 }));
 
-            expect(redis.get).toHaveBeenCalledWith('equipment-suggest:v4:55.756:37.617:5');
+            expect(redis.get).toHaveBeenCalledWith('equipment-suggest:v5:55.756:37.617:5');
         });
     });
 
@@ -1508,7 +1557,7 @@ describe('EquipmentSuggestService', () => {
                             {
                                 id: 'd1',
                                 pageContent: 'pc',
-                                metadata: { orderNumber: '1', name: 'X' },
+                                metadata: { externalId: 'uuid-1', name: 'X' },
                             },
                         ],
                         timeTaken: 100,

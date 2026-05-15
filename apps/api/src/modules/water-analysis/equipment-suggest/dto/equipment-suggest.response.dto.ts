@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import { IntervalDto } from '../../_shared';
 
 /**
@@ -40,10 +40,22 @@ export class WaterProblemDto {
 }
 
 export class EquipmentRecommendationDto {
-    @ApiProperty({ description: 'ID товара в каталоге (orderNumber).', example: 'OZ-15' })
-    sku!: string;
+    @ApiProperty({
+        description:
+            'MoySklad UUID товара — primary identifier для deep-link на страницу товара ' +
+            'и для добавления в корзину. Фронт сам подтягивает изображения, цену, slug и full description ' +
+            'через `/catalog/products/{externalId}` (или эквивалент). ' +
+            'Если в Flowise document `metadata.externalId` отсутствует — рекомендация фильтруется и не попадает в response.',
+        example: 'd2b41420-cc04-11e5-7a69-93a700294993',
+    })
+    externalId!: string;
 
-    @ApiProperty({ description: 'Название товара.', example: 'Обезжелезиватель Аквафор ОС-15' })
+    @ApiProperty({
+        description:
+            'Название товара для immediate render в popup (избегаем flash placeholder при первом рендере). ' +
+            'Фронт может затем перезаписать каноническим именем из product-detail endpoint, если оно отличается.',
+        example: 'Аквафор В150 Фаворит ЭКО',
+    })
     name!: string;
 
     @ApiProperty({ description: 'Vector-search relevance score (0-1).', example: 0.84 })
@@ -71,10 +83,24 @@ export class EquipmentRecommendationDto {
     })
     reason!: string;
 
-    @ApiPropertyOptional({
-        description: 'URL изображения (presigned S3) — если есть в metadata. UI рендерит preview.',
+    @ApiProperty({
+        description:
+            'Presigned URL первого изображения товара (TTL 1ч). Берётся из `metadata.imageUrls[0]` ' +
+            'через тот же MinIO/S3 presign-pipeline что в catalog/search. null если у товара нет картинок ' +
+            'в catalog feeder.',
+        example: 'http://localhost:9010/slovo-datasets/catalogs/aquaphor/images/d2b41420-cc04-11e5-7a69-93a700294993/e6349c4e.png?X-Amz-...',
+        nullable: true,
     })
-    imageUrl?: string;
+    imageUrl!: string | null;
+
+    @ApiProperty({
+        description:
+            'Цена в копейках для отображения «12 490 ₽» рядом с CTA «В корзину». null если отсутствует ' +
+            'в metadata feeder\'а (вызывает fallback UI «Цена по запросу»).',
+        example: 1249000,
+        nullable: true,
+    })
+    salePriceKopecks!: number | null;
 }
 
 export class EquipmentSuggestResponseDto {

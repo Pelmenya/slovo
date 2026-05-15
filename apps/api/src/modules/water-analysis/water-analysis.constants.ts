@@ -35,8 +35,16 @@ export const FLOWISE_CLIENT_TOKEN = Symbol('WATER_ANALYSIS_FLOWISE_CLIENT');
 //        Поддерживает фронт-фичу «×8.3 ПДК» в PointPopup / CellPopup (claude design
 //        review 2026-05-14, P0.2). Bump чтобы клиент не получил stale response без
 //        новых полей и не ломался на undefined.
+//   v5 — equipment-suggest enrichment (2026-05-15): EquipmentRecommendationDto shape
+//        изменён — `sku` удалён (всегда был 'unknown' т.к. orderNumber отсутствует
+//        в Flowise metadata), добавлены `externalId` (MoySklad UUID, REQUIRED — без
+//        него рекомендация отбрасывается), `imageUrl: string | null` (presigned MinIO
+//        первой картинки через тот же pipeline что catalog/search), `salePriceKopecks:
+//        number | null`. Фронт получает всё для popup-карточки + кнопки «В корзину» одним
+//        запросом. Bump чтобы cached responses до 10мин не отдавали старый shape без
+//        externalId/imageUrl/price.
 // =============================================================================
-export const WATER_ANALYSIS_CACHE_VERSION = 'v4';
+export const WATER_ANALYSIS_CACHE_VERSION = 'v5';
 
 // =============================================================================
 // Top-K границы. Default=10 — баланс coverage vs latency. Max=50 — защита от

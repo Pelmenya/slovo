@@ -493,7 +493,7 @@ describe('HeatmapService', () => {
                 grid: 0.05,
             }));
             expect(redis.get).toHaveBeenCalledWith(
-                'heatmap:v4:iron_total:36.5000:54.8000:39.0000:56.5000:0.0500',
+                'heatmap:v5:iron_total:36.5000:54.8000:39.0000:56.5000:0.0500',
             );
         });
 

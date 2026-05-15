@@ -130,6 +130,7 @@ import { Module, type Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseModule } from '@slovo/database';
 import { FlowiseClient, type TFlowiseClientConfig } from '@slovo/flowise-client';
+import { StorageModule } from '@slovo/storage';
 import type { TAppEnv } from '@slovo/common';
 import {
     AQUIFER_STATS_REDIS_TOKEN,
@@ -203,7 +204,16 @@ const redisProviders: Provider[] = [
 ].map(createWaterAnalysisRedisProvider);
 
 @Module({
-    imports: [DatabaseModule],
+    imports: [
+        DatabaseModule,
+        // EquipmentSuggestService резолвит presigned URL первого изображения товара
+        // из catalog S3 bucket. `forFeature` даёт scope-isolated StorageService
+        // bound к `S3_CATALOG_BUCKET` — параллельный instance с CatalogModule.
+        // Дублирование интенциональное — избегаем cyclic dep WaterAnalysisModule ⟷
+        // CatalogModule. Если позже понадобится shared image-resolver — extract в
+        // CatalogSharedModule.
+        StorageModule.forFeature({ bucketEnvKey: 'S3_CATALOG_BUCKET' }),
+    ],
     controllers: [
         SimilarSearchController,
         HeatmapController,

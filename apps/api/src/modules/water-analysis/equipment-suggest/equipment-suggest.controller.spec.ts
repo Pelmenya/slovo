@@ -55,12 +55,14 @@ describe('EquipmentSuggestController', () => {
             ],
             recommendations: [
                 {
-                    sku: 'OZ-15',
+                    externalId: 'd2b41420-cc04-11e5-7a69-93a700294993',
                     name: 'Аквафор ОС-15',
                     relevance: 0.84,
                     description: 'Колонна для удаления железа.',
                     matchedProblem: 'iron_total',
                     reason: 'Решает явное превышение «Железо (Fe, суммарно)»',
+                    imageUrl: 'https://example.minio/catalogs/aquaphor/images/uuid/x.png?sig=mock',
+                    salePriceKopecks: 1249000,
                 },
             ],
             searchQuery: 'Подобрать оборудование для воды с проблемами: ...',
