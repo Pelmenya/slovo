@@ -154,7 +154,9 @@ export class ImageSearchService {
         }
 
         const descriptionRu =
-            typeof raw.description_ru === 'string' ? sanitizeFreeFormText(raw.description_ru) : '';
+            typeof raw.description_ru === 'string'
+                ? maskPii(sanitizeFreeFormText(raw.description_ru))
+                : '';
         if (raw.is_relevant && descriptionRu.length === 0) {
             throw new BadGatewayException(
                 'Vision is_relevant=true but description_ru empty — search невозможен',
@@ -163,7 +165,8 @@ export class ImageSearchService {
 
         return {
             isRelevant: raw.is_relevant,
-            category: typeof raw.category === 'string' ? sanitizeFreeFormText(raw.category) : null,
+            category:
+                typeof raw.category === 'string' ? maskPii(sanitizeFreeFormText(raw.category)) : null,
             brand: typeof raw.brand === 'string' ? sanitizeFreeFormText(raw.brand) : null,
             modelHint:
                 typeof raw.model_hint === 'string' ? sanitizeFreeFormText(raw.model_hint) : null,
@@ -201,4 +204,55 @@ function sanitizeFreeFormText(value: string): string {
         result += ch;
     }
     return result.replace(/<[^>]*>/g, '').slice(0, SANITIZE_FREE_FORM_MAX_LENGTH);
+}
+
+// =============================================================================
+// maskPii — заглушает паттерны личных данных в free-form Vision output.
+//
+// Vision-prompt просит описывать «оборудование», но на нерелевантных фото
+// (паспорт на столе рядом с фильтром, договор, визитка) Claude может
+// процитировать видимый текст документа. Без маскировки PII попадает в:
+// - HTTP-response клиента (frontend может логировать в browser analytics)
+// - Redis vision-cache (TTL 24ч)
+// - Langfuse traces (LLM observability)
+//
+// Покрываем три категории:
+// 1. Email — RFC-light pattern, достаточно для consumer-leaked addresses
+// 2. Phone — российские форматы (+7 / 8 prefix), 10-11 digit, разделители
+//    через пробел/тире/скобки
+// 3. Паспорт — 4 digit серия + 6 digit номер с пробелом / без
+//
+// Pattern-tradeoff:
+// - Aggressive masking (any digit sequence ≥6) → false positive на артикулы
+//   моделей фильтров типа "DWM-101S 5L" → жертвуем precision
+// - Targeted patterns как ниже → low false-positive rate, но пропускают
+//   creative obfuscation типа «номер сто двадцать три» — приемлемо для
+//   Phase 1 (LLM-generated text редко обфусцирует)
+//
+// Vision-prompt update («не цитируй текст документов, номера, ФИО, email,
+// телефоны») делается отдельным handoff в Flowise через MCP — этот
+// regex-mask служит defense-in-depth даже если prompt update ещё не задеплоен.
+// =============================================================================
+
+const PII_PATTERNS: ReadonlyArray<RegExp> = [
+    // Email: local@domain.tld — минимально-разрешающий чтобы не лопать
+    // «обратный осмос Аквафор» с точкой в названии
+    /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+    // Phone RU: +7 (495) 123-45-67 / 8-800-555-35-35 / +79991234567 — `*`
+    // (не `?`) на separators допускает multi-char последовательности типа
+    // «) » или «- ».
+    /(?:\+?7|8)[\s()-]*\d{3}[\s()-]*\d{3}[\s()-]*\d{2}[\s()-]*\d{2}/g,
+    // Паспорт РФ: серия 4 digit + номер 6 digit (слитно или через пробел).
+    // Между серией и номером допускается только пробел — текст-разделитель
+    // («4014 номер 123456») НЕ матчится; такая форма редка в Vision output,
+    // accepted false-negative для Phase 1.
+    /\b\d{4}\s?\d{6}\b/g,
+];
+
+export function maskPii(text: string): string {
+    let masked = text;
+    for (const pattern of PII_PATTERNS) {
+        masked = masked.replace(pattern, '[masked]');
+    }
+    return masked;
 }

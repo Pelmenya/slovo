@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
+export type TVisionConfidence = 'low' | 'mid' | 'high';
+
 // Один документ из top-K результата vector search. Shape совпадает с
 // предыдущим SearchTextDocResponseDto из PR7 — переиспользуем как базу
 // universal response (PR9 universal-search refactor).
@@ -37,11 +39,33 @@ export class SearchDocResponseDto {
         type: [String],
     })
     imageUrls!: string[];
+
+    @ApiProperty({
+        description:
+            'Relevance score 0..100 для UX «91% совпадение». Phase 1: rank-based ' +
+            '(top doc=100, scaled линейно вниз) — Flowise vectorstoreQuery использует ' +
+            'asRetriever() который не пропускает similaritySearchWithScore. Defensive ' +
+            'fallback: если в metadata появится numeric `score` (0..1) — используется ' +
+            'напрямую. Phase 2+: bypass Flowise через прямой pgvector query для точных ' +
+            'cosine-баллов.',
+        minimum: 0,
+        maximum: 100,
+        example: 91,
+    })
+    matchScore!: number;
 }
 
 // Vision-describer output. Возвращается в response **только если** клиент
 // прислал `imageBase64` — для UX прозрачности (фронт показывает «AI распознал
 // X» рядом с результатами).
+//
+// @deprecated since 2026-05-15 (smart-search Phase 1). Используй `vision`
+// (compact `VisionDto`) — там category/description/confidence уже bucketed
+// в фронт-ready shape. Этот legacy сохранён для B2B-сценариев требующих
+// brand/modelHint/isRelevant; после миграции consumers — удалить.
+//
+// Response-only DTO: class-validator декораторы не требуются (валидация
+// запускается только на request DTO через ValidationPipe).
 export class VisionOutputDto {
     @ApiProperty({
         description: 'true — на фото оборудование/товар. false — кот/документ/прочее',
@@ -87,9 +111,51 @@ export class VisionOutputDto {
     confidence!: 'high' | 'medium' | 'low';
 }
 
-// Universal search response. `visionOutput` опционален — присутствует только
-// когда клиент прислал image. Text-only search возвращает count/docs/timeTakenMs
-// без visionOutput.
+// Compact Vision-describer output для smart-search UX (Phase 1).
+// В отличие от полного `VisionOutputDto` (isRelevant/brand/modelHint/...) —
+// здесь только три поля которые рисует фронт: что распознали (category) +
+// описание для подписи + bucket уверенности для UI-fallback'а («low →
+// "Не уверен что распознал, опишите словами"»).
+//
+// `confidence: 'low' | 'mid' | 'high'` — bucketed из numeric/discrete
+// Vision output через `toVisionConfidence()`:
+// - numeric input: `>= 0.8 → high`, `>= 0.5 → mid`, else `low`
+// - discrete input: `high → high`, `medium → mid`, `low → low`
+// Текущий Vision-describer возвращает discrete (см. image.service.ts);
+// numeric ветка — forward-compat для Phase 1.5 где можно расширить prompt.
+//
+// Response-only DTO: class-validator декораторы не требуются (валидация
+// запускается только на request DTO через ValidationPipe).
+export class VisionDto {
+    @ApiProperty({
+        description: 'Категория товара распознанная Vision (free-form, не enum)',
+        example: 'обратный осмос',
+        nullable: true,
+        type: String,
+    })
+    category!: string | null;
+
+    @ApiProperty({
+        description: 'Натуральное описание распознанного — рисуется в шапке результатов',
+        example: 'Компактная система обратного осмоса под мойку, белый корпус, 4 колбы',
+    })
+    description!: string;
+
+    @ApiProperty({
+        description:
+            'Bucket уверенности Vision. UI: low → подсказка «уточните словами», ' +
+            'mid → результаты без warning, high → confident badge «AI распознал».',
+        enum: ['low', 'mid', 'high'],
+        example: 'high',
+    })
+    confidence!: TVisionConfidence;
+}
+
+// Universal search response. `visionOutput` (legacy полный shape) опционален.
+// `vision` (Phase 1 compact shape) — null когда image не передан, present
+// иначе. Дублирование осознанное: `visionOutput` хранит brand/modelHint/
+// isRelevant — потенциально полезное в B2B-сценариях; `vision` — UX shape
+// для smart-search фронта. См. `docs/features/smart-search-integration.md`.
 export class SearchResponseDto {
     @ApiProperty({ description: 'Сколько документов вернулось (≤ topK)', example: 10 })
     count!: number;
@@ -105,9 +171,20 @@ export class SearchResponseDto {
 
     @ApiPropertyOptional({
         description:
-            'Vision-describer output — присутствует только когда был передан imageBase64. ' +
-            'Для UX прозрачности: фронт показывает «AI распознал X» в шапке результатов.',
+            '⚠️ Deprecated since 2026-05-15: используй compact поле `vision` ниже. ' +
+            'Полный Vision-describer output — присутствует только когда был передан imageBase64. ' +
+            'Сохранён для legacy B2B-сценариев требующих brand/modelHint/isRelevant.',
         type: VisionOutputDto,
+        deprecated: true,
     })
     visionOutput?: VisionOutputDto;
+
+    @ApiProperty({
+        description:
+            'Compact Vision output для smart-search UX. `null` если image не передан. ' +
+            'Phase 1 shape: `{ category, description, confidence: low|mid|high }`.',
+        type: VisionDto,
+        nullable: true,
+    })
+    vision!: VisionDto | null;
 }

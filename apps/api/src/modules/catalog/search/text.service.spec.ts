@@ -13,7 +13,7 @@ import {
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
-import { TextSearchService } from './text.service';
+import { TextSearchService, computeMatchScore } from './text.service';
 
 type TFlowiseClientMock = { request: jest.Mock };
 type TRedisClientMock = {
@@ -114,6 +114,13 @@ describe('TextSearchService', () => {
                 externalId: 'moysklad-uuid-1',
                 externalType: 'product',
             });
+            // Phase 1 smart-search: matchScore присутствует в каждом doc
+            expect(result.docs[0].matchScore).toBe(95);
+            // TextSearchService возвращает TTextSearchResult — без vision/
+            // visionOutput полей (layering через типы; CatalogSearchService
+            // композирует финальный SearchResponseDto).
+            expect(result).not.toHaveProperty('vision');
+            expect(result).not.toHaveProperty('visionOutput');
         });
 
         it('передаёт storeId, query, default topK во Flowise', async () => {
@@ -599,6 +606,64 @@ describe('TextSearchService', () => {
         });
     });
 
+    describe('matchScore — rank-based scaling и metadata.score fallback', () => {
+        it('5 docs → rank 0=95, rank 1=82, ..., rank 4=45 (линейная шкала)', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [0, 1, 2, 3, 4].map((n) => ({
+                    id: `c${n}`,
+                    pageContent: `doc-${n}`,
+                    metadata: { externalId: `m${n}` },
+                    chunkNo: n,
+                })),
+            });
+            const result = await service.search('тест');
+
+            const scores = result.docs.map((d) => d.matchScore);
+            expect(scores[0]).toBe(95);
+            // middle rank — guard от рефакторинга вида `forEach` + push с
+            // забытым rank (testing-specialist finding 2026-05-16)
+            expect(scores[2]).toBe(70);
+            expect(scores[scores.length - 1]).toBe(45);
+            // монотонно убывает
+            for (let i = 1; i < scores.length; i++) {
+                expect(scores[i]).toBeLessThan(scores[i - 1]);
+            }
+        });
+
+        it('single doc → matchScore=95 (без деления на ноль)', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [SAMPLE_FLOWISE_DOC],
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockResolvedValue('https://signed/x');
+
+            const result = await service.search('тест');
+            expect(result.docs[0].matchScore).toBe(95);
+        });
+
+        it('metadata.score=0.87 → matchScore=87 (defensive fallback на numeric)', async () => {
+            flowise.request.mockResolvedValueOnce({
+                timeTaken: 100,
+                docs: [
+                    {
+                        ...SAMPLE_FLOWISE_DOC,
+                        metadata: {
+                            ...SAMPLE_FLOWISE_DOC.metadata,
+                            score: 0.87,
+                        },
+                    },
+                ],
+            });
+            redis.get.mockResolvedValue(null);
+            storage.getPresignedDownloadUrl.mockResolvedValue('https://signed/x');
+
+            const result = await service.search('тест');
+            expect(result.docs[0].matchScore).toBe(87);
+        });
+    });
+
     describe('onModuleDestroy — graceful shutdown', () => {
         it('вызывает redis.quit()', async () => {
             await service.onModuleDestroy();
@@ -612,6 +677,78 @@ describe('TextSearchService', () => {
             await expect(service.onModuleDestroy()).resolves.toBeUndefined();
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('redis.quit'));
             warnSpy.mockRestore();
+        });
+    });
+});
+
+describe('computeMatchScore — pure helper (rank + metadata.score)', () => {
+    describe('metadata.score numeric path', () => {
+        it.each([
+            [0.91, 91],
+            [0.5, 50],
+            [1, 100],
+            [0, 0],
+        ])('score=%s → %s', (score, expected) => {
+            expect(computeMatchScore({ score }, 0, 5)).toBe(expected);
+        });
+
+        it('score > 1 → clamped to 100', () => {
+            expect(computeMatchScore({ score: 1.5 }, 0, 5)).toBe(100);
+        });
+
+        it('score < 0 → clamped to 0', () => {
+            expect(computeMatchScore({ score: -0.3 }, 0, 5)).toBe(0);
+        });
+
+        it('score = NaN → fallback на rank-based', () => {
+            expect(computeMatchScore({ score: NaN }, 0, 5)).toBe(95);
+        });
+
+        it('score = Infinity → fallback на rank-based', () => {
+            expect(computeMatchScore({ score: Infinity }, 0, 5)).toBe(95);
+        });
+
+        it('score = string "0.5" → fallback (типобезопасная проверка)', () => {
+            expect(computeMatchScore({ score: '0.5' }, 0, 5)).toBe(95);
+        });
+
+        it('score = null → fallback на rank-based (Flowise pass-through edge)', () => {
+            expect(computeMatchScore({ score: null }, 0, 5)).toBe(95);
+        });
+
+        it('score = undefined → fallback на rank-based', () => {
+            expect(computeMatchScore({ score: undefined }, 0, 5)).toBe(95);
+        });
+    });
+
+    describe('rank-based fallback (metadata.score отсутствует)', () => {
+        it('single doc (totalDocs=1) → 95 (защита от div-by-zero)', () => {
+            expect(computeMatchScore({}, 0, 1)).toBe(95);
+        });
+
+        it('2 docs: 0→95, 1→45', () => {
+            expect(computeMatchScore({}, 0, 2)).toBe(95);
+            expect(computeMatchScore({}, 1, 2)).toBe(45);
+        });
+
+        it('11 docs (CATALOG_DEFAULT_TOP_K+1) → последний=45, первый=95', () => {
+            expect(computeMatchScore({}, 0, 11)).toBe(95);
+            expect(computeMatchScore({}, 10, 11)).toBe(45);
+        });
+
+        it('middle rank → промежуточный score', () => {
+            // 5 docs, rank 2 = середина: 95 - (2/4)*50 = 95 - 25 = 70
+            expect(computeMatchScore({}, 2, 5)).toBe(70);
+        });
+
+        it('rank > totalDocs-1 → clamped к bottom (defense-in-depth от off-by-one)', () => {
+            // Без `fraction` clamp дал бы negative score: 95 - (5/2)*50 = -30.
+            // С clamp'ом fraction=1 → score=45.
+            expect(computeMatchScore({}, 5, 3)).toBe(45);
+        });
+
+        it('negative rank → clamped к top (защита от broken caller)', () => {
+            expect(computeMatchScore({}, -1, 5)).toBe(95);
         });
     });
 });

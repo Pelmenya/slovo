@@ -16,8 +16,10 @@ const SAMPLE_RESPONSE: SearchResponseDto = {
             pageContent: 'Аквафор',
             metadata: { externalId: 'mu-1' },
             imageUrls: ['https://signed/url'],
+            matchScore: 91,
         },
     ],
+    vision: null,
 };
 
 describe('CatalogSearchController', () => {

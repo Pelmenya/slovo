@@ -17,7 +17,18 @@ import {
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
-import { SearchDocResponseDto, SearchResponseDto } from './dto/search.response.dto';
+import { SearchDocResponseDto } from './dto/search.response.dto';
+
+// Что возвращает TextSearchService — три поля из `SearchResponseDto` БЕЗ
+// vision/visionOutput. Сервис не знает про Vision (не оркестрирует Image
+// pipeline), поэтому возвращать `vision: null` было бы ложным контрактом —
+// слой выше (`CatalogSearchService`) композирует финальный `SearchResponseDto`.
+// Invariant выражен системой типов, не комментарием в коде.
+export type TTextSearchResult = {
+    count: number;
+    docs: SearchDocResponseDto[];
+    timeTakenMs: number;
+};
 
 // =============================================================================
 // TextSearchService — vector search по каталогу через Flowise Document Store
@@ -101,7 +112,7 @@ export class TextSearchService implements OnModuleDestroy {
         }
     }
 
-    async search(query: string, topK?: number): Promise<SearchResponseDto> {
+    async search(query: string, topK?: number): Promise<TTextSearchResult> {
         const effectiveTopK = topK ?? CATALOG_DEFAULT_TOP_K;
         const storeId = await this.resolveStoreId();
 
@@ -127,7 +138,8 @@ export class TextSearchService implements OnModuleDestroy {
         const urls = await Promise.all(keysArray.map((key) => this.resolvePresignedUrl(key)));
         const urlMap = new Map(keysArray.map((key, idx) => [key, urls[idx]] as const));
 
-        const docs = flowiseResponse.docs.map((doc): SearchDocResponseDto => {
+        const totalDocs = flowiseResponse.docs.length;
+        const docs = flowiseResponse.docs.map((doc, rank): SearchDocResponseDto => {
             const keys = extractImageKeys(doc.metadata);
             return {
                 id: doc.id,
@@ -136,6 +148,7 @@ export class TextSearchService implements OnModuleDestroy {
                 imageUrls: keys
                     .map((k) => urlMap.get(k))
                     .filter((u): u is string => typeof u === 'string'),
+                matchScore: computeMatchScore(doc.metadata, rank, totalDocs),
             };
         });
 
@@ -259,5 +272,56 @@ function extractImageKeys(metadata: Record<string, unknown>): string[] {
     }
     return raw.filter(
         (v): v is string => typeof v === 'string' && isValidS3Key(v),
+    );
+}
+
+// =============================================================================
+// computeMatchScore — relevance 0..100 для UX «91% совпадение».
+//
+// Источник #1: `metadata.score` (numeric 0..1) — точная cosine-similarity,
+// если когда-нибудь будет exposed.
+//
+// TODO(phase-2-pgvector-bypass): сейчас Flowise `queryVectorStore` использует
+// `asRetriever()` (см. `slovo-flowise:/usr/local/lib/.../services/documentstore/index.js:1170`)
+// который не пропускает score — `metadata.score` ветка фактически dead до тех
+// пор пока не реализуем direct pgvector query (`similaritySearchWithScore`
+// langchain API или прямой SQL `<=>` оператор). При активации этой ветки —
+// обязательно проверить тип distance в catalog vectorstore: cosine ∈ [0,1]
+// (current scope), L2 ∈ [0,∞] (потребует другую нормализацию). Без проверки
+// L2-output даст score=0 для близких векторов.
+//
+// Источник #2 (текущий): rank-based — top-doc=95, последний ≈45, линейная
+// шкала. Дробить на нули и сотки нельзя — UI «100% совпадение» создаёт
+// ложное впечатление точного match'а. 95→45 диапазон читается как
+// «релевантный → менее релевантный», ранжирует через Flowise topK.
+//
+// При single-doc response (totalDocs=1) → 95, не делим на ноль.
+// `fraction` дополнительно clamp'ится в [0,1] — defensive против off-by-one
+// в caller'е (rank > totalDocs-1 теоретически даст отрицательный score без
+// guard'а).
+// =============================================================================
+
+// Module-level scale constants — UI читает 95 как «top match» (не 100 чтобы
+// не врать про «точное совпадение»), 45 как «релевантный но дальний». При
+// необходимости sliding-shrink диапазона — менять здесь, не в callers.
+const MATCH_SCORE_RANK_TOP = 95;
+const MATCH_SCORE_RANK_BOTTOM = 45;
+
+export function computeMatchScore(
+    metadata: Record<string, unknown>,
+    rank: number,
+    totalDocs: number,
+): number {
+    const rawScore = metadata.score;
+    if (typeof rawScore === 'number' && Number.isFinite(rawScore)) {
+        const clamped = Math.min(1, Math.max(0, rawScore));
+        return Math.round(clamped * 100);
+    }
+    if (totalDocs <= 1) {
+        return MATCH_SCORE_RANK_TOP;
+    }
+    const fraction = Math.min(1, Math.max(0, rank / (totalDocs - 1)));
+    return Math.round(
+        MATCH_SCORE_RANK_TOP - fraction * (MATCH_SCORE_RANK_TOP - MATCH_SCORE_RANK_BOTTOM),
     );
 }

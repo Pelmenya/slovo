@@ -1,10 +1,10 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { BudgetService } from '../../budget';
-import type { SearchResponseDto, VisionOutputDto } from './dto/search.response.dto';
+import type { VisionOutputDto } from './dto/search.response.dto';
 import { ImageSearchService } from './image.service';
-import { CatalogSearchService } from './search.service';
-import { TextSearchService } from './text.service';
+import { CatalogSearchService, toVisionConfidence, toVisionDto } from './search.service';
+import { TextSearchService, type TTextSearchResult } from './text.service';
 import { VisionCacheService } from './vision-cache.service';
 
 type TImageSearchMock = { processVision: jest.Mock };
@@ -40,7 +40,9 @@ const SAMPLE_VISION_IRRELEVANT: VisionOutputDto = {
     confidence: 'high',
 };
 
-const SAMPLE_TEXT_RESULT: SearchResponseDto = {
+// TextSearchService возвращает TTextSearchResult — без vision/visionOutput
+// (layering через типы: оркестрация Vision — responsibility CatalogSearchService).
+const SAMPLE_TEXT_RESULT: TTextSearchResult = {
     count: 1,
     timeTakenMs: 312,
     docs: [
@@ -49,6 +51,7 @@ const SAMPLE_TEXT_RESULT: SearchResponseDto = {
             pageContent: 'Аквафор DWM-101S',
             metadata: { externalId: 'mu-1' },
             imageUrls: ['https://signed/img.jpg'],
+            matchScore: 91,
         },
     ],
 };
@@ -93,7 +96,7 @@ describe('CatalogSearchService', () => {
     });
 
     describe('text-only mode', () => {
-        it('query без images → search(query) без visionOutput', async () => {
+        it('query без images → search(query) без visionOutput и с vision=null', async () => {
             textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
 
             const result = await service.search({ query: 'фильтр для жёсткой воды' });
@@ -102,6 +105,8 @@ describe('CatalogSearchService', () => {
             expect(imageSearch.processVision).not.toHaveBeenCalled();
             expect(result.count).toBe(1);
             expect(result.visionOutput).toBeUndefined();
+            // Phase 1 smart-search: vision === null когда image не передан
+            expect(result.vision).toBeNull();
         });
 
         it('передаёт topK во text search', async () => {
@@ -149,7 +154,7 @@ describe('CatalogSearchService', () => {
             expect(textSearch.search).not.toHaveBeenCalled();
         });
 
-        it('exception payload содержит visionOutput для UX hint', async () => {
+        it('exception payload содержит visionOutput для UX hint (descriptionRu масштабирован для PII)', async () => {
             imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_IRRELEVANT);
 
             try {
@@ -158,7 +163,13 @@ describe('CatalogSearchService', () => {
             } catch (err) {
                 const response = (err as BadRequestException).getResponse() as Record<string, unknown>;
                 expect(response.message).toContain('not relevant');
-                expect(response.visionOutput).toMatchObject({ isRelevant: false });
+                const payload = response.visionOutput as Record<string, unknown>;
+                expect(payload).toMatchObject({ isRelevant: false });
+                // PII defense: descriptionRu стрипается на irrelevant пути
+                // (фронт показывает «не распознал» через category)
+                expect(payload.descriptionRu).toBe('');
+                // Category остаётся — UX-hint «AI подумал что это кот»
+                expect(payload.category).toBe('прочее');
             }
         });
     });
@@ -196,6 +207,12 @@ describe('CatalogSearchService', () => {
                 7,
             );
             expect(result.visionOutput).toEqual(SAMPLE_VISION_OK);
+            // Phase 1 smart-search: combined-mode тоже выдаёт compact vision shape
+            expect(result.vision).toEqual({
+                category: 'обратный осмос',
+                description: 'Фильтр обратного осмоса',
+                confidence: 'high',
+            });
         });
     });
 
@@ -418,6 +435,51 @@ describe('CatalogSearchService', () => {
             expect(hash1).not.toBe(hash2);
         });
 
+        it('Phase 1 smart-search: image-only → vision shape compact, confidence bucketed', async () => {
+            imageSearch.processVision.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            const result = await service.search({ images: [SAMPLE_IMAGE] });
+
+            expect(result.vision).toEqual({
+                category: 'обратный осмос',
+                description: 'Фильтр обратного осмоса',
+                confidence: 'high',
+            });
+            // Legacy полный shape тоже остался для backward-compat
+            expect(result.visionOutput).toEqual(SAMPLE_VISION_OK);
+        });
+
+        it('Phase 1 smart-search: confidence=medium из Vision → mid в compact shape', async () => {
+            imageSearch.processVision.mockResolvedValueOnce({
+                ...SAMPLE_VISION_OK,
+                confidence: 'medium',
+            });
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            const result = await service.search({ images: [SAMPLE_IMAGE] });
+
+            expect(result.vision?.confidence).toBe('mid');
+        });
+
+        it('Phase 1 smart-search: cache hit отдаёт тот же compact vision shape', async () => {
+            visionCache.get.mockResolvedValueOnce(SAMPLE_VISION_OK);
+            textSearch.search.mockResolvedValueOnce(SAMPLE_TEXT_RESULT);
+
+            const result = await service.search({ images: [SAMPLE_IMAGE] });
+
+            expect(result.vision).toEqual({
+                category: 'обратный осмос',
+                description: 'Фильтр обратного осмоса',
+                confidence: 'high',
+            });
+            // Cache short-circuit: Vision НЕ дёргается + budget operations skipped.
+            // Без этого assertion рефакторинг ломающий short-circuit прошёл бы
+            // тихо — vision shape строится из кешированных данных независимо.
+            expect(imageSearch.processVision).not.toHaveBeenCalled();
+            expect(budget.assertVisionBudget).not.toHaveBeenCalled();
+        });
+
         it('multi-image — hash детерминированный независимо от порядка', async () => {
             const imgA = { base64: 'YWFhYQ==', mime: 'image/jpeg' as const };
             const imgB = { base64: 'YmJiYg==', mime: 'image/jpeg' as const };
@@ -439,5 +501,95 @@ describe('CatalogSearchService', () => {
             // Hash должен быть одинаковым (sort внутри computeImageHash)
             expect(hashAB).toBe(hashBA);
         });
+    });
+});
+
+describe('toVisionConfidence — bucketing helper', () => {
+    describe('numeric input (forward-compat для Phase 1.5)', () => {
+        it.each([
+            [1, 'high'],
+            [0.95, 'high'],
+            [0.8, 'high'],
+            [0.79, 'mid'],
+            [0.65, 'mid'],
+            [0.5, 'mid'],
+            [0.49, 'low'],
+            [0.1, 'low'],
+            [0, 'low'],
+        ])('confidence=%s → %s', (raw, expected) => {
+            expect(toVisionConfidence(raw)).toBe(expected);
+        });
+
+        it('NaN → low (fallback на conciliatory)', () => {
+            expect(toVisionConfidence(NaN)).toBe('low');
+        });
+
+        it('Infinity → low (fallback — not finite)', () => {
+            expect(toVisionConfidence(Infinity)).toBe('low');
+        });
+    });
+
+    describe('discrete string input (текущий Vision prompt)', () => {
+        it('high → high', () => {
+            expect(toVisionConfidence('high')).toBe('high');
+        });
+
+        it('medium → mid', () => {
+            expect(toVisionConfidence('medium')).toBe('mid');
+        });
+
+        it('low → low', () => {
+            expect(toVisionConfidence('low')).toBe('low');
+        });
+    });
+
+    describe('invalid input — fallback на low', () => {
+        it.each([null, undefined, '', 'unknown', {}, []])(
+            'invalid input %p → low',
+            (raw) => {
+                expect(toVisionConfidence(raw)).toBe('low');
+            },
+        );
+    });
+});
+
+describe('toVisionDto — full → compact shape mapping', () => {
+    const FULL: VisionOutputDto = {
+        isRelevant: true,
+        category: 'обратный осмос',
+        brand: 'Аквафор',
+        modelHint: 'DWM-101S',
+        descriptionRu: 'Компактная система обратного осмоса',
+        confidence: 'high',
+    };
+
+    it('full output → compact { category, description, confidence }', () => {
+        expect(toVisionDto(FULL)).toEqual({
+            category: 'обратный осмос',
+            description: 'Компактная система обратного осмоса',
+            confidence: 'high',
+        });
+    });
+
+    it('category=null → проходит как null', () => {
+        const out = toVisionDto({ ...FULL, category: null });
+        expect(out.category).toBeNull();
+    });
+
+    it('confidence=medium → mid (bucketing)', () => {
+        const out = toVisionDto({ ...FULL, confidence: 'medium' });
+        expect(out.confidence).toBe('mid');
+    });
+
+    it('confidence=low → low (passes through)', () => {
+        const out = toVisionDto({ ...FULL, confidence: 'low' });
+        expect(out.confidence).toBe('low');
+    });
+
+    it('brand/modelHint/isRelevant НЕ переносятся в compact shape', () => {
+        const out = toVisionDto(FULL);
+        expect(out).not.toHaveProperty('brand');
+        expect(out).not.toHaveProperty('modelHint');
+        expect(out).not.toHaveProperty('isRelevant');
     });
 });

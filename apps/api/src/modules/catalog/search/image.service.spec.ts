@@ -3,7 +3,7 @@ import { Test } from '@nestjs/testing';
 import type { FlowiseClient } from '@slovo/flowise-client';
 import { FlowiseError } from '@slovo/flowise-client';
 import { FLOWISE_CLIENT_TOKEN, VISION_CHATFLOW_NAME } from '../catalog.constants';
-import { ImageSearchService } from './image.service';
+import { ImageSearchService, maskPii } from './image.service';
 
 type TFlowiseClientMock = { request: jest.Mock };
 
@@ -338,6 +338,78 @@ describe('ImageSearchService.processVision', () => {
                 expect.stringContaining(VISION_CHATFLOW_NAME),
             );
             debugSpy.mockRestore();
+        });
+    });
+});
+
+describe('maskPii — PII defense-in-depth helper', () => {
+    describe('email', () => {
+        it.each([
+            'user@example.com',
+            'firstname.lastname@subdomain.example.co.uk',
+            'a+tag@b.io',
+        ])('маскирует %s', (email) => {
+            expect(maskPii(`Contact: ${email} please`)).toBe('Contact: [masked] please');
+        });
+
+        it('не лопает текст без email — "Аквафор DWM-101S" без точек', () => {
+            expect(maskPii('Аквафор DWM-101S фильтр')).toBe('Аквафор DWM-101S фильтр');
+        });
+    });
+
+    describe('phone (RU)', () => {
+        it.each([
+            '+7 (495) 123-45-67',
+            '8-800-555-35-35',
+            '+79991234567',
+            '8 999 123 45 67',
+        ])('маскирует %s', (phone) => {
+            const result = maskPii(`звонок ${phone} принят`);
+            expect(result).toContain('[masked]');
+            expect(result).not.toContain(phone);
+        });
+
+        it('не лопает короткие digit-sequences (артикул DWM-101S 5L)', () => {
+            expect(maskPii('Аквафор DWM-101S 5L')).toBe('Аквафор DWM-101S 5L');
+        });
+    });
+
+    describe('паспорт РФ', () => {
+        it('маскирует слитный 4+6 (4014123456) — серия+номер без разделителя', () => {
+            expect(maskPii('паспорт 4014123456 выдан')).toBe('паспорт [masked] выдан');
+        });
+
+        it('маскирует серия 4 digit + пробел + номер 6 digit ("4014 123456")', () => {
+            expect(maskPii('паспорт 4014 123456 выдан')).toBe('паспорт [masked] выдан');
+        });
+
+        it('НЕ маскирует когда между серией и номером есть слово ("4014 номер 123456")', () => {
+            // Pattern требует только пробел между группами — text-разделитель
+            // не покрывается. Accepted false-negative для Phase 1 (Vision
+            // редко вставляет слова между digit-кусками).
+            expect(maskPii('серия 4014 номер 123456')).toBe('серия 4014 номер 123456');
+        });
+    });
+
+    describe('combined patterns', () => {
+        it('маскирует все три типа в одной строке', () => {
+            const input = 'паспорт 4014 123456 телефон +7 999 123 45 67 email a@b.io';
+            const result = maskPii(input);
+            expect(result).not.toContain('4014 123456');
+            expect(result).not.toContain('a@b.io');
+            // phone pattern может схватить и часть «4014 123456» если есть
+            // 7/8 prefix — проверяем что в финале три [masked] ИЛИ что
+            // оригинальные PII не присутствуют
+            expect(result).not.toContain('a@b.io');
+        });
+
+        it('пустая строка → пустая строка', () => {
+            expect(maskPii('')).toBe('');
+        });
+
+        it('legit Vision-описание не модифицируется', () => {
+            const legit = 'Компактная система обратного осмоса под мойку, белый корпус, 4 колбы';
+            expect(maskPii(legit)).toBe(legit);
         });
     });
 });

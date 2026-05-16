@@ -6,6 +6,8 @@ import {
 import { SearchRequestDto } from './dto/search.request.dto';
 import {
     SearchResponseDto,
+    type TVisionConfidence,
+    type VisionDto,
     type VisionOutputDto,
 } from './dto/search.response.dto';
 import { ImageSearchService } from './image.service';
@@ -82,9 +84,16 @@ export class CatalogSearchService {
             }
 
             if (!visionOutput.isRelevant) {
+                // PII defense-in-depth: на нерелевантном фото (паспорт/договор
+                // рядом с фильтром) `descriptionRu` может содержать видимый
+                // текст документа. Frontend показывает «AI не распознал X»
+                // используя `category` — full description в payload не нужен.
+                // Mask описание до возврата клиенту; cache по-прежнему хранит
+                // masked-after-maskPii версию, но дополнительный strip для
+                // case когда masking regex не покрыл всё (defensive).
                 throw new BadRequestException({
                     message: 'Image not relevant — Vision не распознал оборудование на фото',
-                    visionOutput,
+                    visionOutput: { ...visionOutput, descriptionRu: '' },
                 });
             }
         }
@@ -103,8 +112,60 @@ export class CatalogSearchService {
             docs: textResults.docs,
             timeTakenMs: textResults.timeTakenMs,
             visionOutput,
+            vision: visionOutput ? toVisionDto(visionOutput) : null,
         };
     }
+}
+
+// =============================================================================
+// toVisionConfidence — bucket в `low | mid | high` из numeric (forward-compat)
+// или discrete (текущий Vision-describer prompt v1).
+//
+// Numeric thresholds (Phase 1 contract):
+//   >= 0.8  → high
+//   >= 0.5  → mid
+//   else    → low
+//
+// Discrete mapping (текущий prompt; case-insensitive — 'High'/'MEDIUM'
+// нормализуются перед сравнением, чтобы дрейф капитализации в prompt'е
+// не приводил к silent fallback на 'low'):
+//   high   → high
+//   medium → mid
+//   low    → low
+//
+// При невалидном input — fallback на 'low' (conciliatory: лучше показать
+// «не уверен» UX-hint чем ошибочно выглядеть уверенно).
+//
+// Подпись `raw: unknown` — public helper принимает что угодно (numeric из
+// будущего prompt, discrete из текущего, мусор из broken upstream). Литералы
+// в union ('high' | 'medium' | 'low' | number) поглощаются `unknown` по
+// TS-семантике absorption, поэтому ложного type-safety не давали.
+// =============================================================================
+
+export function toVisionConfidence(raw: unknown): TVisionConfidence {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+        if (raw >= 0.8) return 'high';
+        if (raw >= 0.5) return 'mid';
+        return 'low';
+    }
+    if (typeof raw === 'string') {
+        const normalized = raw.toLowerCase();
+        if (normalized === 'high') return 'high';
+        if (normalized === 'medium') return 'mid';
+        if (normalized === 'low') return 'low';
+    }
+    return 'low';
+}
+
+// Map полный VisionOutputDto → compact VisionDto для smart-search UX.
+// `category` — passes through (nullable). `description` ← descriptionRu.
+// `confidence` ← bucketed из VisionOutputDto.confidence ('high'|'medium'|'low').
+export function toVisionDto(output: VisionOutputDto): VisionDto {
+    return {
+        category: output.category,
+        description: output.descriptionRu,
+        confidence: toVisionConfidence(output.confidence),
+    };
 }
 
 // Combine user text + Vision-extracted description.

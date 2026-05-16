@@ -75,8 +75,9 @@
    - `GET /aquifer-stats` (USP-4 deep-dive) — стратифицированная chemistry per layer («бури глубже = чище вода»).
 
    **PII strategy** (memory `feedback_water_heatmap_pii_strategy`): минимальный grid 0.02° для aggregates, roundCoord 0.005° для individual точек, k-anonymity через grid вместо K_MIN. **Interval-first философия** (memory `feedback_interval_first_predictions`): 4-level severity для всех predict-endpoints. Полный план: `docs/features/prostor-water-pivot.md`. План water-pipeline: `docs/features/water-analysis.md`. Executive summary: `docs/management/water-analysis-executive-summary.md`. Docling vs Vision compare: `docs/experiments/water-analysis/2026-05-12-compare-full.md`. Frontend production (Phase 4.5) — следующий шаг, пилится на real backend.
-4. ⏳ **notes-rag**: Q&A endpoint поверх knowledge-base — реактивация когда появится потребитель Phase 2 video/PDF-источников.
-5. ⏳ **multi-tenant**: пользователи, JWT, биллинг (шаг к SaaS). Параллельно с domain-фичами, для каждой закладываем `userId` в модели с нуля (`KnowledgeSource` уже имеет `userId String? @db.Uuid`).
+4. 🟢 **smart-search-integration** (2026-05-15, план готов, реализация **не начата**): multi-modal smart search (текст + фото + голос) в верх `/water` page. One-tap entry-point поверх карты, заменяет 3 фрагментированных entry-point (адрес-based, ручной каталог-поиск, FTUX hint). Brand: «капля + sparkle» AI-маркер (OKLCH gradient 232°→250°→270°). Foundation: `POST /catalog/search` Phase 1+2 закрыты, нужно расширение response shape: `vision: { category, description, confidence }` + `matchScore` per recommendation. Frontend: новый `features/smart-search/` (SmartSearchInput sticky + Fab + Overlay + WaterDropAI). См. `docs/features/smart-search-integration.md` (Phase 1 baseline / Phase 1.5 premium / Phase 2 voice+follow-up+desktop), дизайн-prototype `prostor-app/PROSTOR Smart Search.html` от claude.ai design.
+5. ⏳ **notes-rag**: Q&A endpoint поверх knowledge-base — реактивация когда появится потребитель Phase 2 video/PDF-источников.
+6. ⏳ **multi-tenant**: пользователи, JWT, биллинг (шаг к SaaS). Параллельно с domain-фичами, для каждой закладываем `userId` в модели с нуля (`KnowledgeSource` уже имеет `userId String? @db.Uuid`).
 
 ---
 

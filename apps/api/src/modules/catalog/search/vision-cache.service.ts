@@ -24,12 +24,19 @@ import type { VisionOutputDto } from './dto/search.response.dto';
 // фактически не тратим деньги, поэтому budget-cap не применяется.
 // =============================================================================
 
-// `v1` версия — bump при breaking changes в `VisionOutputDto` (новое поле,
-// переименование). Старый закешированный JSON станет недоступен (новый
-// prefix) → cache miss → свежий Vision call с правильным shape'ом.
-// Без версии при изменении DTO `JSON.parse as VisionOutputDto` отдал бы
-// dirty объект до естественного TTL expire (24h).
-const VISION_CACHE_KEY_PREFIX = 'slovo:vision:cache:v1';
+// `vN` версия — bump при breaking changes в `VisionOutputDto` или при
+// расширении response shape которое зависит от Vision-derived полей.
+// Старый закешированный JSON станет недоступен (новый prefix) → cache miss
+// → свежий Vision call с правильным shape'ом. Без версии при изменении
+// DTO `JSON.parse as VisionOutputDto` отдал бы dirty объект до естественного
+// TTL expire (24h).
+//
+// v1 → v2 (smart-search Phase 1, 2026-05-15): добавили compact `VisionDto`
+// (category/description/confidence) деривируемый из `VisionOutputDto.confidence`
+// через bucketing. Текущий cache hit отдаст исторический shape — bucketing
+// сработает на любом legacy объекте, формально breakage нет; bump в основном
+// для clarity ops/observability (Redis ключи показывают active вариант).
+const VISION_CACHE_KEY_PREFIX = 'slovo:vision:cache:v2';
 const VISION_CACHE_TTL_SEC = 86400; // 24 часа
 
 @Injectable()
