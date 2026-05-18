@@ -192,6 +192,56 @@
 
 ---
 
+### Slice 6 — ERP product card guidelines + semantic specs enrichment
+
+**Цель:** менеджеры заполняют карточки товаров в MoySklad **семантически правильно** — с явными пределами допустимой очистки (max input concentrations, recommended water context, что фильтр умеет / не умеет). RAG embeddings связывают product capabilities с water problems юзера → smart-search и equipment-suggest точнее.
+
+**Триггер (Дима 2026-05-18):** «Чтобы мы семантически правильно всё искали даже учитывая пределы допустимой очистки». Сейчас Vision-augmenter описывает **визуальный вид + общие тексты**, но без явных «работает при жесткость ≤ 7 мг-экв/л / железо ≤ 0.3 мг/л / TDS ≤ 1500 мг/л» — equipment-suggest ошибается на edge cases (предлагает Аквафор-кувшин для жесткой воды свыше 10 мг-экв/л, где он бесполезен).
+
+**Background — что есть сейчас в карточках Aquaphor:**
+
+Audit 2026-05-18 показал что descriptions ОЧЕНЬ varied:
+- Часть товаров (RO системы DWM-101S) — rich description «удаляет любые премеси, токсичные вещества или вирусы, делает воду мягкой»
+- Часть (краны, accessories) — generic «изготовлен из высококачественной пластмассы»
+- Часть (картриджи K-серии) — частично specs «Максимальная рабочая температура воды +38°C», «Пористость 10 мкм»
+- **Систематических пределов очистки (max hardness / max iron) — нет ни в одной карточке**
+
+**Изменения (этот slice — meta-work, не code):**
+
+1. **Document** `docs/guides/erp-product-card-guidelines.md` — для менеджеров Aquaphor / Дилеров:
+   - **Обязательные секции** в MoySklad description для каждой категории:
+     - **RO системы / проточные** — input limits (max hardness / iron / Mn / TDS / chlorine), output guarantee («удаляет ≥95% солей жёсткости»), recommended water context («жесткость > 7 мг-экв/л → выбирать вместо умягчителя»)
+     - **Предфильтры** — micron rating, max temperature, max pressure, what it removes (mechanical / iron / softening / chlorine)
+     - **Сменные модули** — совместимые с какими системами, ресурс (литры / месяцы), что фильтрует
+     - **Аксессуары** — совместимость со списком моделей (точные externalIds или brand-family)
+   - **Templates** для каждой категории (copy-paste готовые секции для менеджеров)
+   - **Examples** good vs bad — реальные карточки до/после rewrite
+2. **Slovo-side schema validation** (opt) — `apps/worker/src/modules/catalog-refresh/`:
+   - Парсер ищет structured patterns («жесткость ≤ N мг-экв/л», «железо ≤ N мг/л», «TDS ≤ N мг/л») в `description`
+   - Если matched → persist в `metadata.specs: { maxHardness, maxIron, maxTds, ... }`
+   - Если НЕ matched (legacy карточка) → fallback на Vision-augmenter (rough estimate from photo / brand-family knowledge)
+3. **Audit existing 155** — пройти через каталог, заполнить пробелы вручную (Дима / Aquaphor team) или через LLM bulk-extract из текста + manual review
+4. **Embedding text enrichment** (depends on Slice 2):
+   - `${productName}\n${descriptionRu}\nКатегория: ${categoryLabel}\nПределы очистки: max hardness=N, max iron=N, ...` — embed structured specs явно
+
+**Acceptance:**
+
+- [ ] Guidelines doc написан с templates + examples + bad/good patterns
+- [ ] Передан Aquaphor / Дилеру для review (это **их** ERP, мы только consumer)
+- [ ] Slovo-side parser ловит ≥80% existing structured specs из 155 карточек
+- [ ] После Slice 2 + Slice 6 re-ingest: equipment-suggest на «жёсткая вода 10 мг-экв/л» **не предлагает** Аквафор-кувшин (max hardness ≤ 7 для кувшина) — категорически
+- [ ] Smart-search photo path: загруженный кувшин-фильтр → **не** matches RO системы как top-1 (water capabilities differ)
+
+**Cost:** ~4-6h doc + ~2h parser + ~$2 LLM bulk-extract из 155 cards. **Менеджерская часть** (re-fill cards) — outside slovo team, Aquaphor side, недели работы.
+
+**Риск:** Aquaphor не захочет переписывать 155 карточек. **Mitigation 1:** parser работает на existing data, что найдёт — embed, остальное fallback Vision-augmenter. **Mitigation 2:** Aquaphor видит **бизнес-value** (точнее search → больше conversions → больше продаж) — выстраиваем case через метрики Phase 1+1.5 («после Slice 6: % правильных top-1 на equipment-suggest вырос с 50% до 85%, conversion rate +X%»).
+
+**Зависит от:** Slice 2 closed (productCategory enum в metadata) для structured spec injection.
+
+**Связь с water-analysis:** specs.maxHardness можно сравнивать с `water-analysis/predict` output для адресов юзеров. Если pin-адрес имеет hardness=12 мг-экв/л — **не показывать** product specs.maxHardness=7 в equipment-suggest топ-1. Это закрывает edge-case false-positives. Phase 1.5 backend side change в `apps/api/src/modules/water-analysis/equipment-suggest/`.
+
+---
+
 ## Diagrams
 
 ### Pipeline сейчас (Phase 1)
@@ -265,6 +315,7 @@ sequenceDiagram
 - **Slice 2 + 3**: на reference set из 10 image-search кейсов (mix RO / mechanical / magistral / pitcher) — top-1 result совпадает с правильной brand-family в **≥80%** случаев (текущий baseline — ~50% на photo path).
 - **Slice 4**: precision bounding box detection ≥70% на reference photos. Если нет — slice отменяется.
 - **Slice 5**: data audit complete, decision skip-or-do documented.
+- **Slice 6**: guidelines doc + parser, после re-fill cards Aquaphor team — equipment-suggest на «жёсткая вода >7 мг-экв/л» **не предлагает** Аквафор-кувшин в топ-1 (categorical filter through specs.maxHardness).
 
 ---
 
