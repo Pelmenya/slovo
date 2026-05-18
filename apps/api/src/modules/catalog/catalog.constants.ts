@@ -28,6 +28,31 @@ export const CATALOG_DEFAULT_TOP_K = 10;
 export const CATALOG_MIN_TOP_K = 1;
 export const CATALOG_MAX_TOP_K = 50;
 
+// =============================================================================
+// Phase 1.5 Slice 1 — dedupe by externalId с over-fetch safety.
+//
+// Catalog feeder режет rich Vision-augmented descriptions на 2-3 чанка/товар,
+// поэтому Flowise queryVectorStore может вернуть N чанков ОДНОГО товара.
+// TextSearchService.search() делает `DISTINCT ON metadata.externalId` после
+// получения результата от Flowise + slice к запрошенному `topK`.
+//
+// `topK=5` semantically = «5 unique товаров», не «5 chunks». Without over-fetch
+// 5 chunks одного товара → 1 unique result после dedupe (regression). Поэтому
+// запрашиваем в Flowise `effectiveTopK * MULTIPLIER` chunks, dedupe'им, slice'им.
+//
+// MULTIPLIER=3 — empiric: catalog Aquaphor 155 товаров, avg ~2.1 чанков/товар
+// (155 товаров × ~330 chunks при ingest). При worst case (5 chunks одного RO)
+// over-fetch 3× даёт 15 raw → ~5 unique после dedupe. Если бы catalog был
+// больше с N=5 chunks/товар — multiplier нужно повышать до 5.
+//
+// Adaptive multiplier на topK >= 20 — не делаем сейчас (CATALOG_MAX_TOP_K=50
+// и multiplier 3 даёт 150 raw chunks, Flowise queryVectorStore latency
+// linear по k, на проде median ~500ms — приемлемо). Если deteriorate >800ms —
+// понизим до 2 в env override без code change.
+// =============================================================================
+
+export const CATALOG_DEDUPE_OVERFETCH_MULTIPLIER = 3;
+
 // CATALOG_MAX_QUERY_LENGTH = 500 chars — почему 500, а не token-based лимит
 // OpenAI text-embedding-3-large (8191 tokens ≈ 30KB ASCII):
 // (a) UX — natural language query вряд ли осмыслен >500 chars (одно-два

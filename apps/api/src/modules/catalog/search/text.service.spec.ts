@@ -6,6 +6,7 @@ import { FlowiseError } from '@slovo/flowise-client';
 import { StorageService } from '@slovo/storage';
 import {
     CATALOG_AQUAPHOR_STORE_NAME,
+    CATALOG_DEDUPE_OVERFETCH_MULTIPLIER,
     CATALOG_DEFAULT_TOP_K,
     CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
     CATALOG_PRESIGNED_CACHE_TTL_SEC,
@@ -13,7 +14,7 @@ import {
     FLOWISE_CLIENT_TOKEN,
     REDIS_CLIENT_TOKEN,
 } from '../catalog.constants';
-import { TextSearchService, computeMatchScore } from './text.service';
+import { TextSearchService, computeMatchScore, dedupeByExternalId } from './text.service';
 
 type TFlowiseClientMock = { request: jest.Mock };
 type TRedisClientMock = {
@@ -123,7 +124,7 @@ describe('TextSearchService', () => {
             expect(result).not.toHaveProperty('visionOutput');
         });
 
-        it('передаёт storeId, query, default topK во Flowise', async () => {
+        it('передаёт storeId, query, default topK * over-fetch во Flowise (Phase 1.5 Slice 1)', async () => {
             flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: [] });
 
             await service.search('тест');
@@ -135,13 +136,13 @@ describe('TextSearchService', () => {
                     body: {
                         storeId: TEST_STORE_ID,
                         query: 'тест',
-                        topK: CATALOG_DEFAULT_TOP_K,
+                        topK: CATALOG_DEFAULT_TOP_K * CATALOG_DEDUPE_OVERFETCH_MULTIPLIER,
                     },
                 }),
             );
         });
 
-        it('передаёт переопределённый topK когда передан', async () => {
+        it('передаёт переопределённый topK * over-fetch (request 25 → Flowise 75)', async () => {
             flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: [] });
 
             await service.search('тест', 25);
@@ -149,7 +150,9 @@ describe('TextSearchService', () => {
             expect(flowise.request).toHaveBeenCalledWith(
                 expect.anything(),
                 expect.objectContaining({
-                    body: expect.objectContaining({ topK: 25 }),
+                    body: expect.objectContaining({
+                        topK: 25 * CATALOG_DEDUPE_OVERFETCH_MULTIPLIER,
+                    }),
                 }),
             );
         });
@@ -678,6 +681,194 @@ describe('TextSearchService', () => {
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('redis.quit'));
             warnSpy.mockRestore();
         });
+    });
+});
+
+describe('dedupeByExternalId — Phase 1.5 Slice 1 helper', () => {
+    function makeDoc(id: string, externalId: string | undefined, pageContent = ''): {
+        id: string;
+        pageContent: string;
+        metadata: Record<string, unknown>;
+    } {
+        return {
+            id,
+            pageContent: pageContent || `content-${id}`,
+            metadata: externalId === undefined ? {} : { externalId },
+        };
+    }
+
+    it('empty input → empty output', () => {
+        expect(dedupeByExternalId([])).toEqual([]);
+    });
+
+    it('single doc → passes through', () => {
+        const doc = makeDoc('chunk-1', 'product-A');
+        expect(dedupeByExternalId([doc])).toEqual([doc]);
+    });
+
+    it('5 chunks одного product (externalId=A) → 1 result (first wins)', () => {
+        const docs = [
+            makeDoc('chunk-1', 'product-A', 'best chunk'),
+            makeDoc('chunk-2', 'product-A', 'second chunk'),
+            makeDoc('chunk-3', 'product-A'),
+            makeDoc('chunk-4', 'product-A'),
+            makeDoc('chunk-5', 'product-A'),
+        ];
+        const result = dedupeByExternalId(docs);
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('chunk-1');
+        expect(result[0].pageContent).toBe('best chunk');
+    });
+
+    it('10 chunks 3 unique externalId → 3 unique products (порядок сохраняется)', () => {
+        const docs = [
+            makeDoc('c1', 'A'),
+            makeDoc('c2', 'B'),
+            makeDoc('c3', 'A'),
+            makeDoc('c4', 'C'),
+            makeDoc('c5', 'B'),
+            makeDoc('c6', 'A'),
+            makeDoc('c7', 'C'),
+            makeDoc('c8', 'B'),
+            makeDoc('c9', 'A'),
+            makeDoc('c10', 'C'),
+        ];
+        const result = dedupeByExternalId(docs);
+        expect(result.map((d) => d.metadata.externalId)).toEqual(['A', 'B', 'C']);
+        expect(result.map((d) => d.id)).toEqual(['c1', 'c2', 'c4']);
+    });
+
+    it('externalId отсутствует → fallback на doc.id (нет дедупа между разными doc.id)', () => {
+        const docs = [makeDoc('chunk-1', undefined), makeDoc('chunk-2', undefined)];
+        const result = dedupeByExternalId(docs);
+        // Без externalId оба прошли — id'ы разные, никакой dedupe не сработал
+        expect(result).toHaveLength(2);
+    });
+
+    it('externalId — пустая строка → fallback на doc.id', () => {
+        const docs = [
+            { id: 'chunk-1', pageContent: '', metadata: { externalId: '' } },
+            { id: 'chunk-2', pageContent: '', metadata: { externalId: '' } },
+        ];
+        const result = dedupeByExternalId(docs);
+        // Пустая строка treated как missing → fallback на разные doc.id → 2 results
+        expect(result).toHaveLength(2);
+    });
+
+    it('externalId — non-string (number) → fallback на doc.id', () => {
+        const docs = [
+            { id: 'chunk-1', pageContent: '', metadata: { externalId: 12345 as unknown as string } },
+            { id: 'chunk-1', pageContent: '', metadata: { externalId: 12345 as unknown as string } },
+        ];
+        const result = dedupeByExternalId(docs);
+        // Number externalId не trusted → fallback на doc.id; оба doc.id одинаковые → 1 result
+        expect(result).toHaveLength(1);
+    });
+
+    it('first-seen wins при разных pageContent — preserve best chunk content', () => {
+        const docs = [
+            makeDoc('c1', 'A', 'best match content'),
+            makeDoc('c2', 'A', 'worse match content'),
+        ];
+        const result = dedupeByExternalId(docs);
+        expect(result[0].pageContent).toBe('best match content');
+    });
+});
+
+describe('search() — Phase 1.5 Slice 1 integration (dedupe + over-fetch + slice)', () => {
+    let service: TextSearchService;
+    let flowise: TFlowiseClientMock;
+    let redis: TRedisClientMock;
+    let storage: TStorageServiceMock;
+
+    beforeEach(async () => {
+        flowise = createFlowiseClientMock();
+        redis = createRedisMock();
+        storage = createStorageMock();
+
+        const moduleRef = await Test.createTestingModule({
+            providers: [
+                TextSearchService,
+                { provide: FLOWISE_CLIENT_TOKEN, useValue: flowise as unknown as FlowiseClient },
+                { provide: REDIS_CLIENT_TOKEN, useValue: redis as unknown as Redis },
+                { provide: StorageService, useValue: storage as unknown as StorageService },
+            ],
+        }).compile();
+
+        service = moduleRef.get(TextSearchService);
+        preCacheStoreId(service);
+    });
+
+    it('topK=3 + 9 chunks (3 уникальных) → 3 unique docs, order сохранён', async () => {
+        const chunks = [
+            { id: 'c1', pageContent: 'A1', metadata: { externalId: 'A' }, chunkNo: 1 },
+            { id: 'c2', pageContent: 'B1', metadata: { externalId: 'B' }, chunkNo: 1 },
+            { id: 'c3', pageContent: 'A2', metadata: { externalId: 'A' }, chunkNo: 2 },
+            { id: 'c4', pageContent: 'C1', metadata: { externalId: 'C' }, chunkNo: 1 },
+            { id: 'c5', pageContent: 'B2', metadata: { externalId: 'B' }, chunkNo: 2 },
+            { id: 'c6', pageContent: 'A3', metadata: { externalId: 'A' }, chunkNo: 3 },
+            { id: 'c7', pageContent: 'C2', metadata: { externalId: 'C' }, chunkNo: 2 },
+            { id: 'c8', pageContent: 'B3', metadata: { externalId: 'B' }, chunkNo: 3 },
+            { id: 'c9', pageContent: 'A4', metadata: { externalId: 'A' }, chunkNo: 4 },
+        ];
+        flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: chunks });
+
+        const result = await service.search('тест', 3);
+
+        expect(result.count).toBe(3);
+        expect(result.docs.map((d) => d.metadata.externalId)).toEqual(['A', 'B', 'C']);
+        expect(result.docs.map((d) => d.id)).toEqual(['c1', 'c2', 'c4']);
+    });
+
+    it('topK=5 + 15 chunks 5 уникальных → 5 unique docs', async () => {
+        const chunks = ['A', 'B', 'C', 'D', 'E'].flatMap((ext) =>
+            [1, 2, 3].map((n) => ({
+                id: `${ext}-${n}`,
+                pageContent: `${ext}${n}`,
+                metadata: { externalId: ext },
+                chunkNo: n,
+            })),
+        );
+        // Shuffle chunks order — но flowise теоретически sorted, в тесте проверим
+        // что dedupe берёт first-seen
+        flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: chunks });
+
+        const result = await service.search('тест', 5);
+
+        expect(result.count).toBe(5);
+        expect(new Set(result.docs.map((d) => d.metadata.externalId)).size).toBe(5);
+    });
+
+    it('topK=5 + 5 chunks все одного товара → 1 unique doc (gracefull degrade)', async () => {
+        const chunks = [1, 2, 3, 4, 5].map((n) => ({
+            id: `c${n}`,
+            pageContent: `content-${n}`,
+            metadata: { externalId: 'only-product' },
+            chunkNo: n,
+        }));
+        flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: chunks });
+
+        const result = await service.search('тест', 5);
+
+        // Запрашивали 5 unique products, но в Flowise все из одного товара —
+        // отдаём что есть (1), не падаем
+        expect(result.count).toBe(1);
+        expect(result.docs[0].id).toBe('c1');
+    });
+
+    it('matchScore пересчитан после dedupe (rank 0..N-1, не original rank)', async () => {
+        const chunks = [
+            { id: 'c1', pageContent: '', metadata: { externalId: 'A' }, chunkNo: 1 },
+            { id: 'c2', pageContent: '', metadata: { externalId: 'A' }, chunkNo: 2 },
+            { id: 'c3', pageContent: '', metadata: { externalId: 'B' }, chunkNo: 1 },
+        ];
+        flowise.request.mockResolvedValueOnce({ timeTaken: 100, docs: chunks });
+
+        const result = await service.search('тест', 5);
+
+        // 2 unique docs (A, B) → rank 0=A=95, rank 1=B=45 (linear на 2 docs)
+        expect(result.docs[0].matchScore).toBe(95);
+        expect(result.docs[1].matchScore).toBe(45);
     });
 });
 

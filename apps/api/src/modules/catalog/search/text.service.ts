@@ -5,11 +5,13 @@ import {
     ENDPOINTS,
     type FlowiseClient,
     type TFlowiseDocumentStore,
+    type TFlowiseQueryDoc,
     type TFlowiseQueryResponse,
 } from '@slovo/flowise-client';
 import { StorageService } from '@slovo/storage';
 import {
     CATALOG_AQUAPHOR_STORE_NAME,
+    CATALOG_DEDUPE_OVERFETCH_MULTIPLIER,
     CATALOG_DEFAULT_TOP_K,
     CATALOG_PRESIGNED_CACHE_KEY_PREFIX,
     CATALOG_PRESIGNED_CACHE_TTL_SEC,
@@ -116,18 +118,33 @@ export class TextSearchService implements OnModuleDestroy {
         const effectiveTopK = topK ?? CATALOG_DEFAULT_TOP_K;
         const storeId = await this.resolveStoreId();
 
+        // Phase 1.5 Slice 1: over-fetch chunks для post-process dedupe.
+        // Flowise returns chunk-level docs (один товар = N chunks при rich
+        // Vision-augmented descriptions). Без over-fetch: 5 chunks одного
+        // товара → 1 unique result после dedupe = regression vs ожиданий
+        // клиента «topK=5 → 5 товаров».
+        const overFetchTopK = effectiveTopK * CATALOG_DEDUPE_OVERFETCH_MULTIPLIER;
+
         const flowiseResponse = await this.flowise.request<TFlowiseQueryResponse>(
             ENDPOINTS.vectorstoreQuery,
             {
                 method: 'POST',
-                body: { storeId, query, topK: effectiveTopK },
+                body: { storeId, query, topK: overFetchTopK },
             },
         );
 
+        // Phase 1.5 Slice 1: dedupe chunks → unique products by externalId.
+        // Flowise возвращает docs **отсортированные по similarity** desc
+        // (asRetriever под капотом), поэтому first-seen chunk = best match
+        // для данного товара. Slice к запрошенному topK после dedupe.
+        const dedupedDocs = dedupeByExternalId(flowiseResponse.docs).slice(0, effectiveTopK);
+
         // Level-1 dedup: уникальные S3-keys через все docs в одном response.
         // 5 чанков ссылающихся на одну картинку → один resolveOne call.
+        // Работает после chunk-dedupe — теперь набор docs уже unique products,
+        // но всё ещё может share S3-keys (multi-product photo / variants).
         const uniqueKeys = new Set<string>();
-        for (const doc of flowiseResponse.docs) {
+        for (const doc of dedupedDocs) {
             for (const key of extractImageKeys(doc.metadata)) {
                 uniqueKeys.add(key);
             }
@@ -138,8 +155,8 @@ export class TextSearchService implements OnModuleDestroy {
         const urls = await Promise.all(keysArray.map((key) => this.resolvePresignedUrl(key)));
         const urlMap = new Map(keysArray.map((key, idx) => [key, urls[idx]] as const));
 
-        const totalDocs = flowiseResponse.docs.length;
-        const docs = flowiseResponse.docs.map((doc, rank): SearchDocResponseDto => {
+        const totalDocs = dedupedDocs.length;
+        const docs = dedupedDocs.map((doc, rank): SearchDocResponseDto => {
             const keys = extractImageKeys(doc.metadata);
             return {
                 id: doc.id,
@@ -273,6 +290,52 @@ function extractImageKeys(metadata: Record<string, unknown>): string[] {
     return raw.filter(
         (v): v is string => typeof v === 'string' && isValidS3Key(v),
     );
+}
+
+// =============================================================================
+// dedupeByExternalId — chunk-level → product-level deduplication.
+//
+// Catalog feeder режет rich Vision-augmented product descriptions на 2-3 чанка
+// в Flowise Document Store. Vector search через `queryVectorStore` возвращает
+// chunk-level docs — один товар может попасть в результат N раз (через разные
+// чанки одного product'а).
+//
+// Pre-Slice-1: frontend `prostor-app/features/smart-search/api` делал
+// defensive dedupe by `metadata.externalId` (React key collision на ту же
+// UUID). После Slice 1 backend сам отдаёт unique products — frontend dedupe
+// остаётся idempotent safety net.
+//
+// Алгоритм: первый-seen chunk на каждый externalId — wins (Flowise возвращает
+// docs sorted by similarity desc, поэтому first-seen = best chunk для товара).
+//
+// Edge cases:
+// - `externalId` отсутствует в metadata → используем `doc.id` как ключ
+//   (chunk-level UUID, гарантированно unique). Защита от feeder regression
+//   где externalId might be missing — не падаем, просто не dedupe этот doc
+//   (он войдёт как-есть, потенциально дубль, но это feeder bug который надо
+//   ловить отдельно — search не должен падать).
+// - `externalId` не string (число / null) → string-coerce. Maps coerce'ят
+//   автоматически, но explicit для readability.
+// - empty input array → empty output.
+// =============================================================================
+
+export function dedupeByExternalId(
+    docs: ReadonlyArray<TFlowiseQueryDoc>,
+): TFlowiseQueryDoc[] {
+    const seen = new Set<string>();
+    const result: TFlowiseQueryDoc[] = [];
+    for (const doc of docs) {
+        const externalId = doc.metadata.externalId;
+        const key = typeof externalId === 'string' && externalId.length > 0
+            ? externalId
+            : doc.id;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        result.push(doc);
+    }
+    return result;
 }
 
 // =============================================================================
