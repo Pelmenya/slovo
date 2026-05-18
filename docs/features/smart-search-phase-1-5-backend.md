@@ -38,30 +38,32 @@
 
 Разбиение по принципу «ship-able в одиночку», каждое — отдельный коммит/PR. Порядок — по убыванию приоритета.
 
-### Slice 1 — `DISTINCT ON externalId` post-process в TextSearchService
+### Slice 1 — `DISTINCT ON externalId` post-process в TextSearchService ✅ закрыт 2026-05-18
 
 **Цель:** убрать chunk-level дубли из response. `topK` после dedupe = unique products.
 
-**Изменения:**
+**Реализовано (commit `eab20c9` + follow-up multiplier bump):**
 
 - `apps/api/src/modules/catalog/search/text.service.ts`:
-  - Helper `dedupeByExternalId(docs, targetCount): TFlowiseQueryDoc[]` — `Map<externalId, doc>` keep first (highest similarity у Flowise sorted output), slice to `targetCount`.
-  - Over-fetch на стадии Flowise call — `topK * OVER_FETCH_MULTIPLIER` (env `CATALOG_DEDUPE_OVERFETCH=3` default). Без over-fetch может прийти 5 чанков одного товара → 1 unique result.
+  - Helper `dedupeByExternalId(docs): TFlowiseQueryDoc[]` — `Set<key>` keep first-seen (Flowise возвращает sorted by similarity, first-seen = best chunk per product). Fallback на `doc.id` когда `externalId` missing/empty/non-string.
+  - Over-fetch на стадии Flowise call — `effectiveTopK * CATALOG_DEDUPE_OVERFETCH_MULTIPLIER` (const в `catalog.constants.ts`).
   - Slice к `topK` после dedupe.
-  - Если после dedupe `<topK` — это OK (catalog small, не все категории богатые). Не падать, отдать сколько есть.
+  - Graceful degrade: если dedupe вернул `<topK` — это OK (catalog limit на narrow query), не падать.
 
-**Acceptance:**
+**Audit 2026-05-18 vs implementation pass 1:** initial multiplier=3 был основан на estimate `2.1 chunks/product`. Реальный audit: 682 chunks / 155 products = **4.4 chunks/product** (Vision-augmented rich descriptions). Worst case 5 RO products = 22 chunks нужно для 5 unique. С multiplier=3 (15 raw) недобирали — поднял до **5** (25 raw chunks для topK=5). Curl smoke verify: «`фильтр обратного осмоса`» topK=5 даёт count=4 (catalog ceiling — реально 4 unique RO в catalog matching query), все externalIds unique, latency 534ms (vs baseline 506ms — +5.5% acceptable).
 
-- [ ] Unit test: 10 raw chunks с 3 unique externalId → result.length === 3 (or `min(3, topK)`).
-- [ ] Unit test: over-fetch применяется (Flowise.request called с `topK * 3`).
-- [ ] Unit test: order сохраняется (first chunk wins, не last).
-- [ ] Unit test: `externalId === undefined` chunk не падает, либо пропускается, либо использует `id` как fallback key (решить по prevalence — в реальных feeder данных externalId always present, см. ADR-007).
-- [ ] Integration smoke curl: `topK=5` с known-duplicate catalog query → ровно 5 unique товаров в response.
-- [ ] Frontend `prostor-app/features/smart-search/api/...` defensive dedupe **остаётся** — idempotent, backend dedupe не ломает frontend dedupe.
+**Acceptance ✅:**
 
-**Cost:** ~30 мин + tests. Pure code, не трогает Flowise / catalog ingest.
+- [x] Unit test: 10 raw chunks с 3 unique externalId → result.length === 3
+- [x] Unit test: over-fetch применяется (Flowise.request called с `topK * MULTIPLIER`)
+- [x] Unit test: order сохраняется (first chunk wins)
+- [x] Unit test: `externalId === undefined/empty/non-string` → fallback на `doc.id`
+- [x] Integration smoke curl: `topK=5` → ровно `min(catalog_unique, 5)` товаров, все unique
+- [x] Frontend dedupe **остаётся** — idempotent, backend dedupe не ломает (verified prostor-claude commit `35262b1`)
 
-**Риск:** `CATALOG_DEDUPE_OVERFETCH=3` × `CATALOG_MAX_TOP_K=50` = 150 chunks fetch — Flowise latency растёт линейно. Если на проде >300ms — снижаем multiplier до 2 либо вводим `topK >= 20 ? 2 : 3` adaptive.
+**Cost actual:** ~45 мин (vs estimate 30 мин). Pure code, не трогает Flowise / catalog ingest.
+
+**Open follow-up:** если на проде median latency >1.5s (multiplier=5 × topK=50 = 250 raw) — вводим adaptive `topK >= 20 ? 3 : 5`. Сейчас низкий риск (текущий ceiling 534ms).
 
 ---
 
@@ -71,25 +73,36 @@
 
 **Контекст:** catalog feeder (worker `catalog-refresh`) уже делает Vision-augmenter на ingest (155 товаров обработано Haiku 4.5, см. `vision-catalog-search.md`). Vision возвращает `category` поле, но **не embed'ится** — embedding строится только из `description_ru` + product name + categoryPath. Решение: enrich `description_ru` категорией явно.
 
+**Catalog audit 2026-05-18 (через mcp `flowise_docstore_query`, 5 broad queries):** 682 chunks / 155 products в Flowise `catalog-aquaphor` (avg **4.4 chunks/product** — выше моего estimate 2.1, см. Slice 1 follow-up multiplier bump). 5 root categories покрывают весь catalog:
+
+| Root categoryPath | Examples | Phase 1.5 enum |
+|---|---|---|
+| Очистка воды/Аквафор/Фильтры с краном/Обратноосмотические системы/ | DWM-101S Морион, OSMO Pro, DWM-202S-C | `reverse_osmosis` |
+| Очистка воды/Аквафор/Фильтры с краном/Проточные системы/Фаворит | Фаворит Pro, Фаворит ЭКО, Кристалл H | `flow_filter` |
+| Очистка воды/Аквафор/Предфильтры/ | Викинг S Миди, Гросс (10″/20″), Большие BB | `pre_filter` |
+| Очистка воды/Аквафор/Сменные модули/ | ЭФГ, KH, Pro H, K5-КН-K7, Fe-cartridges | `replacement_module` |
+| Очистка воды/Аквафор/Дополнительно | Краны, клапаны защиты от протечек | `accessory` |
+
+**Sub-tier «< 15000 / > 15 тыс.»** в RO — ценовой диапазон в MoySklad категории (UX noise, frontend Phase 1.5 strip regex). **Кувшинов / UV / softeners standalone** в catalog Aquaphor **нет** — Aquaphor продаёт только under-sink + magistral, не consumer line. Enum'е эти ветки не нужны.
+
 **Изменения:**
 
 - `apps/worker/src/modules/catalog-refresh/vision-augmenter.service.ts`:
-  - Vision prompt update — добавить obligation вернуть `product_category: 'reverse_osmosis' | 'mechanical_filter' | 'magistral' | 'pitcher' | 'softener' | 'other'` (closed enum для consistency).
-  - При формировании embedding text: `${productName}\n${descriptionRu}\nКатегория: ${categoryLabel}` где `categoryLabel` — human-readable русский («обратный осмос» / «механический фильтр» / etc).
-- `prisma/schema/catalog.prisma` — добавить `productCategory String? @db.VarChar(32)` колонку в `CatalogProduct` (если такая таблица есть; иначе persist в Flowise metadata).
-- Migration: `add_product_category` — additive, nullable.
+  - Vision prompt update — добавить obligation вернуть `product_category: 'reverse_osmosis' | 'flow_filter' | 'pre_filter' | 'replacement_module' | 'accessory' | 'other'` (closed enum + `other` safety).
+  - При формировании embedding text: `${productName}\n${descriptionRu}\nКатегория: ${categoryLabel}` где `categoryLabel` — human-readable русский («обратный осмос» / «проточный фильтр под мойку» / «магистральный предфильтр» / «сменный картридж» / «аксессуар» / «другое»).
+- Persist `productCategory` в Flowise metadata (через feeder), без отдельной Prisma таблицы — catalog products уже не в slovo Postgres (ADR-007 MinIO bucket → Flowise pipeline).
 - Re-ingest всех 155 товаров (worker run with force-refresh flag) — стоимость ~$1 (155 × Haiku call).
 
 **Acceptance:**
 
-- [ ] Vision prompt тест: на 5 reference photos (RO / mechanical / magistral / pitcher / softener) — Vision возвращает корректный `product_category` enum.
+- [ ] Vision prompt тест: на 5 reference photos (RO / flow_filter / pre_filter / replacement / accessory) — Vision возвращает корректный `product_category` enum.
 - [ ] Embedding text включает категорию явно (snapshot test).
 - [ ] После re-ingest: search «фильтр под мойку без обратного осмоса» — топ-3 НЕ содержат RO системы (категорически).
-- [ ] Backward compat: товары без `productCategory` (если миграция rollback'нется) — search всё равно работает (fallback на старый embedding text).
+- [ ] Backward compat: товары без `productCategory` (если re-ingest fail mid-way) — search всё равно работает (fallback на старый embedding text).
 
 **Cost:** ~2-3h + Vision re-ingest $1 + Vision prompt iteration. Тесты — 30 мин.
 
-**Риск:** Closed enum может не покрыть edge cases (например, «УФ-стерилизатор» — добавлять отдельно или попадает в `other`?). Mitigation — собрать список существующих категорий в catalog Aquaphor (155 товаров) перед закрытием enum'а.
+**Риск:** Catalog audit показал что 5 enum-значений покрывают все наблюдаемые products. Edge cases (УФ / softener standalone) в Aquaphor catalog отсутствуют — если когда-то появятся, `'other'` fallback ловит без regression. Не блокер.
 
 ---
 
@@ -219,8 +232,8 @@ sequenceDiagram
         API->>API: Vision describe (Haiku 4.5)
         Note over API: visionOutput.descriptionRu + category
     end
-    API->>Flowise: queryVectorStore(storeId, query, topK * 3)
-    Note right of API: over-fetch для dedupe safety
+    API->>Flowise: queryVectorStore(storeId, query, topK * 5)
+    Note right of API: over-fetch для dedupe safety<br/>multiplier=5 (audit: 4.4 chunks/product avg)
     Flowise->>PG: similaritySearch
     PG-->>Flowise: docs (chunk-level)
     Flowise-->>API: {docs, timeTaken}
@@ -237,7 +250,7 @@ sequenceDiagram
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | **Over-fetch latency** — Flowise queryVectorStore с topK=150 (50 × 3) может быть slow. На live среднее ~500ms сейчас на topK=5. | Адаптивный multiplier `topK >= 20 ? 2 : 3`. Если deteriorate >300ms — снижаем до 2 безусловно. Phase 2 переезд на pgvector direct query устранит overhead. |
+| 1 | **Over-fetch latency** — Flowise queryVectorStore с topK=250 (50 × 5) может быть slow. После Slice 1 follow-up multiplier=5: на live topK=5 → 534ms (vs baseline 506ms, +5.5%). | Адаптивный multiplier `topK >= 20 ? 3 : 5` если live median deteriorates >1.5s. Phase 2 переезд на pgvector direct query устранит overhead целиком. |
 | 2 | **Vision category enum coverage** — 155 товаров могут не уместиться в 6 категорий | Audit before close: collect distinct categoryPath roots → mapping table → maybe `other` + free-text `productSubcategory`. |
 | 3 | **Re-ingest cost** ($1 для 155 товаров) при Slice 2 | One-off, не recurring. Budget approved в `vision-catalog` baseline. |
 | 4 | **Bounding box accuracy** Haiku 4.5 | Decision gate после prompt iter1. Если <70% precision на reference set — отложить до Sonnet 4.6 или skip Slice 4. |
@@ -248,7 +261,7 @@ sequenceDiagram
 
 ## Метрики успеха
 
-- **Slice 1**: `topK=5` query → 5 unique products в response (0 duplicates). Frontend перестаёт логировать React key warnings.
+- **Slice 1 ✅**: `topK=5` query → `min(catalog_unique, 5)` unique products (0 duplicates). Frontend перестаёт логировать React key warnings. Verified curl smoke 2026-05-18 — 4/4 unique externalIds, 534ms latency.
 - **Slice 2 + 3**: на reference set из 10 image-search кейсов (mix RO / mechanical / magistral / pitcher) — top-1 result совпадает с правильной brand-family в **≥80%** случаев (текущий baseline — ~50% на photo path).
 - **Slice 4**: precision bounding box detection ≥70% на reference photos. Если нет — slice отменяется.
 - **Slice 5**: data audit complete, decision skip-or-do documented.
