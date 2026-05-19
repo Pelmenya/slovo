@@ -31,6 +31,7 @@
 - ❌ Voice / follow-up dialogue / facet filters — Phase 2.
 - ❌ Caching response целиком (Redis full-response) — только Vision-cache SHA256 (already), пресигнед URL cache (already). Full-response cache не оправдан при low query reuse rate.
 - ❌ Multi-language vision prompt — оставляем ru-only. EN-сюрфейс Phase 3 если будет потребитель.
+- ❌ **AI-консультант чат на каталоге** — отдельная feature `catalog-ai-consultant` со своим UX (sticky chat-panel, persistent history, handoff к менеджеру). PoC закрыт 2026-05-19, переход «smart-search → AI-консультант» технически работает на той же RAG-инфре. Триггер запуска: после Phase 1.5 closure + ≥30 карточек по Slice 6 ERP guide. См. `docs/features/catalog-ai-consultant.md` (stub).
 
 ---
 
