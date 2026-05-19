@@ -164,9 +164,11 @@
 
 ---
 
-### Slice 5 — Bundled services «Монтаж 2 500 ₽»
+### Slice 5 — Bundled services «Монтаж 2 500 ₽» 🔴 high priority после PoC
 
 **Цель:** product cards показывают связанные сервисные товары (монтаж, картриджи-расходники, сервисное обслуживание) — increase AOV, B2B value.
+
+> **Приоритет повышен до high после PoC 2026-05-19** (`docs/experiments/knowledge-base-poc/2026-05-19-catalog-qa-baseline.md`): на reference Q&A «DWM-101S — какие картриджи и когда менять?» AI **не смог** ответить, потому что System Bundle для DWM-101S не попал в retrieval. Это **самый частый клиентский сценарий после покупки** («что и когда менять») — без него knowledge base / smart-search в проде даёт generic «информация отсутствует». Перед Slice 5 — audit конкретно DWM-101S в МС: есть ли System Bundle на товаре vs только на папке, и почему `fetchGroupContext` не подтянул его в embedding.
 
 **Изменения:**
 
@@ -242,6 +244,39 @@ Audit 2026-05-18 показал что descriptions ОЧЕНЬ varied:
 
 ---
 
+### Slice 7 — Price + key dimensions в pageContent (added 2026-05-19 после PoC)
+
+**Цель:** LLM в knowledge-base / equipment-suggest **видит** цену товара и ключевые габариты при формулировке ответа — закрывается «бюджетный подбор» сценарий.
+
+**Триггер PoC 2026-05-19** (`docs/experiments/knowledge-base-poc/2026-05-19-catalog-qa-baseline.md`): на reference Q&A «Подбери фильтр до 15 000 ₽» AI **честно** сказал: «цены в каталоге не указаны, не могу подтвердить укладывается ли в бюджет». При этом в retrieved sourceDocuments **3 из 4** товаров укладывались в бюджет (5 690 ₽, 10 990 ₽, 12 490 ₽) — `salePriceKopecks` есть в `metadata`, но **не в `pageContent`**. ConversationalRetrievalQAChain отдаёт LLM только `pageContent` → metadata вне reach LLM. Это **критичный gap** — без него любой ценовой подбор / сравнение / «дешевле / дороже» не работает.
+
+**Изменения:**
+
+- `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/helpers/build-content-for-embedding.ts` — расширить блок «Характеристики» одной строкой:
+  - `Цена: <salePrice / 100> ₽` если `salePriceKopecks` есть.
+  - (опц) `Габариты: <Длина>×<Ширина>×<Высота> см` если все три атрибута заполнены.
+- Re-ingest 155 товаров через worker → catalog feeder PUT в MinIO → Flowise upsert.
+- **A/B на 10 reference queries** (price-aware: «до 15000», «дешевле 10к», «премиум выбор»; price-agnostic: «обратный осмос», «бактерии»): сравнить top-K stability до vs после. Гипотеза — price-aware улучшается, price-agnostic не страдает.
+
+**Acceptance:**
+
+- [ ] `build-content-for-embedding.ts` обновлён, unit test покрывает price/no-price пути.
+- [ ] Re-ingest 155 catalog Aquaphor (cost ≈ $0.05 на embeddings, <1 мин).
+- [ ] PoC chatflow `catalog-qa-poc-v1` Q6 «бюджет 15 000 ₽» → AI называет конкретные модели с указанием цены (vs текущее «цены нет»).
+- [ ] 10 reference A/B: price-agnostic queries не деградируют (top-1 same in ≥9/10).
+
+**Cost:** ~1h код + re-ingest ≈ $0.05 + ~30 мин A/B run + анализ. Мелкая slice.
+
+**Зависит от:** Slice 1 (dedupe) closed ✅ — без него цены могут дублироваться по чанкам.
+
+**Связь с Slice 6:** Slice 6 атрибут `price_segment` (economy / mid / premium) и Slice 7 raw цена — **взаимодополняющие**. Сегмент даёт semantic recall на «премиум», цена даёт точное «до 15 000 ₽». Заполнение обоих — на менеджерах.
+
+**Side effect (положительный):** Vision-augmented embedding теперь несёт ценовой сигнал — semantic search будет лучше группировать товары по сегменту (embedding модели реагируют на числовые ranges через тренировочные данные). Может усилить эффект Slice 6 `price_segment`.
+
+**Side effect (риск):** Цена изменяется чаще чем описание (поставщики поднимают / sale). Re-embed нужен при каждом ценовом изменении. **Mitigation:** диапазон вместо точного «Цена: ≈ 5500 ₽» (округление до 100 ₽) — снижает re-ingest частоту. Или: оставить точную цену, но сделать re-ingest event-driven через catalog-refresh cron (уже есть, daily).
+
+---
+
 ## Diagrams
 
 ### Pipeline сейчас (Phase 1)
@@ -306,6 +341,8 @@ sequenceDiagram
 | 4 | **Bounding box accuracy** Haiku 4.5 | Decision gate после prompt iter1. Если <70% precision на reference set — отложить до Sonnet 4.6 или skip Slice 4. |
 | 5 | **MoySklad service-products data missing** | Slice 5 — skip-or-do gate. Если data нет, документируем как Phase 2 / Aquaphor B2B integration task. |
 | 6 | **Backward compat** — фронт уже dedupe'ит. После Slice 1 backend dedupe'ит тоже — idempotent | Frontend dedupe оставить (defensive), не ломать. Tests verify оба слоя co-existing. |
+| 7 | **Цена в embedding шумит на price-agnostic queries** (Slice 7) | A/B на 10 reference: 5 price-aware + 5 price-agnostic. Если top-1 деградирует на price-agnostic ≥2/5 — откат к раунду до 1000 ₽ или передавать цену через context formatter а не в embedding text. |
+| 8 | **System Bundle DWM-101S missing** (Slice 5) — PoC показал что bundle не попадает в retrieval даже когда `fetchGroupContext` существует | Pre-Slice 5 audit: вызвать `fetchGroupContext('DWM-101S')` в CRM dev REPL и сравнить с тем что в embedding text. Если group context пустой — inventarisation на менеджерах, не на коде. |
 
 ---
 
@@ -316,6 +353,7 @@ sequenceDiagram
 - **Slice 4**: precision bounding box detection ≥70% на reference photos. Если нет — slice отменяется.
 - **Slice 5**: data audit complete, decision skip-or-do documented.
 - **Slice 6**: guidelines doc + parser, после re-fill cards Aquaphor team — equipment-suggest на «жёсткая вода >7 мг-экв/л» **не предлагает** Аквафор-кувшин в топ-1 (categorical filter through specs.maxHardness).
+- **Slice 7**: PoC `catalog-qa-poc-v1` повторно прогнан после re-ingest — Q6 «бюджет 15 000 ₽» переходит из «цены нет» в «Кристалл А — 5 690 ₽, Фаворит — 10 990 ₽», 5/5 price-aware queries улучшаются, 5/5 price-agnostic не деградируют.
 
 ---
 
@@ -336,3 +374,4 @@ sequenceDiagram
 - `docs/architecture/decisions/007-catalog-ingest-contract.md` — ADR-007 catalog ingest через MinIO bucket
 - `docs/architecture/decisions/008-mcp-server-flowise.md` — ADR-008 MCP-сервер Flowise (chatflow management через MCP)
 - `prostor-app/docs/feedback/water-map-thread.md` — append-only лог cross-repo координации
+- `docs/experiments/knowledge-base-poc/2026-05-19-catalog-qa-baseline.md` — PoC baseline 7 reference Q&A на 155 товарах catalog-aquaphor, основа Slice 5 priority bump + Slice 7 added
