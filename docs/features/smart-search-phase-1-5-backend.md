@@ -250,7 +250,7 @@ Audit 2026-05-18 показал что descriptions ОЧЕНЬ varied:
 
 **Триггер PoC 2026-05-19** (`docs/experiments/knowledge-base-poc/2026-05-19-catalog-qa-baseline.md`): на reference Q&A «Подбери фильтр до 15 000 ₽» AI **честно** сказал: «цены в каталоге не указаны, не могу подтвердить укладывается ли в бюджет». При этом в retrieved sourceDocuments **3 из 4** товаров укладывались в бюджет (5 690 ₽, 10 990 ₽, 12 490 ₽) — `salePriceKopecks` есть в `metadata`, но **не в `pageContent`**. ConversationalRetrievalQAChain отдаёт LLM только `pageContent` → metadata вне reach LLM. Это **критичный gap** — без него любой ценовой подбор / сравнение / «дешевле / дороже» не работает.
 
-**Изменения:**
+**Изменения (правка в `crm-aqua-kinetics-back`, не slovo — per ADR-007 catalog feeder ownership):**
 
 - `crm-aqua-kinetics-back/src/modules/moy-sklad/modules/catalog-sync/helpers/build-content-for-embedding.ts` — расширить блок «Характеристики» одной строкой:
   - `Цена: <salePrice / 100> ₽` если `salePriceKopecks` есть.
@@ -273,7 +273,7 @@ Audit 2026-05-18 показал что descriptions ОЧЕНЬ varied:
 
 **Side effect (положительный):** Vision-augmented embedding теперь несёт ценовой сигнал — semantic search будет лучше группировать товары по сегменту (embedding модели реагируют на числовые ranges через тренировочные данные). Может усилить эффект Slice 6 `price_segment`.
 
-**Side effect (риск):** Цена изменяется чаще чем описание (поставщики поднимают / sale). Re-embed нужен при каждом ценовом изменении. **Mitigation:** диапазон вместо точного «Цена: ≈ 5500 ₽» (округление до 100 ₽) — снижает re-ingest частоту. Или: оставить точную цену, но сделать re-ingest event-driven через catalog-refresh cron (уже есть, daily).
+**Side effect (риск):** Цена изменяется чаще чем описание (поставщики поднимают / sale). Re-embed нужен при каждом ценовом изменении. **Mitigation:** Event-driven re-ingest **уже работает** через ADR-007 amendment 2026-05-01 — catalog-refresh cron (4ч) + RecordManager incremental + Redis `slovo:catalog:loaders` namespace + contentHash skip на уровне item. Price change → contentHash item меняется → re-embed только этого item. Дополнительная mitigation (optional) — округление до 100 ₽ (`Цена: ≈ 5500 ₽`) чтобы не triggerить re-ingest на копеечных колебаниях.
 
 ---
 
