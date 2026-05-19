@@ -278,6 +278,61 @@ Audit 2026-05-18 показал что descriptions ОЧЕНЬ varied:
 
 ---
 
+### Slice 8 — Денормализация срока замены картриджей в карточку системы (added 2026-05-19 после deep-dive Q5)
+
+**Цель:** AI-консультант отвечает на «какие картриджи и когда менять для модели X» с **конкретными сроками** — не нужен отдельный retrieval по карточкам самих картриджей.
+
+**Триггер PoC 2026-05-19 deep-dive Q5 (`docs/experiments/knowledge-base-poc/2026-05-19-catalog-qa-baseline.md`):** AI на запрос «DWM-101S — какие картриджи и когда менять?» вернул правильный список картриджей (К5, К2, КО-50S, К7М) **после pre-expansion query**, но срок замены каждого не назвал. Причина — атрибут «Средний срок службы расходника, месяцев» **заполнен на карточках самих картриджей** (К5=6, К2=6, КО-50S=24, К7М=12), но эти карточки **не попадают в retrieval top-K** при query про систему. Это второй слой того же distribution skew который решён pre-expander'ом для самой системы.
+
+**Изменения (две части):**
+
+**Часть A — slovo backend (pre-expander):**
+
+- `apps/api/src/modules/catalog/consultant/query-expander.ts` (или внутри существующего search.service.ts):
+  - Детерминистический regex-based expansion при upcoming `catalog-ai-consultant` feature.
+  - Pattern набор: `DWM-XX` → `Аквафор DWM-XX Морион система обратного осмоса`; `КО-XX` → `мембранный модуль КО-XX обратный осмос`; `Кристалл XX` / `Фаворит` / `OSMO Pro` — аналогично.
+  - При detection словa «картридж/модуль/расходник/замена/обслуживание» — добавлять `расходники обслуживание срок замены совместимость`.
+  - **Не используется в smart-search Phase 1.5** (Phase 1.5 — visual + matchScore поиск, не консультант). Применяется только когда `catalog-ai-consultant` запустится. Закладывается **в шаблон** для будущего использования.
+
+**Часть B — CRM-back (денормализация lifespan):**
+
+Правка в `crm-aqua-kinetics-back` (не slovo — per ADR-007 catalog feeder ownership):
+
+- `src/modules/moy-sklad/modules/catalog-sync/types/t-bulk-ingest-payload.ts` — `TRelatedComponent` добавить `lifespanMonths?: number | null`.
+- `src/modules/moy-sklad/modules/catalog-sync/catalog-sync.service.ts` — для каждого componentRef сделать `productService.getProduct(ref.id)` (уже Redis-кэшированный, hit-rate >95% на повторных синках) + `parseLifespanMonths(component)`.
+- `src/modules/moy-sklad/modules/catalog-sync/helpers/build-content-for-embedding.ts` — обновить формат блока «Расходники»:
+  ```diff
+  - Расходники (картриджи): Модуль К5, Модуль К2, Модуль КО-50S
+  + Расходники (картриджи) и срок замены:
+  + - Первая ступень: Модуль К5 (замена каждые 6 мес.)
+  + - Вторая ступень: Модуль К2 (замена каждые 6 мес.)
+  + - Третья ступень: Модуль КО-50S (замена каждые 24 мес.)
+  + - Четвёртая ступень: Модуль К7М (замена каждые 12 мес.)
+  ```
+- Fallback на legacy одну строку когда ни на одном картридже срок не заполнен (backward compat).
+- Hash invalidation **автоматически** — `computeItemContentHash` принимает relatedComponents целиком (с новым `lifespanMonths` field) → hash меняется → slovo worker re-embed'ит изменённые item'ы.
+
+И в slovo: `apps/worker/src/modules/catalog-refresh/t-bulk-ingest-payload.ts` — `bulkIngestRelatedComponentSchema` принимает optional `lifespanMonths`.
+
+**Acceptance:**
+
+- [ ] CRM-back: `TRelatedComponent.lifespanMonths` + fetch + content format обновлены. Unit-tests `build-content-for-embedding.spec.ts` + `compute-item-content-hash.spec.ts` покрывают новый shape.
+- [ ] slovo: zod schema принимает optional lifespanMonths (без strip).
+- [ ] Trigger CRM feeder через `POST /moy-sklad/cache-reset` → `latest.json` в MinIO обновлён с новым content.
+- [ ] slovo catalog-refresh worker triggered (cron 4ч либо вручную) → re-embed 155 (~$0.05) — все системы получают новый content с lifespan inline.
+- [ ] Retest Q5 «DWM-101S — какие картриджи и когда менять?» через `catalog-qa-poc-v1` → AI отвечает «**К5 (6 мес.), К2 (6 мес.), КО-50S (24 мес.), К7М (12 мес.)**».
+- [ ] Pre-expander часть (Часть A) откладывается до `catalog-ai-consultant` implementation (триггер из `docs/features/catalog-ai-consultant.md`).
+
+**Cost:** ~1.5h код в crm-back (3 файла + 2 spec) + ~0.5h slovo schema + re-ingest 155 ≈ $0.05 (LLM embedding) + retest ≈ $0.04. Менее $0.10 total.
+
+**Зависит от:** Slice 7 (price-в-content) — желательно сделать **одной правкой** (`build-content-for-embedding.ts` правится в обоих slice'ах, объединяем). Slice 1 ✅ closed.
+
+**Связь с catalog-ai-consultant (`docs/features/catalog-ai-consultant.md`):** Pre-expander (Часть A) — **архитектурное основание** consultant'a, обязательно к запуску. Денормализация (Часть B) — содержательное обогащение для retrieval-quality. Обе закрываются **до** catalog-ai-consultant перехода из stub в active plan.
+
+**Связь с water-analysis:** Когда `equipment-suggest` рекомендует фильтр клиенту с конкретной водой, AI может сразу указать «при вашей жёсткости 8 мг-экв/л замена К2 будет требоваться чаще (6 → 4 мес.) — закладывайте бюджет на расходники X ₽/год». Это **бонус-сценарий** ROI после Slice 8 + Slice 6 заполнения.
+
+---
+
 ## Diagrams
 
 ### Pipeline сейчас (Phase 1)
@@ -343,7 +398,9 @@ sequenceDiagram
 | 5 | **MoySklad service-products data missing** | Slice 5 — skip-or-do gate. Если data нет, документируем как Phase 2 / Aquaphor B2B integration task. |
 | 6 | **Backward compat** — фронт уже dedupe'ит. После Slice 1 backend dedupe'ит тоже — idempotent | Frontend dedupe оставить (defensive), не ломать. Tests verify оба слоя co-existing. |
 | 7 | **Цена в embedding шумит на price-agnostic queries** (Slice 7) | A/B на 10 reference: 5 price-aware + 5 price-agnostic. Если top-1 деградирует на price-agnostic ≥2/5 — откат к раунду до 1000 ₽ или передавать цену через context formatter а не в embedding text. |
-| 8 | **System Bundle DWM-101S missing** (Slice 5) — PoC показал что bundle не попадает в retrieval даже когда `fetchGroupContext` существует | Pre-Slice 5 audit: вызвать `fetchGroupContext('DWM-101S')` в CRM dev REPL и сравнить с тем что в embedding text. Если group context пустой — inventarisation на менеджерах, не на коде. |
+| 8 | **System Bundle DWM-101S missing** (Slice 5) — PoC показал что bundle не попадает в retrieval даже когда `fetchGroupContext` существует | Pre-Slice 5 audit: вызвать `fetchGroupContext('DWM-101S')` в CRM dev REPL и сравнить с тем что в embedding text. Если group context пустой — inventarisation на менеджерах, не на коде. **Resolved 2026-05-19**: на самом деле картриджи в **атрибутах товара** (через `parseComponentRefs`), не в System Bundle. System Bundle — только услуги. См. Slice 8. |
+| 9 | **N+1 fetch при денорме lifespan (Slice 8 Часть B)** — на full sync ~155 систем × 3-5 картриджей = ~500-800 lookups | `productService.getProduct` уже Redis-кэширован глобально на synced каталоге. Unique картриджей в каталоге ~20 — cache hit-rate >95% после первого синка. Latency overhead < 5 сек на 155 товаров. |
+| 10 | **Re-embed cascade при изменении срока службы одного картриджа** — если менеджер меняет lifespan К5 с 6 на 5 мес, **все** системы где он используется (DWM-101S/Кристалл А/...) получают новый contentHash → re-embed | Это **правильное** поведение, не bug — все системы должны нести актуальный срок. Cost cascade ≈ N систем × $0.0003 на embedding ≈ <$0.01 даже при rebuild 20 систем. Не оптимизируем. |
 
 ---
 
@@ -355,6 +412,7 @@ sequenceDiagram
 - **Slice 5**: data audit complete, decision skip-or-do documented.
 - **Slice 6**: guidelines doc + parser, после re-fill cards Aquaphor team — equipment-suggest на «жёсткая вода >7 мг-экв/л» **не предлагает** Аквафор-кувшин в топ-1 (categorical filter through specs.maxHardness).
 - **Slice 7**: PoC `catalog-qa-poc-v1` повторно прогнан после re-ingest — Q6 «бюджет 15 000 ₽» переходит из «цены нет» в «Кристалл А — 5 690 ₽, Фаворит — 10 990 ₽», 5/5 price-aware queries улучшаются, 5/5 price-agnostic не деградируют.
+- **Slice 8**: PoC `catalog-qa-poc-v1` повторно прогнан после re-ingest — Q5 «DWM-101S — картриджи и когда менять?» переходит из «срок не указан» в «К5 (6 мес), К2 (6 мес), КО-50S (24 мес), К7М (12 мес)». Pre-expander Часть A — A/B при `catalog-ai-consultant` launch.
 
 ---
 

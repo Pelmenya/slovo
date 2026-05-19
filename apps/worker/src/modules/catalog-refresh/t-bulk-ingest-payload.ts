@@ -39,6 +39,15 @@ export const bulkIngestRelatedServiceSchema = z.object({
 export const bulkIngestRelatedComponentSchema = z.object({
     id: z.string().min(1).max(64),
     name: z.string().min(1).max(MAX_NAME_LEN),
+    /**
+     * Средний срок службы картриджа в месяцах (из атрибута «Средний срок службы
+     * расходника, месяцев» в МС). Slice 8 от 2026-05-19 — feeder денормализует
+     * это значение в `contentForEmbedding` карточки системы, чтобы AI-консультант
+     * мог отвечать на «когда менять картриджи для X». slovo metadata его пока
+     * не использует напрямую (значение уже в text-блоке), но принимаем как
+     * official-contract поле чтобы не отбрасывать zod-strip'ом.
+     */
+    lifespanMonths: z.number().int().nullable().optional(),
 });
 
 export const bulkIngestItemSchema = z.object({
