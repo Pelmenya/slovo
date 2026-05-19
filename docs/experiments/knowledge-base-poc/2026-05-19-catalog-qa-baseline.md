@@ -182,6 +182,83 @@ Retrieval: 4/4 источника, основной — Pro B картридж +
 
 PoC в денежном выражении — **бесплатный**.
 
+## Альтернативные модели — latency + cost benchmark (addendum 2026-05-19)
+
+После основного PoC прогнали тот же reference запрос **«Объясни кратко на русском, как работает обратный осмос в бытовых фильтрах для очистки воды. 2-3 предложения.»** через три модели на идентичном retrieval-стеке (Conversational Retrieval QA Chain + `catalog-aquaphor` + те же rephrase/response prompts). Цель — понять кого ставить primary в `catalog-ai-consultant` для прод-чата.
+
+### Метод
+
+- Один и тот же запрос через `curl --data-binary @utf-8-file` → `/api/v1/prediction/<chatflowId>` чтобы исключить shell encoding artifacts.
+- Параметры одинаковые: `temperature=0.2`, `maxTokens=1024`, `streaming=false`, `returnSourceDocuments=true`.
+- `time` команда для wall-clock latency. Каждая модель запускалась один раз — это **один-point sample**, не statistics. Цель — порядок величины, не точность до 100ms.
+
+### Результаты
+
+| Модель | Latency | Цитирование модели в ответе | Стоимость / 7 reference Q&A | Цена/M tokens (input + output) |
+|---|---|---|---|---|
+| **Claude Sonnet 4.6** | **4.4 сек** | ✅ Аквафор DWM, Osmo Pro упомянуты по сериям | $0.04 / 3.2 ₽ | $3 + $15 |
+| **Claude Haiku 4.5** | **6.5 сек** | ✅ «DWM-101S Морион» упомянут конкретно | **~$0.013 / 1 ₽** (3× дешевле) | $1 + $5 |
+| **Poolside Laguna M.1** | **70 сек** | ⚠️ generic, не упомянул конкретный SKU | $0 (free preview) | free |
+
+Подключение Poolside: OpenAI-compatible API `https://inference.poolside.ai/v1`, модель `poolside/laguna-m.1` (225B MoE, 23B active params, специализация — agentic coding). Chatflow создан через тот же `enrichNodeData` паттерн (`experiments/poolside-smoke/build-qa-flowdata.ts`), id `34dad7ff-31ea-4b57-b818-077c5aa01b35`.
+
+### Прямые цитаты ответов (один и тот же вопрос)
+
+**Sonnet 4.6** (4.4 сек):
+
+> Обратный осмос — это технология ультратонкой очистки воды через специальную мембрану, которая задерживает даже самые мелкие загрязнители: токсичные вещества, бактерии и вирусы. Вода проходит через несколько ступеней фильтрации, а концентрированный поток загрязнителей отводится в дренаж. Например, в системах Аквафор серии DWM и Osmo Pro реализована рециркуляция воды внутри системы.
+
+**Haiku 4.5** (6.5 сек):
+
+> Обратный осмос — это процесс, при котором вода под давлением проходит через ультратонкую мембрану, которая задерживает загрязнители, токсичные вещества, бактерии и вирусы, пропуская только молекулы чистой воды. В наших системах (например, **DWM-101S Морион**) используется рециркуляция воды — концентрированный поток загрязнителей уходит в дренаж, а чистая вода накапливается для использования.
+
+**Poolside Laguna M.1** (70 сек):
+
+> Обратный осмос в бытовых фильтрах работает за счёт пропускания воды через тонкую мембрану под давлением, которая отфильтровывает пресные частицы, соли, тяжёлые металлы и другие загрязнители. Чистая вода коллекционируется в устройстве, а концентрат с отходами отводится в канализацию. Этот процесс эффективно удаляет до 99% примесей, обеспечивая безопасную и вкусную воду.
+
+(Также на сложном вопросе «Чем DWM-101S Морион отличается от Аквафор В150 Фаворит?» Laguna дала **false-negative**: «В каталоге нет информации об Аквафор В150 Фаворит» — хотя retrieval вернул карточку Фаворита в sourceDocuments. Это **code-tuned distribution failure** — модель «зацепилась» за первый chunk DWM-101S и проигнорила остальные.)
+
+### Почему Laguna такая медленная
+
+Три фактора накладываются:
+
+1. **225B MoE параметров** — кратно тяжелее Sonnet 4.6 и Haiku 4.5.
+2. **Free preview tier** — Poolside на shared compute без приоритета, в production tier latency может улучшиться, но не до уровня Anthropic (у них optimized inference).
+3. **Code-tuned distribution на не-кодовом domain** — генерация менее уверенная, больше backtracking токенов = медленнее. Видны опечатки в ответе («премеси», «благодасья» — артефакты низкой уверенности при выборе токенов на русском technical domain).
+
+И **`Conversational Retrieval QA Chain` делает 2 LLM call'а подряд** (rephrase + answer), что удваивает каждый раз — на Sonnet это 2x ~2 сек = 4.4 сек total, на Laguna это 2x ~35 сек = 70 сек total. Линейный scale.
+
+### Решение для `catalog-ai-consultant` (memory `catalog-ai-consultant.md` open question #4)
+
+- **Primary: Haiku 4.5** — sweet spot. +50% latency vs Sonnet (приемлемо для UX чата), но 3× дешевле + **цитирует конкретный SKU** («DWM-101S Морион»), что критично для бизнеса (реклама модели внутри ответа = funnel-conversion).
+- **Fallback: Sonnet 4.6** на сложных edge cases (комплект из 3+ товаров, сравнение, math по жёсткости). Решение об эскалации — либо по эвристике в backend (длина history > N, ключевые слова «сравни», «комплект»), либо по client-side флагу «дай умнее».
+- **Poolside Laguna M.1 — отклоняется для прод-чата** по latency. Сохраняется как experimental sandbox (`catalog-qa-poolside-v1` остаётся в Flowise) для:
+  - non-realtime задач (batch enrichment карточек, где 70 сек/карточка приемлемо)
+  - возможных code-задач в будущем (для чего она и тренирована — agentic coding)
+  - сравнения когда Poolside выйдет в paid GA с оптимизированной inference.
+
+Прод-economics (1000 клиентов × 5 запросов/мес = 5000 запросов):
+
+| Модель | $/мес | ₽/мес (по 80 ₽/$) |
+|---|---|---|
+| Sonnet 4.6 | ~$19 | ~1 520 ₽ |
+| **Haiku 4.5** | **~$6** | **~480 ₽** (sweet spot) |
+| Sonnet + Haiku hybrid (90% Haiku + 10% Sonnet fallback) | ~$7-8 | ~600 ₽ |
+
+Артефакты эксперимента: `experiments/poolside-smoke/` (gitignored — build/create/swap скрипты, test-payload.json).
+
+Chatflow'ы оставлены в Flowise для будущего сравнения:
+
+- `catalog-qa-poc-v1` (Sonnet 4.6) — `93c3e81b-501c-402e-9109-3747eaaf2ec0`
+- `catalog-qa-haiku-v1` (Haiku 4.5) — `96fd6d8d-7c08-4d73-a1e8-c211377dfe3d`
+- `catalog-qa-poolside-v1` (Laguna M.1) — `34dad7ff-31ea-4b57-b818-077c5aa01b35`
+
+### Caveat про точность измерения
+
+Это **один-point sample на одном вопросе**. Для production decision нужен полный A/B на 20+ reference Q&A с per-question timing + manual quality eval. Пока что цифры (Haiku 6.5 сек / Sonnet 4.4 сек / Laguna 70 сек) задают **порядок величины** — Laguna ×10 медленнее Anthropic'ов это **устойчивый сигнал**, между Sonnet и Haiku разница на 1-2 сек может зашуметь.
+
+Полный A/B запланирован на момент implementation `catalog-ai-consultant` (memory `catalog-ai-consultant.md` trigger checklist).
+
 ## Открытые вопросы
 
 1. **System Bundle DWM-101S** — есть ли он в МС вообще, или это unfilled карточка? → нужна проверка в МС UI или через `fetchGroupContext('DWM-101S')` в CRM API. Если есть — почему не в embedding loader. Если нет — это задача менеджеру.
