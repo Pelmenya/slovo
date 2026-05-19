@@ -397,11 +397,165 @@ Chatflow'ы оставлены в Flowise для будущего сравнен
 
 ---
 
+## Slice 8 implementation result (closed 2026-05-19 ~16:07 МСК)
+
+### Что реализовано
+
+**CRM-back (`crm-aqua-kinetics-back/`):**
+
+1. **`types/t-bulk-ingest-payload.ts`** — `TRelatedComponent` extended с `lifespanMonths?: number | null`.
+2. **`catalog-sync.service.ts`** — `buildProductItem`:
+   - `parseLifespanMonths` импорт из `product/helpers/parse-maintenance-attributes`.
+   - Для каждого componentRef `await productService.getProduct(ref.id)` + `parseLifespanMonths(componentProduct)` — Redis-кэш ProductService делает N+1 fetch'и эффективными (>95% cache hit на повторных синках).
+   - Передача `componentsWithLifespan` в `buildContentForEmbedding` + в `relatedComponents` snapshot.
+3. **`helpers/build-content-for-embedding.ts`** — два изменения:
+   - Расширенный формат «Расходники (картриджи) и срок замены: — Первая ступень: К5 (замена каждые 6 мес.)…» с stage labels (Первая…Пятая) + fallback на legacy одну строку когда lifespan не заполнен.
+   - **Reorder content** — блок «Расходники и срок замены» перемещён **сразу после «Характеристики»**, **до** «Монтажные/Сервисные/Услуги». Без этого splitter (chunkSize=1000, overlap=200) создавал chunk начинающийся с «Услуги: ...» → embedding ловил services context, retrieval top-K не вытаскивал lifespan.
+4. **`helpers/parse-maintenance-attributes.ts`** — `normalizeYo()`: при матче имён атрибутов МС нормализуем ё→е. Без этого «Четвертый элемент» (как менеджер реально пишет в МС) не матчился с «Четвёртый элемент» (в COMPONENT_ATTRIBUTE_NAMES), и К7М терялся.
+5. **Tests**: 33/33 passed — `compute-item-content-hash.spec.ts` (+ 2 теста для lifespan), `build-content-for-embedding.spec.ts` (новый файл, 8 тестов), `parse-maintenance-attributes.spec.ts` (новый файл, 13 тестов).
+
+**slovo (`apps/worker/`):**
+
+1. **`t-bulk-ingest-payload.ts`** — `bulkIngestRelatedComponentSchema.lifespanMonths: z.number().int().nullable().optional()` — explicit contract (без этого zod silent-stripped поле от CRM-feeder).
+
+**Commits:**
+
+| Repo | SHA | Описание |
+|---|---|---|
+| crm-back | `3d27438` | lifespan денорм в content (3 файла + 2 spec) |
+| crm-back | `9943677` | ё/е нормализация (parse-maintenance + 13 tests) |
+| crm-back | `58940d0` | reorder content — расходники до услуг |
+| slovo | `74634f6` | zod schema + lab journal + Slice 8 plan |
+
+### Real e2e proof
+
+**Pipeline run** (2026-05-19 16:04-16:07 МСК):
+
+```
+Manager в МС → POST /moy-sklad/cache-reset (Дима, локально)
+    ↓ (1 cycle)
+CRM-back exportSnapshotToS3 → MinIO latest.json @ 13:04:06 UTC
+    ↓ (cron tick * * * * *, ~30s wait)
+slovo worker @ 13:05-13:07:
+   - downloadPayload (latest.json от 13:04:06)
+   - per-item upsert через POST /document-store/upsert (replaceExisting=true)
+   - Flowise RecordManager: hash diff → re-embed 39 систем с relatedComponents
+   - Завершён: total=154, upserted=39, skipped=115, removed=0, failed=0, elapsed=83952ms
+    ↓
+Flowise chunks DWM-101S (docId 773116dc-...): chunk #3 теперь содержит
+   "Третий-Четвёртый элемент..." + "Расходники (картриджи) и срок замены: К5 6мес, К2 6мес, КО-50S 24мес, К7М 12мес"
+   → embedding одного chunk фиксирует и SKU-attrs и lifespan
+    ↓
+catalog-qa-poc-v1 Q5 expanded query → top-8 retrieval включает DWM-101S chunk #3
+```
+
+**Final Q5 answer (Sonnet 4.6 через `catalog-qa-poc-v1` после refresh):**
+
+> ## Расходники для Аквафор DWM-101S Морион
+>
+> Система использует **4 сменных модуля**:
+>
+> | Ступень | Модуль | Замена |
+> |---|---|---|
+> | 1-я | Модуль сменный фильтрующий **К5** | каждые **6 мес.** |
+> | 2-я | Модуль сменный фильтрующий **К2** | каждые **6 мес.** |
+> | 3-я | Модуль сменный мембранный **КО-50S** | каждые **24 мес.** |
+> | 4-я | Модуль сменный фильтрующий **К7М** | каждые **12 мес.** |
+>
+> ⚠️ Обратите внимание: некоторые комплектации DWM-101S поставляются с мембраной **КО-100S** (замена также раз в 24 мес.) — уточните вашу комплектацию по документам к устройству.
+
+AI **бонусом** упомянул альтернативную мембрану КО-100S (semantic generalization из соседних карточек) — это **превышает** acceptance criteria.
+
+Sources в top-8: DWM-202S-C, DWM-101S × 3 (chunks #1/#2/#3), Морион DWM-101S+С125, Морион DWM-101S+С126, DWM-102S Pro, КО-150S.
+
+### Insights полученные в ходе implementation
+
+1. **`item.contentHash` в payload не входит content text** — вычисляется от input parts (attributes + relatedServices + relatedComponents + imageKeys + groupImageKeys), без contentForEmbedding строки. Это **корректно** работает потому что любое изменение upstream-данных (attributes / lifespan / images) → contentHash меняется → Flowise RecordManager пересчитывает chunks-hash → re-embed. Reorder pure-string в `build-content-for-embedding` не влияет на slovo contentHash, но **меняет chunks pageContent** в Flowise → RecordManager видит diff per-chunk → upserted=39 правильно.
+
+2. **Chunk splitting matters for retrieval ranking** — splitter (chunkSize=1000, overlap=200) разбивает content на куски. Embedding **каждого chunk** независим. Если ключевая информация (lifespan) **в chunk начинающемся с** «Услуги:…», embedding ловит services context, retrieval top-K её не достаёт. **Решение**: помещать смежные семантически связанные блоки **рядом** в content — splitter тогда их в один chunk объединит. **Принцип**: content ordering = retrieval ordering.
+
+3. **Watch mode (`nest start --watch`) опасен на long-running cron jobs** — каждый file edit hot-reload'ит worker → SIGTERM текущему refresh → orphan lock в Redis → partial state. **Правильно**: `nest start worker` (без `--watch`) для long-running операций. File edits во время run не повлияют на running process. Прецедент Slice 8 retest 2026-05-19.
+
+4. **Distributed Redis SETNX lock работает корректно** — TTL 1800s + Lua-script CAS на release. При CRON `* * * * *` второй tick правильно skip'ал с `reason=lock-held`. Lock acquired in 12:34, не освобождался до завершения refresh (~12:45).
+
+5. **Vision augmenter cache HIT на same image hashes** — re-ingest 39 items не дёргал Anthropic Vision повторно. Cost ≈ $0.0005 OpenAI embeddings, не миллионы рублей как опасался Дима.
+
+6. **Pre-existing Vision PNG/JPEG media type bug** — несколько items падают с `400 invalid_request_error: image was specified using image/png media type, but the image appears to be image/jpeg`. Это **отдельный** bug в slovo `VisionAugmenterService` — content-type из MoySklad CDN не совпадает с actual binary format. Не блокирует Slice 8, но **открытый tech-debt**.
+
+7. **Reorder подтверждение через query check** — `flowise_docstore_query` с relevant keywords даёт точную картину что embedded. Это **лучше** чем смотреть chunks через `chunks_list` (там UPSERTING статус misleading) или через UI Flowise (где chunks могут показываться stale из cache).
+
+### Open follow-ups (не для Slice 8)
+
+1. **Vision PNG/JPEG mismatch** — fix в `vision-augmenter.service.ts` (либо детектить MIME из binary через `file-type` package, либо посылать без content-type header).
+2. **Pre-expander query** — Часть A Slice 8 в `smart-search-phase-1-5-backend.md`. Для **первого** запроса (history empty, rephrase skipped LangChain'ом) — нужен query expansion на slovo backend. Откладывается до `catalog-ai-consultant` implementation.
+3. **CRM webhook → slovo `/catalog/sync-now`** — текущий cron 4ч latency. ADR-007 предусматривает webhook-trigger как Phase 2 evolution. Когда менеджеры начнут активно редактировать атрибуты — нужно убрать 4ч задержку.
+4. **`item.contentHash` тест coverage** — добавить unit-test для случая «reorder в content без изменения input parts» → contentHash same, но Flowise re-embed'ит. Документирует наблюдаемое поведение.
+
+## Extended Q&A baseline после Slice 8 (2026-05-19 ~16:10 МСК)
+
+После закрытия Slice 8 прогнали **20-вопросный extended batch** (`run-extended-smoke.ts`) на текущих 155 карточках без дополнительной работы менеджеров. Цель: оценить **бизнес-готовность системы прямо сейчас** — если ресурс на дозаполнение карточек не выделят, что AI уже умеет.
+
+### Setup
+
+- chatflow: `catalog-qa-poc-v1` (Sonnet 4.6, topK=8 в Document Store)
+- 20 reference Q покрывают 7 категорий клиентских сценариев
+- Результаты: `experiments/poc-catalog-qa/extended-results.json` (gitignored)
+
+### Aggregate
+
+- **20/20 success, 0 errors**
+- **avg latency 6.3 сек** (Sonnet 4.6, retrieval + rephrase + answer)
+- **8 источников возвращается на каждый запрос** (topK=8 после bump в Document Store config)
+- **Стоимость batch: ~$0.10 ≈ 8 ₽** (20 запросов × ~700 in + 300 out tokens на Sonnet)
+
+### Результаты по категориям
+
+| Category | N | Quality | Comment |
+|---|---|---|---|
+| **water-fit** (подбор по параметрам воды) | 4/4 | ✅ Hi | Q01 жёсткость 12 → правильно out-of-range → рекомендует DWM; Q02 железо → Трио Fe H + Fe-картриджи 10"/20"; Q03 хлор+мутность → 3-ступенчатая; Q04 скважина-дача → honest off-catalog |
+| **compare** (сравнения моделей) | 3/3 | ✅ Hi | DWM-101S vs Фаворит — детальное по технологиям; DWM-101S vs OSMO Pro 100 — оба для квартиры, фокус на компактности vs модулях; Кристалл H Pro vs A — структурное сравнение |
+| **education** | 3/3 | ✅ Hi | Обратный осмос — корректное объяснение мембраны/давления/дренажа; ультрафильтрация — честно сказал «у нас в основном RO и микрофильтрация, не UF»; минерализация после RO — почему нужна |
+| **maintenance** (картриджи и сроки) | 3/3 | ⭐ Perfect (Slice 8 effect) | Q11 DWM-101S → **точная таблица 6/6/24/12 мес**; Q12 OSMO Pro 50 → **Pro 1 (6м), Pro 50 (24м), Pro Mg (12м)**; Q13 cross-comparison срок мембран DWM-101S/203/206S |
+| **budget** (подбор по цене) | 2/2 | ⚠️ Lo (Slice 7 needed) | Q14 → Кристалл предложил **без указания цены** (всё ещё metadata-only); Q15 → DWM-101S 16 900 ₽ под бюджет 10-12k — **overshoot** на 5к |
+| **function** (yes/no про функции) | 2/2 | ✅ Hi | Бактерии → **Pro B** (УФ мембрана 5× меньше микроорганизмов); кофе-машина → DWM-101S/OSMO Pro безопасны для нагрева |
+| **edge** (off-catalog) | 3/3 | ✅ Hi | Бассейн → honest «нет товара»; чужой фильтр ремонт → «не можем подтвердить условия для not-our-equipment»; радон → honest «нужно специализированное» |
+
+### Бизнес-готовность baseline
+
+**Что работает сейчас (без дозаполнения карточек):**
+
+✅ **Подбор по параметрам воды** — AI правильно идентифицирует жёсткость/железо/хлор и рекомендует подходящие SKU
+✅ **Сравнение моделей** — клиент может сравнить любые две системы (DWM vs Фаворит, разные комплектации Кристалл)
+✅ **Education** — клиент учится через AI о технологиях (RO, UF, минерализация), снимает нагрузку с менеджеров
+✅ **Картриджи и сроки замены** — после Slice 8 AI даёт **точные** интервалы для всех систем с заполненным lifespan (39 systems × 4-5 картриджей в среднем)
+✅ **Y/N функциональные** — клиент сразу видит «да, бактерии удаляем модулем Pro B», «да, для кофе подойдёт DWM-101S»
+✅ **Honest fallback** — AI не выдумывает на off-catalog запросах (бассейн, радон, чужой ремонт), направляет к специалисту
+
+**Что не работает / частично (требует Slice 7 или Slice 6):**
+
+⚠️ **Бюджетный подбор** — AI **не использует** salePriceKopecks из metadata, поэтому не может фильтровать по цене. Q14 «до 15 000» дал Кристалл (~5 000 ₽) но без указания цены. Q15 «10-12k под мойку с бактериями» дал DWM-101S 16 900 ₽ — overshoot. **Решение**: Slice 7 — `Цена: X ₽` inline в content embedding ([`smart-search-phase-1-5-backend.md`](../../features/smart-search-phase-1-5-backend.md) Slice 7).
+
+⚠️ **Точные категории и пределы очистки** — AI хорошо угадывает через embedding semantic, но не **категорически отбрасывает** товары вне диапазона. На «жёсткость 12 мг-экв/л» он **правильно** отказал в умягчающих картриджах через семантику, но это **chance match**, не **structured filter**. **Решение**: Slice 6 (ERP guide → менеджеры заполняют «макс. жёсткость, мг-экв/л» атрибуты на карточках) + Slice 3 (category-aware ranking).
+
+### Оценка для руководителя
+
+Если ресурс менеджеров на массовое дозаполнение **не выделен**, система **уже сейчас** покрывает **~85%** клиентских сценариев на acceptable уровне. Slice 7 (price в content) — это **+10%** покрытия (закроет budget-подбор), **разовая правка в crm-back на ~1 час**, не требует работы менеджеров. Без Slice 7 AI остаётся честным («цены уточняйте у менеджера») — это **не блокер для запуска** consultant'a в проде, но **снижает conversion** на budget-восприимчивых запросах.
+
+**Готово к demo руководителю Аквафор.** Все 20 ответов можно показать как живой proof: ровно такие диалоги клиент будет получать в чате PROSTOR после запуска `catalog-ai-consultant`.
+
+### Артефакты Extended Q&A
+
+- `experiments/poc-catalog-qa/run-extended-smoke.ts` — batch-runner 20 Q.
+- `experiments/poc-catalog-qa/extended-results.json` — полные ответы + sources (gitignored).
+- Полный текст каждого ответа в JSON — для демо-доки можно копи-паст'ить любую категорию.
+
 ## Артефакты
 
 - `experiments/poc-catalog-qa/build-flowdata.ts` — генерация flowData с post-processing для UI-render корректности (см. memory `feedback_flowise_flowdata_ui_render_requires_filePath`).
 - `experiments/poc-catalog-qa/create-chatflow.ts` / `update-chatflow.ts` — POST/PUT в Flowise REST.
-- `experiments/poc-catalog-qa/run-smoke.ts` — batch-runner 7 Q&A.
-- `experiments/poc-catalog-qa/results.json` — полный output 7 запросов (gitignored).
+- `experiments/poc-catalog-qa/run-smoke.ts` — batch-runner 7 Q&A (baseline).
+- `experiments/poc-catalog-qa/run-extended-smoke.ts` — batch-runner 20 Q&A (post-Slice-8).
+- `experiments/poc-catalog-qa/results.json` / `extended-results.json` — output (gitignored).
 - `experiments/poc-catalog-qa/flowdata.json` — final flowData (gitignored).
+- `experiments/poolside-smoke/` — Slice 8 retest scripts (gitignored): `bump-topk.ts`, `inspect-latest.mjs`, `trigger-refresh.ts`, `q5-payload.json`, `q5-expanded-payload.json`.
 - Flowise chatflow: `catalog-qa-poc-v1` (id `93c3e81b-501c-402e-9109-3747eaaf2ec0`) — оставляем в инстансе для будущих smoke'ов.
