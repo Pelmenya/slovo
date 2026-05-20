@@ -257,6 +257,51 @@ Flowise поднят в `docker-compose.infra.yml` на `127.0.0.1:3130`. Рол
 
 Перед утверждением «promptValues в LLM Chain не работает» / «LLM Chain legacy» — обязательно сверить с `docs/guides/flowise-vs-nestjs.md` секция «✅ B». Memory `project_flowise_proxy_bootstrap` содержит pre-update вывод — не использовать как источник правды без верификации.
 
+### Curl + UTF-8 на Windows Git Bash — payload только через файл
+
+🚨 **Запрещено для запросов с русским/кириллицей через curl на Windows Git Bash:**
+
+```bash
+# ❌ CP1251 ломает UTF-8 — все русские → `�` в DB (lossy, не восстановимо):
+PAYLOAD=$(node -e "...")
+curl -X PUT $URL -d "$PAYLOAD"
+
+# ❌ Git Bash /tmp/ резолвится в C:/Users/.../AppData/Local/Temp/, curl на Windows не находит:
+curl -X PUT $URL --data-binary @/tmp/file.json
+```
+
+✅ **Правильно — relative path или Windows abs path:**
+
+```bash
+# 1. Generate JSON file через Node (UTF-8 safe writeFileSync)
+node -e "
+const fs = require('fs');
+const data = { flowData: fs.readFileSync('path/to/flowdata.json','utf-8') };
+fs.writeFileSync('experiments/.../foo/_payload.json', JSON.stringify(data), 'utf-8');
+"
+
+# 2. Verify UTF-8 на диске:
+xxd -l 200 experiments/.../foo/_payload.json   # Cyrillic → d0xx d1xx, не efbfbd
+
+# 3. PUT через relative path (от cwd) или C:/abs/path
+curl --noproxy '*' -X PUT "$URL" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    -H "Authorization: Bearer $TOKEN" \
+    --data-binary @experiments/.../foo/_payload.json \
+    -w "\nHTTP %{http_code} | upload=%{size_upload}\n"
+
+# 4. Verify content back (re-fetch + console.log first 150 chars system prompt)
+```
+
+**Контрольная проверка успеха:**
+- `upload=>0 bytes` в `-w` (иначе empty POST, silent fail с HTTP 200 + unchanged DB content)
+- Hex первых байтов русского — `d0xx`/`d1xx` (UTF-8), **не** `efbfbd` (replacement char)
+- Visual через Playwright UI — русский читается, не квадратики
+
+**Прецедент 2026-05-20**: создал AgentFlow V2 chatflow через `curl -d "$PAYLOAD"`. Status 200 OK, content в DB битый (`�` replacement chars). LLM получал мусор-system-prompt но отвечал адекватно по retrieved chunks (поэтому не сразу заметил). Поймал только при чтении flowData через MCP. Re-push через `--data-binary @<rel-path>` исправил.
+
+Расширенное правило в memory `feedback_utf8_curl_payload_via_file`. Связано с [[feedback_visual_check_after_chatflow_create]] — visual check после create/update обязателен именно из-за silent encoding corruption.
+
 ### Flowise — конвенции нейминга ресурсов
 
 Полные правила — в `docs/guides/flowise-naming.md`. Краткая выжимка обязательная для всех:
