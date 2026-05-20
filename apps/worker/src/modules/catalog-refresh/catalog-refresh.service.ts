@@ -618,6 +618,9 @@ function buildItemMetadata(item: TBulkIngestItem): Record<string, unknown> {
         description: item.description ?? null,
         salePriceKopecks: item.salePriceKopecks ?? null,
         categoryPath: item.categoryPath ?? null,
+        // Нормализованная enum-категория — для retrieval ranking / UI чипов.
+        // null если feeder ещё не выкатил Slice 2 (backwards-compat).
+        productCategory: item.productCategory ?? null,
         rangForApp: item.rangForApp ?? null,
         imageUrls: item.imageUrls,
     };

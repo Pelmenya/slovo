@@ -251,6 +251,7 @@ describe('CatalogRefreshService', () => {
                 description: 'Обратный осмос',
                 salePriceKopecks: 4500000,
                 categoryPath: 'Фильтры/Обратный осмос',
+                productCategory: null, // feeder ещё не выставил поле — back-compat
                 rangForApp: 5,
                 imageUrls: ['catalogs/aquaphor/images/mu-001/sha1.jpg'],
             });
@@ -270,6 +271,44 @@ describe('CatalogRefreshService', () => {
                 CATALOG_REFRESH_LOCK_KEY,
                 setCall[1],
             );
+        });
+
+        it('productCategory из feeder попадает в metadata если поле передано', async () => {
+            const payloadWithEnum: TBulkIngestPayload = {
+                ...SAMPLE_PAYLOAD,
+                items: [
+                    {
+                        ...SAMPLE_PAYLOAD.items[0],
+                        productCategory: 'ro_system',
+                    },
+                ],
+            };
+
+            setupHappyPathMocks(flowise, redis, storage);
+            // Override storage с payload где productCategory выставлен
+            storage.getObjectStream.mockReset();
+            storage.getObjectStream.mockResolvedValueOnce({
+                key: CATALOG_PAYLOAD_KEY,
+                body: readableFrom(JSON.stringify(payloadWithEnum)),
+                contentType: 'application/json',
+            });
+            flowise.request.mockResolvedValueOnce({
+                numAdded: 1,
+                numSkipped: 0,
+                numUpdated: 0,
+                docId: 'doc-mu-001',
+            });
+
+            await service.refresh();
+
+            const upsertCall = flowise.request.mock.calls.find(
+                (call) => typeof call[0] === 'string' && call[0].includes('/document-store/upsert/'),
+            );
+            expect(upsertCall).toBeDefined();
+            const body = upsertCall![1].body as Record<string, unknown>;
+            const loaderConfig = (body.loader as { config: { metadata: string } }).config;
+            const metadata = JSON.parse(loaderConfig.metadata) as Record<string, unknown>;
+            expect(metadata.productCategory).toBe('ro_system');
         });
 
         it('пустой items список → success с itemsTotal=0', async () => {

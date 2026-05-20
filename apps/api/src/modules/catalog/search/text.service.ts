@@ -60,8 +60,10 @@ export type TTextSearchResult = {
 //
 // Что включено и почему:
 // - externalId / externalType / externalSource — stable cross-reference ID
-//   с feeder-системой (CRM использует для cross-link).
-// - categoryPath — UI группировка / filter.
+//   с феедер-системой (CRM использует для cross-link).
+// - categoryPath — UI группировка / filter (free-form).
+// - productCategory — нормализованный enum (ro_system/flow_filter/cartridge/…)
+//   для retrieval ranking + UI чипов фильтра.
 // - name / description / salePriceKopecks — отображение в карточке.
 // - rangForApp — UI badge «приоритет» (managers-curated ranking signal).
 //
@@ -72,6 +74,7 @@ const METADATA_WHITELIST: ReadonlySet<string> = new Set([
     'externalType',
     'externalSource',
     'categoryPath',
+    'productCategory',
     'name',
     'description',
     'salePriceKopecks',

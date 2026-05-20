@@ -30,6 +30,25 @@ const MAX_GROUP_IMAGE_KEYS = 50;
 const MAX_RELATED_SERVICES = 100;
 const MAX_RELATED_COMPONENTS = 100;
 
+/**
+ * Closed enum нормализованных категорий товара — derived feeder'ом из
+ * categoryPath через `parseProductCategory(...)`. slovo использует для
+ * retrieval ranking (Slice 3) и UI чипов фильтра. Расширение enum'а —
+ * coordinated change между crm-back и slovo через handoff (нельзя добавить
+ * значение в одну сторону без другой, иначе zod-validate упадёт).
+ */
+export const productCategoryEnum = z.enum([
+    'ro_system',
+    'flow_filter',
+    'cartridge',
+    'pre_filter',
+    'softener',
+    'housing',
+    'accessory',
+    'other',
+]);
+export type TProductCategory = z.infer<typeof productCategoryEnum>;
+
 export const bulkIngestRelatedServiceSchema = z.object({
     id: z.string().min(1).max(64),
     name: z.string().min(1).max(MAX_NAME_LEN),
@@ -60,6 +79,12 @@ export const bulkIngestItemSchema = z.object({
     description: z.string().max(MAX_DESCRIPTION_LEN).nullable().optional(),
     salePriceKopecks: z.number().int().nullable().optional(),
     categoryPath: z.string().max(MAX_CATEGORY_PATH_LEN).nullable().optional(),
+    /**
+     * Нормализованная enum-категория товара. Feeder выводит из categoryPath
+     * через `parseProductCategory`. Используется в metadata для retrieval
+     * ranking + UI фильтра. См. `productCategoryEnum` выше.
+     */
+    productCategory: productCategoryEnum.nullable().optional(),
     isVisible: z.boolean(),
     rangForApp: z.number().int().nullable().optional(),
 
