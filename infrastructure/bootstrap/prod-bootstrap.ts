@@ -54,6 +54,7 @@ async function main() {
         throw new Error(
             `Flowise unreachable at ${env.flowiseApiUrl}: ${error instanceof Error ? error.message : String(error)}.\n` +
                 `Make sure docker compose started Flowise and it's healthy (curl ${env.flowiseApiUrl}/api/v1/ping).`,
+            { cause: error },
         );
     }
 

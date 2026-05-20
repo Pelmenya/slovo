@@ -26,7 +26,7 @@
         "refresh:once": "ts-node -P apps/worker/tsconfig.app.json -r tsconfig-paths/register apps/worker/src/cli/refresh-once.ts",
         "provision:augmenter": "ts-node -P apps/worker/tsconfig.app.json -r tsconfig-paths/register apps/worker/scripts/provision-augmenter-chatflow.ts",
         "start:prod": "node dist/apps/api/main",
-        "lint": "eslint \"{apps,libs}/**/*.ts\" --fix",
+        "lint": "eslint \"{apps,libs,infrastructure}/**/*.ts\" --fix",
         "test": "jest --passWithNoTests",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
@@ -137,6 +137,7 @@
         "collectCoverageFrom": [
             "apps/**/*.(t|j)s",
             "libs/**/*.(t|j)s",
+            "infrastructure/bootstrap/**/*.(t|j)s",
             "!**/*.spec.ts",
             "!**/*.e2e-spec.ts",
             "!**/*.module.ts",

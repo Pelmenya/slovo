@@ -16,8 +16,11 @@
 
 import type { FlowiseClient } from '@slovo/flowise-client';
 
-const CREDENTIAL_REF_PATTERN = /\{\{CREDENTIAL_REF:([^}]+)\}\}/g;
-const DOCSTORE_REF_PATTERN = /\{\{DOCSTORE_REF:([^}]+)\}\}/g;
+// Pattern включает surrounding quotes — symmetric с stripCredentialRefs которая
+// strips quoted UUIDs ("uuid" → "{{CREDENTIAL_REF:name}}"). Replace на "${id}"
+// сохраняет JSON validity.
+const CREDENTIAL_REF_PATTERN = /"\{\{CREDENTIAL_REF:([^}]+)\}\}"/g;
+const DOCSTORE_REF_PATTERN = /"\{\{DOCSTORE_REF:([^}]+)\}\}"/g;
 
 export type TNameToIdMap = Record<string, string>;
 
