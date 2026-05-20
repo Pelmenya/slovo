@@ -60,7 +60,7 @@ export type TTextSearchResult = {
 //
 // Что включено и почему:
 // - externalId / externalType / externalSource — stable cross-reference ID
-//   с феедер-системой (CRM использует для cross-link).
+//   с feeder-системой (CRM использует для cross-link).
 // - categoryPath — UI группировка / filter (free-form).
 // - productCategory — нормализованный enum (ro_system/flow_filter/cartridge/…)
 //   для retrieval ranking + UI чипов фильтра.

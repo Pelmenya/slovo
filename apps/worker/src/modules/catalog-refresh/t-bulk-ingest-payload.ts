@@ -37,7 +37,7 @@ const MAX_RELATED_COMPONENTS = 100;
  * coordinated change между crm-back и slovo через handoff (нельзя добавить
  * значение в одну сторону без другой, иначе zod-validate упадёт).
  */
-export const productCategoryEnum = z.enum([
+export const productCategorySchema = z.enum([
     'ro_system',
     'flow_filter',
     'cartridge',
@@ -47,7 +47,7 @@ export const productCategoryEnum = z.enum([
     'accessory',
     'other',
 ]);
-export type TProductCategory = z.infer<typeof productCategoryEnum>;
+export type TProductCategory = z.infer<typeof productCategorySchema>;
 
 export const bulkIngestRelatedServiceSchema = z.object({
     id: z.string().min(1).max(64),
@@ -82,9 +82,15 @@ export const bulkIngestItemSchema = z.object({
     /**
      * Нормализованная enum-категория товара. Feeder выводит из categoryPath
      * через `parseProductCategory`. Используется в metadata для retrieval
-     * ranking + UI фильтра. См. `productCategoryEnum` выше.
+     * ranking + UI фильтра. См. `productCategorySchema` выше.
+     *
+     * Tri-state `nullable().optional()`:
+     *   - **undefined** (поля нет) — старый feeder, ещё не выкатил Slice 2.
+     *   - **null** — новый feeder, но derive не справился (categoryPath пуст).
+     *   - **string enum** — успешный derive.
+     * slovo обрабатывает оба null/undefined одинаково (`?? null` в metadata).
      */
-    productCategory: productCategoryEnum.nullable().optional(),
+    productCategory: productCategorySchema.nullable().optional(),
     isVisible: z.boolean(),
     rangForApp: z.number().int().nullable().optional(),
 
