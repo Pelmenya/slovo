@@ -6,7 +6,8 @@
     "license": "UNLICENSED",
     "workspaces": [
         "apps/*",
-        "libs/*"
+        "libs/*",
+        "infrastructure/bootstrap"
     ],
     "engines": {
         "node": ">=24.15.0",
@@ -20,6 +21,8 @@
         "start": "nest start api",
         "start:dev": "node scripts/ensure-utf8.cjs && nest start api --watch",
         "start:worker:dev": "node scripts/ensure-utf8.cjs && nest start worker --watch",
+        "prod:export": "npm --workspace=@slovo/bootstrap run export",
+        "prod:bootstrap": "npm --workspace=@slovo/bootstrap run bootstrap",
         "refresh:once": "ts-node -P apps/worker/tsconfig.app.json -r tsconfig-paths/register apps/worker/src/cli/refresh-once.ts",
         "provision:augmenter": "ts-node -P apps/worker/tsconfig.app.json -r tsconfig-paths/register apps/worker/scripts/provision-augmenter-chatflow.ts",
         "start:prod": "node dist/apps/api/main",

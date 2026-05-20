@@ -441,6 +441,25 @@ claude mcp list
 
 ---
 
+## Production deployment (draft 2026-05-20)
+
+Развёртывание slovo в проде — это **больше чем docker compose up**. Конфигурация Flowise (chatflows, credentials, document stores) живёт в runtime sqlite Flowise → не в git → не воспроизводится из голого образа. Решение — **GitOps bootstrap**: при первом запуске чистого prod-стека `npm run prod:bootstrap` создаёт всё через `@slovo/mcp-flowise` (66 REST endpoints) из env vars + chatflow JSON в git.
+
+**Two-node split (152-ФЗ):**
+
+- **РФ VPS** — slovo-api + worker + Flowise + Postgres (PII!) + MinIO + Redis + RabbitMQ. PII клиентов / анализы воды.
+- **EU VPS** — HTTP-proxy (tinyproxy/squid) для исходящих к Anthropic/OpenAI. РФ blокирует прямые вызовы. Flowise envvar `HTTPS_PROXY=http://eu-proxy:8888`. Хетцнер CX11 ~3 EUR/мес, stateless, не хранит PII.
+
+**Документация:**
+
+- [`infrastructure/bootstrap/README.md`](infrastructure/bootstrap/README.md) — bootstrap scripts (credentials/document-stores/chatflows/variables через MCP), required env vars, idempotency, force-recreate mode.
+- [`infrastructure/eu-proxy/README.md`](infrastructure/eu-proxy/README.md) — план tinyproxy на EU VPS, security baseline (BasicAuth + IP allowlist), failure modes, стоимость.
+- TODO: `docs/architecture/decisions/009-prod-deployment-topology.md` — ADR для two-node split + bootstrap pattern. Создавать когда первый paid контракт подписан и реально деплоим.
+
+**Что НЕ бэкапится** — embeddings в pgvector / chunks в Flowise sqlite. Они derive'ятся за ~10 мин из MinIO `latest.json` через catalog-refresh worker. Бэкапим только source-of-truth (Postgres business data + MinIO buckets). Документировано в CLAUDE.md выше → секция «Backup БД».
+
+---
+
 ## Активная миграция — water-analysis Docling extraction (2026-05-12)
 
 🎯 **Заменяем Vision-Haiku extraction на бесплатный детерминированный Docling** в water-analysis ETL.

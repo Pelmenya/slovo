@@ -1,0 +1,19 @@
+{
+    "name": "@slovo/bootstrap",
+    "version": "0.0.1",
+    "private": true,
+    "description": "GitOps prod bootstrap для slovo — credentials/document-stores/chatflows из exports + env. См. README.md.",
+    "type": "module",
+    "scripts": {
+        "export": "tsx prod-export.ts",
+        "bootstrap": "tsx prod-bootstrap.ts"
+    },
+    "dependencies": {
+        "@slovo/flowise-client": "*",
+        "dotenv": "^17.2.0"
+    },
+    "devDependencies": {
+        "tsx": "^4.20.0",
+        "@types/node": "^24.9.0"
+    }
+}
