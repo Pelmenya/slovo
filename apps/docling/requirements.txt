@@ -9,3 +9,7 @@ python-multipart==0.0.20
 
 # Утилиты
 pydantic==2.10.4
+
+# PDF page → image rendering (для Vision-pass над scan-only PDF / диаграммами)
+pymupdf==1.25.1
+pillow==11.0.0

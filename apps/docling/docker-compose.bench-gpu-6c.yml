@@ -16,6 +16,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
@@ -38,6 +40,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
@@ -60,6 +64,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
@@ -82,6 +88,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
@@ -104,6 +112,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
@@ -126,6 +136,8 @@ services:
     environment:
       - OMP_NUM_THREADS=2
       - TOKENIZERS_PARALLELISM=false
+      - TORCH_COMPILE_DISABLE=1
+      - TORCHDYNAMO_DISABLE=1
     restart: unless-stopped
     deploy:
       resources:
