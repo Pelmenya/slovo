@@ -1,6 +1,15 @@
 # Catalog merge → gold Document Store — план
 
-> **Статус:** план **pending Phase 0 proof point**. Phase 0 запускается сразу (1-2 дня). Phase 1+ — только при положительном результате Phase 0.
+> **🔴 Статус: ЗАБЛОКИРОВАН** (2026-05-21 вечер). Phase 0 v2 показал hard fail (-3.1pp delta), ADR-010 retired. Phase 1+ **не открывается** по этому плану. См. `docs/experiments/specs-enrichment/2026-05-21-phase-0-v2-result.md` для finalных findings и next steps.
+>
+> Документ остаётся в репо как **исторический record** о попытке. Может быть **переиспользован** частично если кто-то захочет protect от тех же ошибок:
+> - MinIO specs upload script (`experiments/specs-enrichment/upload-specs-to-minio.mjs`) — работающий
+> - Pre-rendered specs markdown для 13 SKU (`experiments/specs-enrichment/rendered-specs-13-sku.json`) — переиспользуемый
+> - Triplet hash change detection algorithm (Slice 3.2) — design solid для любого build-time merge worker'а
+>
+> ---
+>
+> **Original статус (до retire):** план **pending Phase 0 proof point**. Phase 0 запускается сразу (1-2 дня). Phase 1+ — только при положительном результате Phase 0.
 >
 > **Дата фиксации:** 2026-05-21.
 >
@@ -157,20 +166,23 @@ Policies — pure functions, **lazy load via filesystem scan** в `catalog-merge
 - Slice 0.5 — **Новый** smoke runner `experiments/specs-enrichment/smoke-gold-poc.mjs` (не override существующий `batch-smoke-v2.mjs`). Принимает `--baseline-chatflow` + `--candidate-chatflow` + `--queries`, выдаёт comparison JSON + delta report. Запуск: baseline = `agentflow-haiku` (текущий 2-DS), candidate = `agentflow-haiku-gold-poc-v1`. Auto-graded через existing Sonnet 4.6 judge chatflow (с corrected KNOWN_FACTS).
 - Slice 0.6 — **Report** `docs/experiments/specs-enrichment/2026-MM-DD-phase-0-gold-poc.md` с findings: accuracy delta / high-sev wrong claims delta / per-query breakdown / decision recommendation.
 
-**Gate criteria (Phase 1 unlocks only if all true):**
+**Gate criteria — two-level decision tree:**
 
-| Метрика | Threshold |
-|---|---|
-| Accuracy lift vs baseline | ≥ +10pp |
-| High-sev wrong claims | не выросли |
-| Per-query inspection | manual check 5 random Q — gold ответы не subtly хуже |
-| Token cost | не вырос в > 1.5× (sanity check) |
+Bounds на accuracy lift vs baseline (53.1% Phase 0 v1 baseline):
 
-**Outcomes:**
+| Lift | Verdict | Action |
+|---|---|---|
+| **≥ +10pp** | ✅ **Pass** | ADR-010 → ✅ Принято. Phase 1.0 approach selection + Phase 1+ implementation. |
+| **+5 до +9.9pp** | 🟡 **Conditional pass** | Gold approach даёт positive signal, но не достаточный для standalone justification. Phase 1+ unlock с **расширенным scope**: gold DS + FTS hybrid retrieval (Альтернатива C ADR-010) в одном пакете. Re-measurement после FTS добавления — если суммарный lift ≥ +15pp, Phase 1 продолжается; иначе retire. |
+| **0 до +4.9pp** | ❌ **Inconclusive** | Архитектурный bottleneck — не conflict resolution. Расширить test set до 30Q + проверить root cause (retrieval semantic miss / system prompt drift / outdated specs). Если signal остаётся weak — ADR-010 retire, новый ADR на гипотезу (1)/(3)/(4) из ADR-010 контекста. |
+| **< 0pp (regression)** | ❌❌ **Hard fail** | Gold DS hurt accuracy. Immediate retire ADR-010. Возможен debug pass — проверить что merge не потерял critical data, но не повторный proof point. |
 
-- **Положительный** → status ADR-010 переходит в ✅ Принято, продолжаем Phase 1. Approach selection (TS / LLM / hybrid) — отдельное решение в Phase 1.0 на основе Phase 0 опыта + cost/maintenance trade-off.
-- **Отрицательный** → ADR-010 retired. Создаём новый ADR на гипотезу (1) retrieval semantic miss / (3) system prompt / (4) исходные данные.
-- **Inconclusive (<5pp lift)** → расширить test set до 30Q (если subset на 13 моделях был меньше), повторный запуск. Если всё ещё inconclusive — pivot на гибрид: gold DS + FTS hybrid retrieval как один пакет.
+**Дополнительные gate criteria (на всех уровнях):**
+
+- High-sev wrong claims не выросли (если выросли при positive lift — нужен root cause до Phase 1)
+- Per-query inspection: manual check 5 random Q — gold ответы не subtly хуже
+- Token cost не вырос в > 1.5×
+- **Recall@K на multi-SKU queries** (для tematic chunking) — если queries «сравни X и Y» теряют второй SKU из retrieve → проблема в K, не в merge. Adjust K=6-9 перед conclusion.
 
 ### Phase 1.0 — Approach selection (0.5 дня, начинается только после положительного Phase 0)
 
@@ -188,7 +200,7 @@ Policies — pure functions, **lazy load via filesystem scan** в `catalog-merge
 
 **Slices:**
 
-- Slice 1.1 — `apps/worker/src/modules/catalog-merge/` модуль scaffolding (module + service + constants + DTO types). Reuse pattern catalog-refresh (DI, FlowiseClient, StorageService, Redis lock).
+- Slice 1.1 — `apps/worker/src/modules/catalog-merge/` модуль scaffolding (module + service + constants + DTO types). Reuse pattern catalog-refresh (DI, FlowiseClient, StorageService, Redis lock). **Specs source = MinIO** с самого начала: `slovo-datasets/specs/aquaphor/<group>/<filename>.json` + manifest `latest.json` с per-file sha256 (uploaded 2026-05-21 через `experiments/specs-enrichment/upload-specs-to-minio.mjs`, 226 files). Никакого filesystem coupling. Pattern совместим с ADR-007 (тот же bucket `slovo-datasets`, отдельный namespace `specs/<feeder>/`). При обновлении PDF паспорта — re-extract через docling → re-upload через тот же скрипт → manifest sha обновляется автоматически.
 - Slice 1.2 — `policies/` директория + 3 starter policies: `outdated-pro-modules`, `ws-classification`, `dwm-101s-bundle-math`. Auto-discovery via `import.meta.glob`-equivalent (Node 24 fs scan + dynamic `import()`).
 - Slice 1.3 — `catalog-merge.service.ts::buildGoldChunk(sku, erpChunk, specsChunks, policies)` pure function + comprehensive unit tests (happy / edge / no specs / multi-policy clash).
 - Slice 1.4 — `catalog-merge.service.ts::run()` orchestration: fetch ERP DS, fetch specs DS, iterate SKUs, apply policies, emit JSON.
@@ -218,7 +230,7 @@ Policies — pure functions, **lazy load via filesystem scan** в `catalog-merge
 **Slices:**
 
 - Slice 3.1 — `@Cron('30 4 * * *')` в `catalog-merge.module.ts`, после catalog-refresh (0 4). Redis lock CALL_KEY = `slovo:catalog-merge:lock`. Lua-CAS release (mirror catalog-refresh).
-- Slice 3.2 — Idempotency check: если ни ERP DS, ни specs DS не менялись с last run (compare hash через DS metadata) → skip. Иначе → full rebuild. Phase 5 hardening — sha256 на (erp_latest + specs_latest) hashes.
+- Slice 3.2 — Idempotency check: **triplet hash** (ERP + specs + vision-augment), не пара. Per-SKU state в Redis HASH `slovo:catalog-merge:state` хранит `{erpHashes, specsHashes, visionAugmentHashes}` (из Phase 0 v2 design). При cron tick — сравниваем три текущих set'а с stored для SKU. Любое расхождение → re-merge затронутого SKU (точечный, не full rebuild). Если ни один из трёх не изменился → skip. **Важно про vision:** новый vision augmentation `modelVersion` bump (рестарт `vision-augmenter`) → triggers re-merge catalog chunk (но не specs / service) — точечный re-embed.
 - Slice 3.3 — Failure modes: ERP fetch fail → use last known good (from previous gold MinIO snapshot); specs fetch fail → same. Worker не упадёт целиком — log + Telegram alert + continue с available data. Alerting wiring через существующий `TelegramAlertService` (vision-catalog уже использует).
 - Slice 3.4 — Observability: Langfuse trace для каждого merge run (`name=catalog-merge`, `input=<numSkus>`, `output=<numUpserted>+<numSkipped>+<numFailed>+<numConflictsResolved>`). Reuse Langfuse client из catalog-refresh.
 

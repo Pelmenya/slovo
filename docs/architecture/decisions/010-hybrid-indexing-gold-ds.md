@@ -1,7 +1,19 @@
 # ADR-010: Hybrid indexing — build-time merge ERP + Specs в gold Document Store
 
 ## Статус
-🟡 **Draft pending proof point** — 2026-05-21.
+🔴 **Retired** — 2026-05-21 (после двух proof-point fails).
+
+**Финальный вердикт после Phase 0 v2 (2026-05-21 вечер):** гипотеза ADR-010 опровергнута. Build-time merge ERP+Specs в single gold DS **ухудшает** accuracy на real-world queries (-3.1pp delta), а не улучшает. Главный найденный bottleneck — **retrieval recall на multi-SKU queries** (compare / list / recommend patterns), который single-DS архитектура усугубляет независимо от качества merge content. См. финальный report: `docs/experiments/specs-enrichment/2026-05-21-phase-0-v2-result.md`.
+
+**Phase 1+ feature plan заблокирован.** ADR остаётся в репо как **исторический record** о попытке и её провале — для будущих сессий что не идти этой дорогой без существенно иной retrieval-стратегии (K bump / FTS hybrid / re-ranker / multi-query).
+
+**Next steps — см. финальный report «Decision» секцию:** Path A (quick K=6+ test) → Path B (новый ADR на retrieval bottleneck) → Path C (prompt rework).
+
+---
+
+### Исторический контекст черновика (до retire)
+
+Status до retire: 🟡 Draft pending proof point.
 
 Контекст черновика: после Step 6.5 R&D (prompt-tuning floor 52% real-world accuracy) гипотеза этого ADR — что **inter-source conflict resolution** = главный bottleneck. Гипотеза **не доказана**: Step 6.5 показал только что multi-DS retrieval даёт 52%, но не локализовал корень. Возможны 4 ортогональных корня:
 
@@ -13,6 +25,33 @@
 До принятия этого ADR — **Phase 0 measurement** (feature plan, 1-2 дня): на existing PoC chunks (13 моделей из `experiments/specs-enrichment/poc-ds-merge/merged-chunks.json`) залить temp gold DS, замерить accuracy lift vs baseline 2-DS на 30Q real-world. Gate criterion — **accuracy lift ≥ 10pp**. Положительный proof → status переходит в ✅ Принято, идёт infrastructure build. Отрицательный → ADR-010 retired, переключаемся на гипотезу (1) / (3) / (4) с отдельным ADR.
 
 См. `docs/experiments/specs-enrichment/2026-05-21-summary-evening.md` и `NEXT-SESSION-HANDOFF.md` для R&D контекста.
+
+## Amendment 2026-05-21 (после Phase 0 v1 failed gate)
+
+Часть исходного дизайна **пересмотрена** после Phase 0 v1 measurement (см. `docs/experiments/specs-enrichment/2026-05-21-phase-0-gold-poc.md`) и Phase 0 v2 design (`docs/experiments/specs-enrichment/2026-05-21-phase-0-v2-merge-design.md`). Главные изменения:
+
+1. **Sources of truth для merge — RAW не derived.** Исходный мerge-pipeline в секции «Architecture» ниже показывал чтение из `catalog-aquaphor` + `catalog-aquaphor-specs` Document Stores. Это **неверно** для production:
+   - **ERP source** = MinIO `slovo-datasets/catalogs/aquaphor/latest.json` (raw snapshot 154 items с `contentForEmbedding` + `contentHash` + price в text).
+   - **Vision-augmentation source** = Redis HASH `slovo:catalog:vision-augment` (152 fields, `{imageHash, visualDescription, modelVersion}` per externalId, генерится `vision-augmenter.service.ts`).
+   - **Specs source** = MinIO `slovo-datasets/specs/aquaphor/<group>/<filename>.json` + manifest `specs/aquaphor/latest.json` (226 docling-output, uploaded 2026-05-21). Под зонтиком ADR-007 (тот же bucket `slovo-datasets`, отдельный namespace `specs/<feeder>/`). Statе static между docling extractions — refresh только при re-extract нового / updated PDF.
+   - Existing DS `catalog-aquaphor` и `catalog-aquaphor-specs` — derived projections, читать от них = double-projection с потерей source-of-truth.
+
+2. **Chunking strategy: 3 thematic chunks per SKU, не 1.** Исходный дизайн «Gold chunk schema» ниже говорил «Один chunk на SKU». Phase 0 v2 design пересмотрел на 3 chunks per SKU:
+   - `<SKU> — Каталог Аквафор-Pro` — все bundle варианты + цены + visualDescription
+   - `<SKU> — Технический паспорт` — sections из specs JSON
+   - `<SKU> — Расходники и услуги` — relatedComponents + relatedServices
+
+   **Обоснование:** ERP-данные и tech-specs семантически разные topics. Один embedding на ВСЁ → vector «среднее» теряет точность поиска. Тематические chunks → каждый embedding специализирован → adaptive retrieval (вопрос про цену → catalog chunk, про производительность → specs chunk). Плюс точечный re-embed при partial change (price change → только catalog chunk re-embed, specs не трогается).
+
+3. **Chunk count для полной 154-SKU миграции:** не «~155 chunks» как в исходной диаграмме, а **~462 chunks** (154 SKU × 3 thematic chunks + edge cases где для одной модели несколько PDF паспортов → splitter режет specs chunk на 2).
+
+4. **Idempotency triplet hash** (Slice 3.2 feature plan): change detection включает **три** source hashes (ERP `contentHash` + specs `sha256(file)` + vision-augment `imageHash:modelVersion`), не два. Vision augmentation refresh без ERP/specs change должен триггерить re-merge затронутого catalog chunk.
+
+5. **Two-level gate для Phase 0** (feature plan уточнён): `≥+10pp ✅ proceed` / `+5-9pp conditional (Phase 1.0 selection + FTS hybrid в scope)` / `<+5pp retire`. Бинарный gate был слишком aggressive — +6-8pp = статистически positive signal, не должен ронять весь ADR.
+
+6. **Open Q добавлены** — retrieve strategy при 3-chunks-per-SKU (см. Open Q #9), trigger pattern cron vs event-based RabbitMQ (см. Open Q #10).
+
+Original draft ниже сохранён как историческая запись. При расхождении с amendment — **amendment wins**. Detail-pipeline + chunking strategy в современной форме см. Phase 0 v2 design.
 
 ## Контекст
 
@@ -277,6 +316,8 @@ Deterministic TS-функция строит gold chunk skeleton (sections, fixe
 6. **FTS hybrid retrieval (postgres tsvector + pgvector RRF)** — отложено до измерения retrieval recall на gold DS. Если на 30Q real-world recall@3 ≥ 90% — не нужен. Если < 90% — отдельный sprint.
 7. **Policy file structure / discovery** (применимо если pick approach = TS или гибрид). Auto-load всех `*.policy.ts` из directory vs explicit registry? Решение в feature plan (по умолчанию — auto-discovery + ESLint правило что каждая policy экспортирует typed `TConflictPolicy`).
 8. **Gold DS upsert mode.** RecordManager `cleanup=incremental` (как catalog-refresh) или `cleanup=full` (atomic swap)? Default: `incremental` с REMOVED-sweep на SKU отсутствующие в новом payload (mirror ERP pattern). `full` рассматриваем если будут drift-incident'ы.
+9. **Retrieve strategy при 3-chunks-per-SKU (новое от amendment 2026-05-21).** В существующем 2-DS дизайне retrieve K=3 × 2 stores = до 6 chunks от potentially 6 разных SKU. В gold с tematic chunking K=3 — только до 1 SKU (3 chunks одной модели). Для multi-SKU queries («сравни DWM-101S и DWM-102S Pro») recall может упасть. Варианты: (a) K=6-9 на gold с трёх-кратным retrieve token cost; (b) per-section retrieve K=1 × 3 sections, с явным MMR между секциями; (c) metadata filter на тип запроса (compare → K=6, specific → K=3) — требует pre-classification query. **Замерить Phase 0 v2 smoke**, добавить metric «recall@K на multi-SKU queries» как явный sub-criterion gate.
+10. **Trigger pattern для catalog-merge worker (Phase 1+).** Текущий план — cron `30 4 * * *` (через 30 мин после catalog-refresh `0 4 * * *`) — это **time-based coupling**. Если catalog-refresh затянулся (МойСклад медленный, vision augmentation на новых 30 SKU) — merge стартует на partial state. Альтернатива — pub/sub message `catalog-refresh:completed` через RabbitMQ (ADR-003) от refresh worker'а, merge subscribes. Cron остаётся как safety-net (если RabbitMQ event пропустили). Решение откладывается до Phase 1 implementation, default — cron + add event если problem'ы.
 
 ## Связанные ADR
 
