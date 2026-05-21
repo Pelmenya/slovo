@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!--
+    Override default ClickHouse listen_host чтобы не падало на IPv6.
+    Docker Desktop на Windows часто не имеет IPv6 → `Listen [::]:8123 failed:
+    EAI: Address family for hostname not supported`. Default ClickHouse слушает
+    `::` (dual-stack IPv6+v4), на Windows получает refused → unhealthy.
+
+    Решение — явно слушать только IPv4 на всех интерфейсах.
+-->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+</clickhouse>

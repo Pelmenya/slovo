@@ -1,15 +1,30 @@
 # =============================================================================
-# Langfuse — LLM Observability (self-hosted)
+# Langfuse v3 — LLM Observability (self-hosted, full stack)
 # =============================================================================
 # Запуск:  docker compose -f docker-compose.langfuse.yml up -d
-# UI:      http://localhost:3100
+# UI:      http://localhost:3100  (Web)
 #
-# Langfuse нужна отдельная Postgres — не смешиваем с основной БД slovo.
-# Первый запуск — создать аккаунт через UI → получить API keys → внести в .env
+# v3 stack ВСЕ контейнеры:
+#   - langfuse-postgres   (transactional DB)        port 5434
+#   - langfuse-redis      (cache + queue)           port 6381
+#   - langfuse-clickhouse (analytics events)        port 8124 (http), 9001 (native)
+#   - langfuse-minio      (blob storage events)     port 9092 (S3), 9093 (console)
+#   - langfuse-worker     (async event processor)   port 3030
+#   - langfuse-web        (Next.js UI + API)        port 3100  ← открытый
+#
+# Все *-langfuse-* контейнеры isolated от slovo-postgres/slovo-minio/slovo-valkey
+# — отдельный stack чтобы upgrade Langfuse не задевал основные сервисы.
+#
+# Первый запуск:
+#   1. docker compose -f docker-compose.langfuse.yml up -d
+#   2. UI http://localhost:3100 → создать аккаунт → создать project
+#   3. Project Settings → API Keys → создать pk + sk
+#   4. В Flowise UI → каждый chatflow → Analyse Chatflow → Langfuse → внести pk/sk
+#
 
 services:
     langfuse-postgres:
-        image: postgres:18-alpine
+        image: postgres:17-alpine
         container_name: slovo-langfuse-postgres
         restart: unless-stopped
         ports:
@@ -18,38 +33,159 @@ services:
             POSTGRES_USER: ${LANGFUSE_POSTGRES_USER}
             POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD}
             POSTGRES_DB: ${LANGFUSE_POSTGRES_DB}
+            TZ: UTC
+            PGTZ: UTC
         volumes:
             - langfuse_postgres_data:/var/lib/postgresql/data
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_POSTGRES_USER} -d ${LANGFUSE_POSTGRES_DB}"]
-            interval: 10s
+            interval: 5s
             timeout: 5s
-            retries: 5
+            retries: 10
         networks:
             - slovo-network
 
-    langfuse:
-        image: langfuse/langfuse:3.169.0
-        container_name: slovo-langfuse
+    langfuse-redis:
+        image: redis:7-alpine
+        container_name: slovo-langfuse-redis
         restart: unless-stopped
-        depends_on:
+        command: >
+            redis-server
+            --requirepass ${LANGFUSE_REDIS_PASSWORD}
+            --maxmemory-policy noeviction
+        ports:
+            - "127.0.0.1:${LANGFUSE_REDIS_PORT:-6381}:6379"
+        volumes:
+            - langfuse_redis_data:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_PASSWORD}", "ping"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        networks:
+            - slovo-network
+
+    langfuse-clickhouse:
+        image: clickhouse/clickhouse-server:25.4-alpine
+        container_name: slovo-langfuse-clickhouse
+        restart: unless-stopped
+        user: "101:101"
+        environment:
+            CLICKHOUSE_DB: default
+            CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER}
+            CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD}
+        ports:
+            - "127.0.0.1:${LANGFUSE_CLICKHOUSE_HTTP_PORT:-8124}:8123"
+            - "127.0.0.1:${LANGFUSE_CLICKHOUSE_NATIVE_PORT:-9001}:9000"
+        volumes:
+            - langfuse_clickhouse_data:/var/lib/clickhouse
+            - langfuse_clickhouse_logs:/var/log/clickhouse-server
+            # IPv4-only listen — Docker Desktop Windows без IPv6
+            - ./docker/langfuse-clickhouse/listen.xml:/etc/clickhouse-server/config.d/listen.xml:ro
+        healthcheck:
+            # 127.0.0.1 явно — wget resolve'ит localhost в ::1 (IPv6),
+            # ClickHouse слушает только IPv4 (см. listen.xml).
+            test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        networks:
+            - slovo-network
+
+    langfuse-minio:
+        image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+        container_name: slovo-langfuse-minio
+        restart: unless-stopped
+        entrypoint: sh
+        # Создаём bucket 'langfuse' при старте
+        command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+        environment:
+            MINIO_ROOT_USER: ${LANGFUSE_MINIO_USER}
+            MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD}
+        ports:
+            - "127.0.0.1:${LANGFUSE_MINIO_S3_PORT:-9092}:9000"
+            - "127.0.0.1:${LANGFUSE_MINIO_CONSOLE_PORT:-9093}:9001"
+        volumes:
+            - langfuse_minio_data:/data
+        healthcheck:
+            test: ["CMD", "mc", "ready", "local"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+        networks:
+            - slovo-network
+
+    langfuse-worker:
+        image: langfuse/langfuse-worker:3
+        container_name: slovo-langfuse-worker
+        restart: unless-stopped
+        depends_on: &langfuse-deps
             langfuse-postgres:
                 condition: service_healthy
+            langfuse-redis:
+                condition: service_healthy
+            langfuse-clickhouse:
+                condition: service_healthy
+            langfuse-minio:
+                condition: service_healthy
         ports:
-            - "127.0.0.1:${LANGFUSE_PORT:-3100}:3000"
-        environment:
+            - "127.0.0.1:${LANGFUSE_WORKER_PORT:-3030}:3030"
+        environment: &langfuse-env
             DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER}:${LANGFUSE_POSTGRES_PASSWORD}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB}
-            NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
-            NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
             SALT: ${LANGFUSE_SALT}
             ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
             TELEMETRY_ENABLED: "false"
             LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+
+            CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+            CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+            CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER}
+            CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD}
+            CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+            REDIS_HOST: langfuse-redis
+            REDIS_PORT: 6379
+            REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD}
+            REDIS_TLS_ENABLED: "false"
+
+            LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+            LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+            LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_USER}
+            LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD}
+            LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+            LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+            LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+
+            LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+            LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+            LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_USER}
+            LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD}
+            LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+            LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+            LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+        networks:
+            - slovo-network
+
+    langfuse-web:
+        image: langfuse/langfuse:3
+        container_name: slovo-langfuse
+        restart: unless-stopped
+        depends_on: *langfuse-deps
+        ports:
+            - "127.0.0.1:${LANGFUSE_PORT:-3100}:3000"
+        environment:
+            <<: *langfuse-env
+            NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3100}
+            NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
         networks:
             - slovo-network
 
 volumes:
     langfuse_postgres_data:
+    langfuse_redis_data:
+    langfuse_clickhouse_data:
+    langfuse_clickhouse_logs:
+    langfuse_minio_data:
 
 networks:
     slovo-network:
