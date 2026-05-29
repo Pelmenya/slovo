@@ -486,6 +486,38 @@ claude mcp list
 
 ---
 
+### Anthropic batch jobs — OTPM bottleneck (critical для временных рамок)
+
+При parallel batching через Anthropic API — **OTPM (output tokens/min) обычно constraint**, не RPM. Output generation slower than input parsing, поэтому output-bound.
+
+**Tier limits для Haiku 4-5** (актуально 2026-05-26):
+
+| Tier | RPM | ITPM | **OTPM** ← bottleneck |
+|---|---|---|---|
+| 1 | 50 | 50k | **10k** |
+| 2 | 1000 | 100k | **20k** |
+| 3 | 2000 | 200k | **40k** |
+| 4 | 4000 | 400k | **80k** |
+
+**Calc max parallel safely**:
+- `tokens_per_worker_per_min = avg_output_tokens / avg_latency_sec × 60`
+- `max_parallel = (OTPM × 0.7 safety margin) / tokens_per_worker_per_min`
+- Пример Haiku Tier 3 + avg output 150 tokens + 2.7s latency: tokens/worker/min = 3333, max parallel = 40k × 0.7 / 3333 = **8 workers**
+
+**Workflow checklist для batch jobs**:
+1. **Check tier first** через `anthropic.com/dashboard/limits` (или просто spend проверкой)
+2. **Calculate OTPM budget** per parallel worker
+3. **Target 60-70% utilization** для safety margin под bursts
+4. **Adaptive ramp** — start parallel=5, monitor 429 rate, ramp up при clean
+5. **НЕ optimize blind по RPM** — может показывать 11% util но OTPM уже 84%
+
+**Прецедент 2026-05-26 ML Cup C** (school questions batch 8775 Haiku compress):
+- Запустили parallel=5 conservative (Tier 2 assumed)
+- Real tier был **Tier 3** → OTPM usage только 42% (из 40k)
+- Могли parallel=12 → ETA 25 мин вместо 70. **Потеряли ~45 мин на over-conservative**.
+
+Memory: `feedback_anthropic_otpm_bottleneck.md`.
+
 ## Production deployment (draft 2026-05-20)
 
 Развёртывание slovo в проде — это **больше чем docker compose up**. Конфигурация Flowise (chatflows, credentials, document stores) живёт в runtime sqlite Flowise → не в git → не воспроизводится из голого образа. Решение — **GitOps bootstrap**: при первом запуске чистого prod-стека `npm run prod:bootstrap` создаёт всё через `@slovo/mcp-flowise` (66 REST endpoints) из env vars + chatflow JSON в git.
