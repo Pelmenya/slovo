@@ -63,3 +63,6 @@ prisma/migrations/dev.db*
 # Playwright MCP временные snapshot'ы / screenshot'ы.
 .playwright-mcp/
 .claude/scheduled_tasks.lock
+
+# Claude Code session transcript backups (auto-generated PreCompact hook).
+.claude/backups/
