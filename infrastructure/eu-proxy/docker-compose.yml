@@ -1,0 +1,16 @@
+services:
+    slovo-eu-proxy:
+        build:
+            context: .
+        image: slovo-eu-proxy:dev
+        container_name: slovo-eu-proxy
+        restart: unless-stopped
+        env_file:
+            - ${PROXY_ENV_FILE:-.env}
+        ports:
+            - "${PROXY_BIND_HOST:-0.0.0.0}:${PROXY_PORT:-8888}:8888"
+        healthcheck:
+            test: ["CMD-SHELL", "pidof tinyproxy >/dev/null"]
+            interval: 30s
+            timeout: 5s
+            retries: 3

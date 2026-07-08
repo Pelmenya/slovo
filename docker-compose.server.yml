@@ -1,0 +1,174 @@
+services:
+    slovo-postgres:
+        build:
+            context: ./docker/postgres
+        image: slovo-postgres:pgvector-postgis-pg18
+        container_name: slovo-postgres
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            POSTGRES_DB: ${POSTGRES_DB}
+        volumes:
+            - slovo_postgres_data:/var/lib/postgresql
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        networks:
+            - slovo-network
+            - crm-network
+
+    slovo-valkey:
+        image: valkey/valkey:9-alpine
+        container_name: slovo-valkey
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+        command: >
+            sh -c 'if [ -n "$$REDIS_PASSWORD" ]; then
+            valkey-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+            else
+            valkey-server --appendonly yes;
+            fi'
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+        volumes:
+            - slovo_valkey_data:/data
+        healthcheck:
+            test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then valkey-cli -a \"$${REDIS_PASSWORD}\" ping; else valkey-cli ping; fi"]
+            interval: 10s
+            timeout: 5s
+            retries: 10
+        networks:
+            - slovo-network
+
+    slovo-rabbitmq:
+        image: rabbitmq:4.2.5-management-alpine
+        container_name: slovo-rabbitmq
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:${RABBITMQ_PORT:-5673}:5672"
+            - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+        volumes:
+            - slovo_rabbitmq_data:/var/lib/rabbitmq
+        healthcheck:
+            test: ["CMD", "rabbitmq-diagnostics", "ping"]
+            interval: 30s
+            timeout: 10s
+            retries: 10
+        networks:
+            - slovo-network
+
+    slovo-flowise:
+        image: flowiseai/flowise:3.1.2
+        container_name: slovo-flowise
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:${FLOWISE_PORT:-3130}:3000"
+        environment:
+            HTTP_PROXY: ${EU_PROXY_URL:-}
+            HTTPS_PROXY: ${EU_PROXY_URL:-}
+            NO_PROXY: localhost,127.0.0.1,slovo-postgres,slovo-valkey,slovo-rabbitmq,slovo-flowise,postgres,valkey,rabbitmq,flowise
+            NODE_OPTIONS: --require /scripts/flowise-proxy-bootstrap.cjs
+            DISABLE_CHATFLOW_REUSE: "true"
+            UNSTRUCTURED_API_URL: http://localhost:8000/general/v0/general
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        volumes:
+            - slovo_flowise_data:/root/.flowise
+            - ./docker/flowise-proxy-bootstrap.cjs:/scripts/flowise-proxy-bootstrap.cjs:ro
+        networks:
+            - slovo-network
+
+    slovo-api:
+        build:
+            context: .
+            args:
+                NODE_IMAGE: ${NODE_IMAGE:-dockerhub.timeweb.cloud/library/node:24.15-slim}
+        image: slovo-app:${SLOVO_IMAGE_TAG:-dev}
+        container_name: slovo-api
+        restart: unless-stopped
+        env_file:
+            - ${SLOVO_ENV_FILE:-.env}
+        environment:
+            API_PORT: 3101
+            POSTGRES_HOST: slovo-postgres
+            POSTGRES_PORT: 5432
+            DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@slovo-postgres:5432/${POSTGRES_DB}?schema=public
+            SHADOW_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@slovo-postgres:5432/${POSTGRES_DB}_shadow?schema=public
+            REDIS_HOST: slovo-valkey
+            REDIS_PORT: 6379
+            RABBITMQ_HOST: slovo-rabbitmq
+            RABBITMQ_PORT: 5672
+            RABBITMQ_MANAGEMENT_PORT: 15672
+            RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@slovo-rabbitmq:5672
+            FLOWISE_API_URL: http://slovo-flowise:3000
+            TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+        command: >
+            sh -c "npm run prisma:migrate:deploy &&
+            node dist/apps/api/main"
+        ports:
+            - "127.0.0.1:${API_PORT:-3101}:3101"
+        depends_on:
+            slovo-postgres:
+                condition: service_healthy
+            slovo-valkey:
+                condition: service_healthy
+            slovo-rabbitmq:
+                condition: service_healthy
+            slovo-flowise:
+                condition: service_started
+        healthcheck:
+            test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3101/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+            interval: 15s
+            timeout: 5s
+            retries: 20
+        networks:
+            - slovo-network
+            - crm-network
+
+    slovo-worker:
+        image: slovo-app:${SLOVO_IMAGE_TAG:-dev}
+        container_name: slovo-worker
+        restart: unless-stopped
+        env_file:
+            - ${SLOVO_ENV_FILE:-.env}
+        environment:
+            POSTGRES_HOST: slovo-postgres
+            POSTGRES_PORT: 5432
+            DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@slovo-postgres:5432/${POSTGRES_DB}?schema=public
+            SHADOW_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@slovo-postgres:5432/${POSTGRES_DB}_shadow?schema=public
+            REDIS_HOST: slovo-valkey
+            REDIS_PORT: 6379
+            RABBITMQ_HOST: slovo-rabbitmq
+            RABBITMQ_PORT: 5672
+            RABBITMQ_MANAGEMENT_PORT: 15672
+            RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@slovo-rabbitmq:5672
+            FLOWISE_API_URL: http://slovo-flowise:3000
+        command: ["node", "dist/apps/worker/main"]
+        depends_on:
+            slovo-api:
+                condition: service_healthy
+        networks:
+            - slovo-network
+
+volumes:
+    slovo_postgres_data:
+    slovo_valkey_data:
+    slovo_rabbitmq_data:
+    slovo_flowise_data:
+
+networks:
+    slovo-network:
+        driver: bridge
+        name: slovo-network
+    crm-network:
+        external: true
+        name: crm_network_prod
