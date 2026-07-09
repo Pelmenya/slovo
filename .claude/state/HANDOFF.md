@@ -1,53 +1,36 @@
 # Session Handoff
 
 > Обновляется автоматически перед завершением сессии. Перезаписывается целиком, максимум 50 строк.
+> Только техническое состояние. Чувствительный контекст — в приватной памяти, НЕ в этом файле.
 
-**Дата**: 2026-06-27
+**Дата**: 2026-07-09
 
 ## Текущая задача
 
-🟡 **HOLD — ждём REVIEWER+VERIFIER → ADR-012 (opencode-adoption).**
+🟡 **agentic-core HOLD** — ждём решения по ADR-012 (opencode-adoption / HYBRID v4).
+Phase 1 done. B0 spike done → рекомендация HYBRID v4 (adopt OpenCode loop/MCP/permission,
+build governance-слой). Phase 2/3 — НЕ строим.
 
-Phase 1 done. B0 spike done → рекомендация HYBRID v4 (test-backed, 5 live runs).
-Phase 2/3 — НЕ строим. Phase 5+ — после ADR-012.
+## Сделано в этой сессии (2026-07-09)
 
-## State (что сделано)
+- ✅ `docs/features/agentic-core.md` + ADR-011 закоммичены (были untracked)
+- ✅ North-star секция «agent factory» добавлена в agentic-core.md как *направление*, не spec
+- ✅ Пометка «спайк B0 → HYBRID v4» в статус-блоке agentic-core.md
+- ✅ MEMORY.md ужат (хук просил, подходил к лимиту чтения)
 
-- ✅ A1–A7 verified (REVIEWER по факту в файлах, VERIFIER апрувил)
-- ✅ Phase 1: `prisma/schema/agentic.prisma` (6 моделей) + миграция `20260620155400` applied + seed ModelHealth (3 строки) + generated DTOs
-- ✅ B0 спайк: OpenCode v1.17.9, 5 live test runs, рекомендация HYBRID v4 test-backed
-- ✅ Evidence-first правило записано в CLAUDE.md (против conclusion-anchoring)
-- ✅ **OpenRouter гео-блок**: tinyproxy (EU VPS `127.0.0.1:10810`) обходит, API работает
-- ✅ **OpenRouter Broadcast → Langfuse**: настроен и верифицирован (2026-06-27)
-  - I/O Logging включён, Broadcast включён, destination ID `10116`, 100% sampling
-  - Langfuse: `https://nastily-gratifying-soldierfish.cloudpub.ru`, project `slovo-dev`
-  - Ключ `openrouter-broadcast` (`pk-lf-e0e18a50-f3fc-415b-a12d-c09885e267c9`)
-  - Тестовый trace дошёл (gpt-4-turbo, 1.3s, $0.02) ✅
+## Следующие шаги
 
-## HYBRID v4 — adopt vs build
+1. **agentic-core**: решить ADR-012 (adopt vs build по HYBRID v4) — self-approve v4-claims
+   ИЛИ спайк фабрики (один обратимый end-to-end: задача → авто-стек → self-validate)
+2. Cleanup спайка (после go): 3 spike DS + 4 sessions + throwaway `experiments/opencode-spike/opencode.json`
 
-**Adopt из OpenCode:** loop / MCP bridge / multi-provider / A3 permission gate / session persistence / prompt caching / cost tracking
+## Инфра (готово ранее)
 
-**Build (governance-слой):** A5 dedup-by-event · A6 error classifier · A7 SSE proxy · budget watchdog · Langfuse hook · RunEvent log (Phase 1 schema готова)
-
-**Отменяется:** Phase 2 (LLM adapters) + Phase 3 (loop core)
-**Переформулируется:** Phase 4 (worker через `opencode serve`)
-**Остаётся:** Phase 5+ (SSE proxy, dedup, A/B eval)
-
-## Ожидание
-
-1. REVIEWER: независимая сверка load-bearing v4-claims
-2. VERIFIER: апрув HYBRID + ответы на 5 open Q (lab journal § Open questions)
-3. ADR-012 (opencode-adoption) — ТОЛЬКО из test-backed findings v4
-
-## Cleanup (после VERIFIER go)
-
-3 spike DS: `f46f02ba-...` / `885ecadb-...` / `0b878707-...`
-4 sessions: `ses_111e17640...` / `ses_111e28836...` / `ses_111e32069...` / `ses_111e38f16...`
-Config throwaway: `experiments/opencode-spike/opencode.json`
+- OpenRouter гео-блок: tinyproxy (EU VPS `127.0.0.1:10810`) обходит
+- OpenRouter Broadcast → Langfuse: dest `10116`, 100% sampling, верифицирован
+  (детали — память `project_openrouter_langfuse_broadcast`)
 
 ## Связанные docs
 
-- `experiments/agentic-core/opencode-spike-2026-06-22.md` — lab journal B0 (§ Errata — история 4 версий)
-- `docs/features/agentic-core.md` + ADR-011 — не тронуты (ждут ADR-012 amendment)
-- memory `project_openrouter_langfuse_broadcast` — полная конфигурация Broadcast
+- `experiments/agentic-core/opencode-spike-2026-06-22.md` — lab journal B0
+- `docs/features/agentic-core.md` + ADR-011 — feature spec + ADR (ждут ADR-012 amendment)
