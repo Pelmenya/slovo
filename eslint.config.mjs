@@ -15,6 +15,7 @@ const config = [
             'node_modules/**',
             'coverage/**',
             'libs/database/src/generated/**',
+            'libs/flowise-client/src/**',
             // Служебные CJS-скрипты (webpack config, bootstrap-обёртки) —
             // require() в них легальный, TS-правила неприменимы
             '**/*.cjs',

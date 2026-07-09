@@ -1,0 +1,170 @@
+// Agentic core — runner + orchestration (vertical slice MVP).
+//
+// План: docs/features/agentic-core.md
+// ADR:  docs/architecture/decisions/011-agentic-core-runner-orchestration.md
+//
+// Модели:
+//   - AgentSession     — группировка ранов per user / chat
+//   - AgentRun         — один agentic run (goal → done|aborted)
+//   - RunEvent         — append-only event log (event sourcing)
+//   - RunSnapshot      — snapshot loop state per seq (для resume)
+//   - Permission       — human-in-the-loop gate per mutating tool call
+//   - ModelHealth      — per-provider per-model state machine
+//                        (verified → degraded → quarantined; см. A6)
+
+model AgentSession {
+    id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    userId    String?   @map("user_id") @db.Uuid
+    title     String?
+    createdAt DateTime  @default(now()) @map("created_at")
+    updatedAt DateTime  @updatedAt @map("updated_at")
+
+    runs      AgentRun[]
+
+    @@index([userId, createdAt])
+    @@map("agent_sessions")
+}
+
+model AgentRun {
+    id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    sessionId        String       @map("session_id") @db.Uuid
+    parentRunId      String?      @map("parent_run_id") @db.Uuid
+    resumedFromRunId String?      @map("resumed_from_run_id") @db.Uuid
+
+    goal             String       @db.Text
+    status           RunStatus
+    budgetSpentUsd   Decimal      @default(0) @map("budget_spent_usd") @db.Decimal(10, 6)
+    budgetCapUsd     Decimal      @map("budget_cap_usd") @db.Decimal(10, 6)
+
+    createdAt        DateTime     @default(now()) @map("created_at")
+    startedAt        DateTime?    @map("started_at")
+    finishedAt       DateTime?    @map("finished_at")
+
+    session          AgentSession @relation(fields: [sessionId], references: [id])
+    events           RunEvent[]
+    snapshots        RunSnapshot[]
+    permissions      Permission[]
+
+    @@index([sessionId, createdAt])
+    @@index([status, createdAt])
+    @@map("agent_runs")
+}
+
+enum RunStatus {
+    created
+    planning
+    awaiting_permission
+    executing
+    done
+    failed
+    aborted
+    aborted_by_timeout
+
+    @@map("agent_run_status")
+}
+
+model RunEvent {
+    id        BigInt       @id @default(autoincrement())
+    runId     String       @map("run_id") @db.Uuid
+    seq       Int
+    type      RunEventType
+    payload   Json
+    createdAt DateTime     @default(now()) @map("created_at")
+
+    run       AgentRun     @relation(fields: [runId], references: [id])
+
+    @@unique([runId, seq])
+    @@index([runId, createdAt])
+    @@map("agent_run_events")
+}
+
+enum RunEventType {
+    plan
+    tool_call
+    permission_request
+    permission_response
+    tool_result
+    evidence
+    model_call
+    error
+    quarantine
+    done
+    abort
+
+    @@map("agent_run_event_type")
+}
+
+model RunSnapshot {
+    runId     String   @map("run_id") @db.Uuid
+    seq       Int
+    state     Json
+    createdAt DateTime @default(now()) @map("created_at")
+
+    run       AgentRun @relation(fields: [runId], references: [id])
+
+    @@id([runId, seq])
+    @@index([runId, createdAt])
+    @@map("agent_run_snapshots")
+}
+
+model Permission {
+    id          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    runId       String              @map("run_id") @db.Uuid
+    action      String              @db.VarChar(32)
+    toolName    String              @map("tool_name") @db.VarChar(128)
+    args        Json
+    riskLevel   PermissionRiskLevel @default(medium) @map("risk_level")
+    status      PermissionStatus    @default(pending)
+    requestedAt DateTime            @default(now()) @map("requested_at")
+    respondedAt DateTime?           @map("responded_at")
+    respondedBy String?             @map("responded_by") @db.Uuid
+    reason      String?             @db.Text
+
+    run         AgentRun            @relation(fields: [runId], references: [id])
+
+    @@index([runId, status])
+    @@index([status, requestedAt])
+    @@map("agent_permissions")
+}
+
+enum PermissionStatus {
+    pending
+    approved
+    rejected
+    timed_out
+
+    @@map("agent_permission_status")
+}
+
+enum PermissionRiskLevel {
+    low
+    medium
+    high
+
+    @@map("agent_permission_risk_level")
+}
+
+model ModelHealth {
+    provider         String    @db.VarChar(64)
+    model            String    @db.VarChar(128)
+    tier             ModelTier
+    verified         Boolean   @default(false)
+    quarantinedAt    DateTime? @map("quarantined_at")
+    quarantineReason String?   @map("quarantine_reason") @db.Text
+    failCount        Int       @default(0) @map("fail_count")
+    successCount     Int       @default(0) @map("success_count")
+    lastProbeAt      DateTime? @map("last_probe_at")
+    updatedAt        DateTime  @updatedAt @map("updated_at")
+
+    @@id([provider, model])
+    @@index([quarantinedAt])
+    @@map("agent_model_health")
+}
+
+enum ModelTier {
+    frontier
+    verified
+    experimental
+
+    @@map("agent_model_tier")
+}
