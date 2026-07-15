@@ -3,7 +3,7 @@
 > Обновляется автоматически перед завершением сессии. Перезаписывается целиком, максимум 50 строк.
 > Только техническое состояние. Чувствительный контекст — в приватной памяти, НЕ в этом файле.
 
-**Дата**: 2026-07-09
+**Дата**: 2026-07-15
 
 ## Текущая задача
 
@@ -11,12 +11,14 @@
 Phase 1 done. B0 spike done → рекомендация HYBRID v4 (adopt OpenCode loop/MCP/permission,
 build governance-слой). Phase 2/3 — НЕ строим.
 
-## Сделано в этой сессии (2026-07-09)
+## Сделано (2026-07-09 → 2026-07-15)
 
-- ✅ `docs/features/agentic-core.md` + ADR-011 закоммичены (были untracked)
-- ✅ North-star секция «agent factory» добавлена в agentic-core.md как *направление*, не spec
-- ✅ Пометка «спайк B0 → HYBRID v4» в статус-блоке agentic-core.md
-- ✅ MEMORY.md ужат (хук просил, подходил к лимиту чтения)
+- ✅ `docs/features/agentic-core.md` + ADR-011 закоммичены (были untracked) + north-star секция «agent factory» + пометка «спайк B0 → HYBRID v4»
+- ✅ **Репа заблокирована на запись**: write-коллабораторы убраны (только owner `Pelmenya`),
+  branch protection на `main` — require PR + 1 approving review, `enforce_admins: false`
+  (owner пушит/force-пушит напрямую), любой будущий коллаборатор под PR-гейтом
+- ✅ История `main` линейная/чистая (`130b5ef`) — убраны дубли + merge-коммит после lockdown
+- ✅ MEMORY.md актуализирован (доступ, урок про force-push опубликованных коммитов)
 
 ## Следующие шаги
 
@@ -29,6 +31,11 @@ build governance-слой). Phase 2/3 — НЕ строим.
 - OpenRouter гео-блок: tinyproxy (EU VPS `127.0.0.1:10810`) обходит
 - OpenRouter Broadcast → Langfuse: dest `10116`, 100% sampling, верифицирован
   (детали — память `project_openrouter_langfuse_broadcast`)
+
+## Git-заметка
+
+- `main` под branch protection: прямой push только у owner (admin bypass); остальным — через PR + аппрув.
+- Не force-пушить опубликованные чужие коммиты (даёт дубль-merge при их pull).
 
 ## Связанные docs
 
