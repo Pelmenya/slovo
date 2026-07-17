@@ -1,43 +1,42 @@
 # Session Handoff
 
-> Обновляется автоматически перед завершением сессии. Перезаписывается целиком, максимум 50 строк.
-> Только техническое состояние. Чувствительный контекст — в приватной памяти, НЕ в этом файле.
+> Обновляется целиком перед завершением сессии, максимум 50 строк. Только техсостояние.
+> Чувствительный контекст — в приватной памяти, НЕ здесь. Два трека: agentic-core и voice.
 
-**Дата**: 2026-07-15
+**Дата**: 2026-07-17
 
-## Текущая задача
+## 🎙️ VOICE (агент slovo-voice, активен 2026-07-17)
 
-🟡 **agentic-core HOLD** — ждём решения по ADR-012 (opencode-adoption / HYBRID v4).
-Phase 1 done. B0 spike done → рекомендация HYBRID v4 (adopt OpenCode loop/MCP/permission,
-build governance-слой). Phase 2/3 — НЕ строим.
+**Голосовой робот для клиник переехал из medods-voice — ПОРТ ЗАВЕРШЁН, весь контур проверен
+на реальном `.env`.** medods-voice теперь архив.
 
-## Сделано (2026-07-09 → 2026-07-15)
+Сделано (коммиты 10ddaa0, 6a3b8a2, 1e6fd4e, 33fb931):
 
-- ✅ `docs/features/agentic-core.md` + ADR-011 закоммичены (были untracked) + north-star секция «agent factory» + пометка «спайк B0 → HYBRID v4»
-- ✅ **Репа заблокирована на запись**: write-коллабораторы убраны (только owner `Pelmenya`),
-  branch protection на `main` — require PR + 1 approving review, `enforce_admins: false`
-  (owner пушит/force-пушит напрямую), любой будущий коллаборатор под PR-гейтом
-- ✅ История `main` линейная/чистая (`130b5ef`) — убраны дубли + merge-коммит после lockdown
-- ✅ MEMORY.md актуализирован (доступ, урок про force-push опубликованных коммитов)
+- `prisma/schema/voice.prisma` — Clinic (тенант: голос, шаблоны фраз, env-неймспейс), Call,
+  CallTurn. Миграция применена через Flowise-drift workaround (diff → только voice_*).
+- `libs/voice` — telephony (ARI), speech (TTS/STT), dialog (state machine + классификатор
+  AI Studio). 82 теста. Конвенции slovo: type+T, lowercase-энумы, энумы из @prisma/client.
+- `apps/voice` — CLI (synth/recognize/classify), свой voice-env-контур (не slovo validateEnv).
+- `docker-compose.voice.yml` — Asterisk отдельным стеком (npm run voice:up), общий slovo-postgres.
+- ✅ Проверено вживую из `.env`: SIP-транк Novofon **Registered**, ARI отвечает, TTS→STT
+  round-trip, classify keyword=confirm и LLM=reschedule (439 мс). 1523 теста slovo зелёные.
 
-## Следующие шаги
+Отложено Димой (НЕ делать без обсуждения): миграция 13 issues из medods-voice; MCP-контракт
+вертикали (find_patient/get_appointments/list_free_slots/create_appointment/patch_confirmation/
+get_prices; MCP Hub бесплатен). Хвосты: call-цикл (блокирован УКЭП; в slovo нет CQRS),
+классификатор → кандидат в libs/llm как первый OpenAI-провайдер (нужна координация с backend).
 
-1. **agentic-core**: решить ADR-012 (adopt vs build по HYBRID v4) — self-approve v4-claims
-   ИЛИ спайк фабрики (один обратимый end-to-end: задача → авто-стек → self-validate)
-2. Cleanup спайка (после go): 3 spike DS + 4 sessions + throwaway `experiments/opencode-spike/opencode.json`
+Решения: slovo сделан приватным (ноу-хау не отдаём). Тенант = данные+конфиг, не логика.
+Классификатор в звонке — прямой вызов AI Studio, не Flowise (Flowise для RAG-фич ступени 2).
 
-## Инфра (готово ранее)
+## 🟡 AGENTIC-CORE (агент slovo-backend, HOLD — не трогать из voice-сессий)
 
-- OpenRouter гео-блок: tinyproxy (EU VPS `127.0.0.1:10810`) обходит
-- OpenRouter Broadcast → Langfuse: dest `10116`, 100% sampling, верифицирован
-  (детали — память `project_openrouter_langfuse_broadcast`)
+Ждём ADR-012 (opencode-adoption / HYBRID v4). Phase 1 done, B0 spike done → рекомендация
+HYBRID v4. Следующий шаг: решить ADR-012 (adopt vs build) ИЛИ спайк фабрики.
+Docs: `docs/features/agentic-core.md` + ADR-011 (ждут ADR-012 amendment).
 
-## Git-заметка
+## Git-заметка (общая)
 
-- `main` под branch protection: прямой push только у owner (admin bypass); остальным — через PR + аппрув.
+- `main` под branch protection: прямой push только у owner (admin bypass); остальным — PR + аппрув.
 - Не force-пушить опубликованные чужие коммиты (даёт дубль-merge при их pull).
-
-## Связанные docs
-
-- `experiments/agentic-core/opencode-spike-2026-06-22.md` — lab journal B0
-- `docs/features/agentic-core.md` + ADR-011 — feature spec + ADR (ждут ADR-012 amendment)
+- voice-регистрация в nest-cli/tsconfig/jest/package аддитивна — существующее не трогалось.
