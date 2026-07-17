@@ -42,6 +42,31 @@
                     }
                 ]
             }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash|Read|Edit|Write",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.js\"",
+                        "timeout": 10
+                    }
+                ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Write|Edit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/format.js\"",
+                        "timeout": 30,
+                        "statusMessage": "Formatting..."
+                    }
+                ]
+            }
         ]
     }
 }
