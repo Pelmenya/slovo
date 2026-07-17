@@ -1,0 +1,57 @@
+; SIP-транк к провайдеру (спайк — Zadarma/Novofon; прод — АТС клиники).
+; Смена провайдера = правка этого файла, код приложения не трогаем.
+; Рендерится из шаблона entrypoint.sh — значения приходят из .env.
+
+[transport-udp]
+type = transport
+protocol = udp
+bind = 0.0.0.0:5060
+; Внешний адрес нужен, чтобы в SDP уходил публичный IP, а не адрес контейнера.
+; Иначе классический симптом — односторонняя слышимость.
+external_media_address = ${RTP_EXTERNAL_HOST}
+external_signaling_address = ${RTP_EXTERNAL_HOST}
+
+[trunk-auth]
+type = auth
+auth_type = userpass
+username = ${SIP_USER}
+password = ${SIP_PASSWORD}
+
+[trunk-reg]
+type = registration
+transport = transport-udp
+outbound_auth = trunk-auth
+server_uri = sip:${SIP_PROVIDER_HOST}
+client_uri = sip:${SIP_USER}@${SIP_PROVIDER_HOST}
+contact_user = ${SIP_USER}
+retry_interval = 60
+forbidden_retry_interval = 600
+expiration = 3600
+line = yes
+endpoint = trunk
+
+[trunk]
+type = aor
+contact = sip:${SIP_PROVIDER_HOST}
+qualify_frequency = 60
+
+[trunk]
+type = endpoint
+transport = transport-udp
+context = from-trunk
+disallow = all
+allow = alaw,ulaw
+outbound_auth = trunk-auth
+aors = trunk
+from_user = ${SIP_USER}
+callerid = ${SIP_CALLER_ID}
+; Медиа должно идти через Asterisk: иначе ARI не сможет play/record.
+direct_media = no
+rtp_symmetric = yes
+force_rport = yes
+rewrite_contact = yes
+
+[trunk]
+type = identify
+endpoint = trunk
+match = ${SIP_PROVIDER_HOST}

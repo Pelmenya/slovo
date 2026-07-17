@@ -44,7 +44,10 @@
         "tools:down": "docker compose -f docker-compose.tools.yml down",
         "langfuse:up": "docker compose -f docker-compose.langfuse.yml up -d",
         "langfuse:down": "docker compose -f docker-compose.langfuse.yml down",
-        "prepare": "husky"
+        "prepare": "husky",
+        "voice:synth": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts synth",
+        "voice:recognize": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts recognize",
+        "voice:classify": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts classify"
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.90.0",
@@ -68,6 +71,7 @@
         "class-validator": "^0.15.1",
         "eventsource-parser": "^3.0.0",
         "ioredis": "^5.4.0",
+        "nest-commander": "^3.20.1",
         "nestjs-pino": "^4.6.1",
         "openai": "^6.34.0",
         "pg": "^8.20.0",

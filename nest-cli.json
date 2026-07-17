@@ -64,6 +64,15 @@
             "compilerOptions": {
                 "tsConfigPath": "libs/voice/tsconfig.lib.json"
             }
+        },
+        "voice_app": {
+            "type": "application",
+            "root": "apps/voice",
+            "entryFile": "main",
+            "sourceRoot": "apps/voice/src",
+            "compilerOptions": {
+                "tsConfigPath": "apps/voice/tsconfig.app.json"
+            }
         }
     }
 }

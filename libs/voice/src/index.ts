@@ -12,6 +12,7 @@ export * from './speech/wav';
 export * from './speech/reminder-phrase';
 export * from './speech/tts.service';
 export * from './speech/stt.service';
+export * from './speech/speech.module';
 
 // Диалог
 export * from './dialog/state-machine';
