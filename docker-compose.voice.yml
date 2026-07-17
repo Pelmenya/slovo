@@ -1,0 +1,38 @@
+# Голосовой робот — телефонный стек (Asterisk + ARI).
+# Отдельный compose, как docling: поднимается по необходимости, не входит в основную
+# инфру (npm run voice:up). Postgres НЕ дублируем — используется общий slovo-postgres
+# из docker-compose.server.yml (домен voice_* живёт в той же БД).
+#
+# Транк для звонков поднимать не нужно, чтобы проверить контейнер: Asterisk стартует
+# и ARI отвечает вхолостую. SIP-регистрация нужна только для реального звонка.
+
+services:
+    slovo-voice-asterisk:
+        build:
+            context: ./docker/voice/asterisk
+        image: slovo-voice-asterisk:20
+        container_name: slovo-voice-asterisk
+        restart: unless-stopped
+        env_file:
+            - .env
+        # RTP из Docker Desktop на Windows — риск односторонней слышимости (research.md).
+        # Вариант А (по умолчанию): SIP + узкий RTP-диапазон.
+        # Вариант Б (фолбэк при одностороннем звуке): закомментировать ports, включить
+        #   network_mode: host — требует Docker Desktop 4.34+ с WSL2.
+        ports:
+            - '5060:5060/udp' # SIP
+            - '127.0.0.1:8088:8088/tcp' # ARI (HTTP + WebSocket), только локально
+            - '10000-10100:10000-10100/udp' # RTP
+        volumes:
+            - ./docker/voice/asterisk/conf:/etc/asterisk-template:ro
+            # Bind-mount, не named volume: TTS-файлы пишет и записи ответов читает
+            # ts-node-процесс с Windows-хоста — ему нужен обычный путь в проекте.
+            - ./media/sounds:/var/lib/asterisk/sounds/voice
+            - ./media/recordings:/var/spool/asterisk/recording
+        networks:
+            - slovo-network
+
+networks:
+    slovo-network:
+        external: true
+        name: slovo-network

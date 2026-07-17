@@ -47,7 +47,10 @@
         "prepare": "husky",
         "voice:synth": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts synth",
         "voice:recognize": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts recognize",
-        "voice:classify": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts classify"
+        "voice:classify": "ts-node -r tsconfig-paths/register apps/voice/src/main.ts classify",
+        "voice:up": "docker compose -f docker-compose.voice.yml up -d",
+        "voice:down": "docker compose -f docker-compose.voice.yml down",
+        "voice:logs": "docker compose -f docker-compose.voice.yml logs -f slovo-voice-asterisk"
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.90.0",
