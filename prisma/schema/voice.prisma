@@ -1,0 +1,123 @@
+// Voice — голосовой робот для клиник (домен портирован из спайка medods-voice 2026-07-17).
+//
+// Ступень 1: исходящие звонки-напоминания о приёме (подтверждение / отмена / перенос
+// голосом, статус обратно в МИС). Ступень 2: входящий ассистент. Ступень 3: другие
+// вертикали (вода) через тот же контракт. См. medods-voice/docs/voice-reminder-spike/
+// research.md, раздел «Продукт-видение».
+//
+// Clinic = тенант вертикали. Тенант-специфичны данные и конфиг (голос TTS, шаблоны фраз),
+// а не логика: один код — много клиник. SIP-креды и API-ключи в БД НЕ храним — только
+// ссылку на env-неймспейс тенанта (врачебная тайна: минимум чувствительного в БД).
+//
+// Деньги — в копейках (Int), без float-погрешности.
+
+model Clinic {
+    id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    name            String   @db.VarChar(256)
+    /// Голос SpeechKit TTS (alena, jane, marina...) — поле настройки клиники, не константа кода
+    ttsVoice        String   @default("alena") @map("tts_voice") @db.VarChar(32)
+    /// Шаблоны фраз тенанта: greeting, reAsk, byeConfirmed... (ключ → текст с плейсхолдерами)
+    phraseTemplates Json?    @map("phrase_templates")
+    /// Неймспейс env-переменных тенанта (SIP_USER_<ns> и т.д.) — секреты живут в env, не в БД
+    envNamespace    String   @unique @map("env_namespace") @db.VarChar(64)
+    isActive        Boolean  @default(true) @map("is_active")
+    createdAt       DateTime @default(now()) @map("created_at")
+    updatedAt       DateTime @updatedAt @map("updated_at")
+
+    calls Call[]
+
+    @@map("voice_clinic")
+}
+
+model Call {
+    id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    clinicId      String       @map("clinic_id") @db.Uuid
+    clinic        Clinic       @relation(fields: [clinicId], references: [id])
+    phone         String       @db.VarChar(20)
+    patientName   String       @map("patient_name") @db.VarChar(256)
+    appointmentAt DateTime     @map("appointment_at")
+    status        CallStatus   @default(pending)
+    outcome       CallOutcome?
+
+    // Телефония
+    channelId       String?   @map("channel_id") @db.VarChar(128)
+    dialedAt        DateTime? @map("dialed_at")
+    answeredAt      DateTime? @map("answered_at")
+    endedAt         DateTime? @map("ended_at")
+    durationSeconds Int?      @map("duration_seconds")
+
+    // Метрики себестоимости (фаза 5): считаются в коде после каждого звонка
+    ttsChars        Int  @default(0) @map("tts_chars")
+    sttSeconds      Int  @default(0) @map("stt_seconds")
+    llmInputTokens  Int  @default(0) @map("llm_input_tokens")
+    llmOutputTokens Int  @default(0) @map("llm_output_tokens")
+    costKopecks     Int? @map("cost_kopecks")
+
+    turns CallTurn[]
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@index([clinicId])
+    @@index([phone])
+    @@index([status])
+    @@map("voice_call")
+}
+
+model CallTurn {
+    id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    callId String @map("call_id") @db.Uuid
+    call   Call   @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+    /// Порядковый номер реплики в диалоге, с 0
+    position Int
+    role     TurnRole
+    text     String
+    intent   Intent?
+
+    /// Путь к файлу записи ответа пациента (только реплики patient)
+    recordingPath String? @map("recording_path") @db.VarChar(512)
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@index([callId])
+    @@map("voice_call_turn")
+}
+
+enum CallStatus {
+    pending
+    dialing
+    in_progress
+    completed
+    failed
+
+    @@map("voice_call_status")
+}
+
+enum CallOutcome {
+    confirmed
+    canceled
+    reschedule_requested
+    unclear
+    no_answer
+    failed
+
+    @@map("voice_call_outcome")
+}
+
+enum TurnRole {
+    robot
+    patient
+
+    @@map("voice_turn_role")
+}
+
+enum Intent {
+    confirm
+    cancel
+    reschedule
+    unclear
+
+    @@map("voice_intent")
+}
