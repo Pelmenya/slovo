@@ -55,6 +55,15 @@
             "compilerOptions": {
                 "tsConfigPath": "libs/llm/tsconfig.lib.json"
             }
+        },
+        "voice": {
+            "type": "library",
+            "root": "libs/voice",
+            "entryFile": "index",
+            "sourceRoot": "libs/voice/src",
+            "compilerOptions": {
+                "tsConfigPath": "libs/voice/tsconfig.lib.json"
+            }
         }
     }
 }

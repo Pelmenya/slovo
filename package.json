@@ -63,6 +63,7 @@
         "@prisma/client": "^7.7.0",
         "amqp-connection-manager": "^4.1.14",
         "amqplib": "^1.0.3",
+        "ari-client": "^2.2.0",
         "class-transformer": "^0.5.1",
         "class-validator": "^0.15.1",
         "eventsource-parser": "^3.0.0",
@@ -82,6 +83,7 @@
         "@nestjs/schematics": "^11.0.0",
         "@nestjs/testing": "^11.1.19",
         "@types/amqplib": "^0.10.5",
+        "@types/ari-client": "^2.2.14",
         "@types/express": "^5.0.0",
         "@types/jest": "^29.5.14",
         "@types/node": "^24.0.0",
@@ -132,7 +134,9 @@
             "^@slovo/flowise-flowdata$": "<rootDir>/libs/flowise-flowdata/src",
             "^@slovo/flowise-flowdata/(.*)$": "<rootDir>/libs/flowise-flowdata/src/$1",
             "^@slovo/water-blank-extraction$": "<rootDir>/libs/water-blank-extraction/src",
-            "^@slovo/water-blank-extraction/(.*)$": "<rootDir>/libs/water-blank-extraction/src/$1"
+            "^@slovo/water-blank-extraction/(.*)$": "<rootDir>/libs/water-blank-extraction/src/$1",
+            "^@slovo/voice$": "<rootDir>/libs/voice/src",
+            "^@slovo/voice/(.*)$": "<rootDir>/libs/voice/src/$1"
         },
         "collectCoverageFrom": [
             "apps/**/*.(t|j)s",
