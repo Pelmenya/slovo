@@ -5,6 +5,20 @@
 Стадия: перенесён и проверен на реальном `.env` (транк регистрируется, TTS/STT/classify зелёные);
 дальше — живые звонки (ждут УКЭП) и MCP-контракт вертикали.
 
+## Направление пересматривается (2026-07-22)
+
+Разбор вебинара Yandex AI Studio показал: **Real-Time API закрывает коробкой те слои, которые мы
+писали сами** — телефонию (свой SIP-endpoint / VoxImplant), речь (внутри рантайма), диалог
+(промпт + function calling + truncate вместо state machine). Плюс MCP Hub, file/web search,
+мультиагентность. Клиника с записью — их собственный целевой пример.
+
+**Следствие: в `telephony` / `speech` / `dialog`-state-machine больше не вкладываемся.** Ценность
+смещается в MCP-сервер под МИС (`find_patient` / `list_free_slots` / `create_appointment` /
+`patch_confirmation`), мультитенантность (парк клиник) и сервисный слой.
+
+Полный разбор, окна возможностей и открытые вопросы: [`docs/experiments/voice/2026-07-22-yandex-realtime-api.md`](../../docs/experiments/voice/2026-07-22-yandex-realtime-api.md).
+Решение о переносе рантайма — отдельным ADR, не рефакторингом «по ходу».
+
 ## Где что
 
 - `apps/voice/` — CLI (nest-commander): `synth`, `recognize`, `classify`. Свой voice-env-контур
