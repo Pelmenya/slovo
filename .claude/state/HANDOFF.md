@@ -3,29 +3,16 @@
 > Обновляется целиком перед завершением сессии, максимум 50 строк. Только техсостояние.
 > Чувствительный контекст — в приватной памяти, НЕ здесь.
 
-**Дата**: 2026-09-26
+**Дата**: 2026-11-04
 
-## 🎬 DEMO-VIDEO repo-vitals — СОБРАНО 26.09
+## 🎬 DEMO-VIDEO repo-vitals — собрано 20.10 (v2 + правки fixes-v2)
 
-Задание (финал, 8 кадров): `demo-video-agent-task.md` (корень slovo, не закоммичен).
-Результат: `~/Desktop/repovitals-demo/demo.mp4` (3:40) + `demo.srt`; `RUNBOOK.md` там же —
-как перезаписать. Голос v3 `alexander`/`good`/1.0. Ключ SpeechKit — `YANDEX_API_KEY` в
-slovo `.env`, синтез запускает человек (`--env-file`), агенту `.env` закрыт guard-хуком.
-Захват — CDP screencast (recordVideo мутный), ожидания вырезаются паузами захвата.
-`auth.json` удалён. `medbridge/medods-bridge` уже проанализирован дважды (в кадре 5a).
-Ждём отзыв Димы по видео.
-
-## 📄 WORKFLOWS-PITCH — отправлен 29.07, ждём ответ
-
-`docs/proposals/2026-07-29-yandex-workflows-agent-builder.md` (t.me/yandexcloud_chat).
-У Яндекса есть `workflows-mcp-server` (create/update/execution_history) — петля самовалидации
-замыкается. Спайк наготове (не начат): кейс вебинара через `workflow_create`, метрика —
-итерации до зелёного прогона; нужен доступ к YC API.
-
-## 🔁 RALPH (pixel-tanks, вне slovo)
-
-`~/Desktop/pixel-tanks/.claude/ralph` — agent delivery loop, фазы 1-6 закрыты, 3 привязки к
-Claude. Решение: НЕ выносить до второго потребителя. Для slovo: ADR-012 «adopt vs build»
+Вне slovo: рабочая папка `repovitals-demo` на рабочем столе. Там задания (`tasks/`: v1, v2,
+fixes-v2, fixes-v3), скрипты и `RUNBOOK.md` — как перезаписать. Итог: `demo.mp4` 5:36 +
+`demo.srt`, 14 кадров. Голос v3 `alexander`/`good`/1.0, ключ SpeechKit — `YANDEX_API_KEY`
+в slovo `.env`, синтез запуска
+...[575 chars omitted]...
+ние: НЕ выносить до второго потребителя. Для slovo: ADR-012 «adopt vs build»
 → вопрос «переносить ли Ralph».
 
 ## 🎙️ VOICE (порт завершён 2026-07-17)
@@ -37,4 +24,4 @@ TTS в `libs/voice` жёстко 8 кГц (телефония) — для дру
 ## Git-заметка
 
 - `main` под branch protection: прямой push только у owner.
-- Не закоммичены: `docs/proposals/`, `demo-video-agent-task.md`.
+- `media/` и `craftteam-deck-*` в `.gitignore` — бинарники демо и презентаций, исходники на Диске.

@@ -397,7 +397,7 @@ const flowData = serializeFlowData(buildChatflow({
 // flowData готов для flowise_chatflow_create
 ```
 
-10 typed factories для частых нод (chatAnthropic, openAIEmbeddings, postgresVectorStore, conversationalRetrievalQAChain, bufferMemory, jsonFile, s3File, и др.) + `fromIntrospection(spec, inputs)` fallback для всех 200+ нод через MCP `nodes_get` runtime introspection.
+12 typed factories для частых нод (chatAnthropic, openAIEmbeddings, postgresVectorStore, conversationalRetrievalQAChain, bufferMemory, jsonFile, s3File, и др.) + `fromIntrospection(spec, inputs)` fallback для всех 200+ нод через MCP `nodes_get` runtime introspection.
 
 **Документация:**
 - ADR-008 — обоснование self-built MCP, сравнение с community-вариантами, план extract в отдельные репозитории + npm/Smithery publish.
