@@ -1,42 +1,40 @@
 # Session Handoff
 
 > Обновляется целиком перед завершением сессии, максимум 50 строк. Только техсостояние.
-> Чувствительный контекст — в приватной памяти, НЕ здесь. Два трека: agentic-core и voice.
+> Чувствительный контекст — в приватной памяти, НЕ здесь.
 
-**Дата**: 2026-07-17
+**Дата**: 2026-09-26
 
-## 🎙️ VOICE (агент slovo-voice, активен 2026-07-17)
+## 🎬 DEMO-VIDEO repo-vitals — СОБРАНО 26.09
 
-**Голосовой робот для клиник переехал из medods-voice — ПОРТ ЗАВЕРШЁН, весь контур проверен
-на реальном `.env`.** medods-voice теперь архив.
+Задание (финал, 8 кадров): `demo-video-agent-task.md` (корень slovo, не закоммичен).
+Результат: `~/Desktop/repovitals-demo/demo.mp4` (3:40) + `demo.srt`; `RUNBOOK.md` там же —
+как перезаписать. Голос v3 `alexander`/`good`/1.0. Ключ SpeechKit — `YANDEX_API_KEY` в
+slovo `.env`, синтез запускает человек (`--env-file`), агенту `.env` закрыт guard-хуком.
+Захват — CDP screencast (recordVideo мутный), ожидания вырезаются паузами захвата.
+`auth.json` удалён. `medbridge/medods-bridge` уже проанализирован дважды (в кадре 5a).
+Ждём отзыв Димы по видео.
 
-Сделано (коммиты 10ddaa0, 6a3b8a2, 1e6fd4e, 33fb931):
+## 📄 WORKFLOWS-PITCH — отправлен 29.07, ждём ответ
 
-- `prisma/schema/voice.prisma` — Clinic (тенант: голос, шаблоны фраз, env-неймспейс), Call,
-  CallTurn. Миграция применена через Flowise-drift workaround (diff → только voice_*).
-- `libs/voice` — telephony (ARI), speech (TTS/STT), dialog (state machine + классификатор
-  AI Studio). 82 теста. Конвенции slovo: type+T, lowercase-энумы, энумы из @prisma/client.
-- `apps/voice` — CLI (synth/recognize/classify), свой voice-env-контур (не slovo validateEnv).
-- `docker-compose.voice.yml` — Asterisk отдельным стеком (npm run voice:up), общий slovo-postgres.
-- ✅ Проверено вживую из `.env`: SIP-транк Novofon **Registered**, ARI отвечает, TTS→STT
-  round-trip, classify keyword=confirm и LLM=reschedule (439 мс). 1523 теста slovo зелёные.
+`docs/proposals/2026-07-29-yandex-workflows-agent-builder.md` (t.me/yandexcloud_chat).
+У Яндекса есть `workflows-mcp-server` (create/update/execution_history) — петля самовалидации
+замыкается. Спайк наготове (не начат): кейс вебинара через `workflow_create`, метрика —
+итерации до зелёного прогона; нужен доступ к YC API.
 
-Отложено Димой (НЕ делать без обсуждения): миграция 13 issues из medods-voice; MCP-контракт
-вертикали (find_patient/get_appointments/list_free_slots/create_appointment/patch_confirmation/
-get_prices; MCP Hub бесплатен). Хвосты: call-цикл (блокирован УКЭП; в slovo нет CQRS),
-классификатор → кандидат в libs/llm как первый OpenAI-провайдер (нужна координация с backend).
+## 🔁 RALPH (pixel-tanks, вне slovo)
 
-Решения: slovo сделан приватным (ноу-хау не отдаём). Тенант = данные+конфиг, не логика.
-Классификатор в звонке — прямой вызов AI Studio, не Flowise (Flowise для RAG-фич ступени 2).
+`~/Desktop/pixel-tanks/.claude/ralph` — agent delivery loop, фазы 1-6 закрыты, 3 привязки к
+Claude. Решение: НЕ выносить до второго потребителя. Для slovo: ADR-012 «adopt vs build»
+→ вопрос «переносить ли Ralph».
 
-## 🟡 AGENTIC-CORE (агент slovo-backend, HOLD — не трогать из voice-сессий)
+## 🎙️ VOICE (порт завершён 2026-07-17)
 
-Ждём ADR-012 (opencode-adoption / HYBRID v4). Phase 1 done, B0 spike done → рекомендация
-HYBRID v4. Следующий шаг: решить ADR-012 (adopt vs build) ИЛИ спайк фабрики.
-Docs: `docs/features/agentic-core.md` + ADR-011 (ждут ADR-012 amendment).
+`libs/voice` + `apps/voice` + `docker-compose.voice.yml`, 1523 теста зелёные. Отложено без
+обсуждения не трогать: 13 issues medods-voice, MCP-контракт вертикали, call-цикл (УКЭП).
+TTS в `libs/voice` жёстко 8 кГц (телефония) — для других задач свой синтез.
 
-## Git-заметка (общая)
+## Git-заметка
 
-- `main` под branch protection: прямой push только у owner (admin bypass); остальным — PR + аппрув.
-- Не force-пушить опубликованные чужие коммиты (даёт дубль-merge при их pull).
-- voice-регистрация в nest-cli/tsconfig/jest/package аддитивна — существующее не трогалось.
+- `main` под branch protection: прямой push только у owner.
+- Не закоммичены: `docs/proposals/`, `demo-video-agent-task.md`.
