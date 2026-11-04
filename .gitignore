@@ -66,3 +66,8 @@ prisma/migrations/dev.db*
 
 # Claude Code session transcript backups (auto-generated PreCompact hook).
 .claude/backups/
+
+# Демо-видео и презентации — бинарники, исходники на Яндекс.Диске
+media/
+craftteam-deck-*.pdf
+craftteam-deck-*.pptx
